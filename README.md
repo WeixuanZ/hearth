@@ -8,6 +8,8 @@ An Apple TV or HomePod is the hub for control away from home. It does not replac
 
 ## Devices
 
+Connectors included now. More can be added without a second bridge.
+
 | Device | Connection | In Home |
 |---|---|---|
 | Dyson Purifier Hot+Cool Formaldehyde (HP09) | The fan's own MQTT, after one MyDyson login | Purifier, air quality, PM2.5, PM10, humidity, temperature, heat, HEPA life, and switches for night, focused jet, and keep sensing |
