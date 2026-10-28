@@ -60,7 +60,7 @@ final class BridgeModel: ObservableObject {
     }
 
     func hearthURL() -> URL? {
-        if let bundled = Bundle.main.url(forAuxiliaryExecutable: "hearth"),
+        if let bundled = Bundle.main.url(forAuxiliaryExecutable: "hearth-cli"),
            FileManager.default.isExecutableFile(atPath: bundled.path)
         {
             return bundled
