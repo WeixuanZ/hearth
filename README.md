@@ -19,13 +19,19 @@ Home has no formaldehyde sensor. Formaldehyde, VOC, and NO₂ are folded into th
 
 ## Install
 
-The computer and the devices have to be on the same network. Install a Rust toolchain, then:
+Once the repository is public:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/WeixuanZ/hearth/main/install.sh | sh
+```
+
+That downloads the latest release for this machine, checks it against `SHA256SUMS`, and puts `hearth` in `~/.local/bin`. It does not work while the repository is private: GitHub will not serve the script or the binaries without a login. To build from this checkout instead:
 
 ```sh
 cargo install --path .
 ```
 
-Tagged releases also publish binaries. See [Releases](#releases).
+The computer and the devices have to be on the same network.
 
 ## Pair a device
 
@@ -111,7 +117,7 @@ token = "…"
 
 Pushes to `main` and pull requests are formatted, linted, and tested. The menu bar is compiled on macOS as well.
 
-A release is a tag that matches the version in `Cargo.toml`. For 0.2.0 the tag is `v0.2.0`. The build publishes Linux x86_64, Linux aarch64, macOS Apple silicon, and macOS Intel, plus the menu bar app and `SHA256SUMS`.
+A release is a tag that matches the version in `Cargo.toml`. For 0.2.0 the tag is `v0.2.0`. The build publishes Linux x86_64, Linux aarch64, macOS Apple silicon, and macOS Intel, plus the menu bar app and `SHA256SUMS`. The install command uses those files. Actions artifacts from the same run expire and are not the install source.
 
 ```sh
 git tag v0.2.0
