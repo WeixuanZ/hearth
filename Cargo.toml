@@ -1,0 +1,36 @@
+[package]
+name = "dyson-home"
+version = "0.1.0"
+edition = "2021"
+description = "Local HomeKit bridge for a Dyson Purifier Hot+Cool Formaldehyde"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "dyson-home"
+path = "src/main.rs"
+
+[dependencies]
+aes = "0.8"
+anyhow = "1"
+base64 = "0.22"
+cbc = { version = "0.1", features = ["alloc"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+cipher = "0.4"
+env_logger = "0.11"
+hap = { path = "vendor/hap" }
+log = "0.4"
+mdns-sd = "0.13"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "signal"] }
+toml = "0.8"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
