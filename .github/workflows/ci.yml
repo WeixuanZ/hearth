@@ -32,6 +32,9 @@ jobs:
       - name: Format
         run: cargo fmt --check
 
+      - name: Build
+        run: cargo build --locked --all-targets
+
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 

@@ -88,7 +88,9 @@ pub struct WriteObject {
     pub ev: Option<bool>,
     pub value: Option<serde_json::Value>,
     #[serde(rename = "authData")]
+    #[allow(dead_code)] // Accepted on the wire. Home may send it; nothing here reads it.
     pub auth_data: Option<String>,
+    #[allow(dead_code)]
     pub remote: Option<bool>,
 }
 
