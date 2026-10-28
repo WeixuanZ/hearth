@@ -60,6 +60,22 @@ prints the 8-digit code. In the Home app: **Add Accessory → More options… �
 
 An Apple TV or HomePod on the same network is what lets you use it away from home. This process still has to be running. The hub does not replace it.
 
+## Menu bar
+
+Optional, and only on a Mac. The bridge does not need it. The icon reads a status file the bridge already writes. It does not open a second connection to the fan or the TV.
+
+```sh
+cargo build --release
+macos/build.sh
+open macos/Hearth.app
+```
+
+The panel shows whether the bridge is running, each device, and the pairing code. Start and Stop control the bridge. Quit closes the icon and leaves a bridge that is already running alone.
+
+Use this or the launch agent, not both. The agent restarts the bridge as soon as Stop ends it.
+
+The app has no Dock icon. To open it at login, add Hearth.app in System Settings → General → Login Items.
+
 ## Keep it running
 
 The computer must not be asleep, or Home shows the accessories as not responding. On a Mac, System Settings → Energy, or a launch agent:

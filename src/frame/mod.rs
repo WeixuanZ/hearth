@@ -178,6 +178,8 @@ struct Live {
     input: u32,
     brightness: Option<i32>,
     art: Option<bool>,
+    reachable: bool,
+    seen: bool,
 }
 
 async fn run(
@@ -190,6 +192,8 @@ async fn run(
         input: 0,
         brightness: None,
         art: None,
+        reachable: false,
+        seen: false,
     };
     let mut poll = tokio::time::interval(Duration::from_secs(20));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -200,21 +204,23 @@ async fn run(
                 if let Err(error) = handle(&mut device, &mut live, command).await {
                     log::warn!("{}: {error:#}", device.name);
                 }
-                publish(&states, &live);
+                publish(&states, &device, &live);
             }
             _ = poll.tick() => {
                 if let Err(error) = refresh(&mut device, &mut live).await {
                     log::debug!("{}: {error:#}", device.name);
+                    live.reachable = false;
+                    live.seen = true;
                     live.on = false;
                 }
-                publish(&states, &live);
+                publish(&states, &device, &live);
             }
         }
     }
     Ok(())
 }
 
-fn publish(states: &watch::Sender<View>, live: &Live) {
+fn publish(states: &watch::Sender<View>, device: &FrameDevice, live: &Live) {
     states
         .send(View {
             on: live.on,
@@ -222,11 +228,60 @@ fn publish(states: &watch::Sender<View>, live: &Live) {
             brightness: live.brightness,
         })
         .ok();
+    crate::status::update(frame_snap(device, live));
+}
+
+fn frame_snap(device: &FrameDevice, live: &Live) -> crate::status::DeviceSnap {
+    let headline = if !live.seen {
+        "Looking"
+    } else if !live.reachable {
+        "Unreachable"
+    } else if !live.on {
+        "Standby"
+    } else if live.art == Some(true) || live.input == Input::Art as u32 {
+        "Art"
+    } else if let Some(input) = Input::from_id(live.input) {
+        input.label()
+    } else {
+        "On"
+    };
+    let mut metrics = Vec::new();
+    if live.seen && live.reachable {
+        metrics.push(crate::status::Metric {
+            label: "Power".into(),
+            value: if live.on { "On" } else { "Standby" }.into(),
+        });
+    }
+    if let Some(level) = live.brightness {
+        metrics.push(crate::status::Metric {
+            label: "Art light".into(),
+            value: level.to_string(),
+        });
+    }
+    crate::status::DeviceSnap {
+        id: format!("frame:{}", device.host),
+        kind: "frame".into(),
+        name: device.name.clone(),
+        online: live.reachable,
+        headline: headline.into(),
+        detail: device.model.clone(),
+        metrics,
+        seen: if live.seen {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_secs())
+                .unwrap_or(0)
+        } else {
+            0
+        },
+    }
 }
 
 async fn refresh(device: &mut FrameDevice, live: &mut Live) -> Result<()> {
     let info = link::device_info(&device.host).await?;
     live.on = info.on;
+    live.reachable = true;
+    live.seen = true;
     if device.mac.is_empty() && !info.mac.is_empty() {
         device.mac = info.mac.clone();
         remember(device);

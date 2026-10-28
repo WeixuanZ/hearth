@@ -3,6 +3,7 @@ mod config;
 mod dyson;
 mod frame;
 mod hapset;
+mod status;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

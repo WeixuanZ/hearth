@@ -253,6 +253,7 @@ async fn drive(
                     }
                     if let Some(state_tx) = &state_tx {
                         state_tx.send(state.clone()).ok();
+                        crate::status::update(snap(&device, &state));
                     }
                     if status_only && state.temperature_c.is_some() {
                         print_status(&device.name, &state);
@@ -313,6 +314,81 @@ async fn publish(
             payload: protocol::state_set_payload(&fields),
         })
         .await;
+}
+
+fn snap(device: &DysonDevice, state: &MachineState) -> crate::status::DeviceSnap {
+    let online = state.topic_prefix.is_some() || state.temperature_c.is_some();
+    let headline = if !online {
+        "Looking".into()
+    } else if state.power_on {
+        "On".into()
+    } else {
+        "Off".into()
+    };
+    let mut parts = Vec::new();
+    if state.power_on {
+        parts.push(if state.auto {
+            "Auto".into()
+        } else if let Some(speed) = state.speed {
+            format!("Speed {speed}")
+        } else {
+            "Manual".into()
+        });
+    }
+    if state.oscillating {
+        parts.push("swinging".into());
+    }
+    if state.heat_on {
+        parts.push(if state.heating_now {
+            "heating".into()
+        } else {
+            "heat on".into()
+        });
+    }
+    if state.night {
+        parts.push("night".into());
+    }
+    if state.focus {
+        parts.push("focused".into());
+    }
+    let mut metrics = Vec::new();
+    if let Some(temp) = state.temperature_c {
+        metrics.push(crate::status::Metric {
+            label: "Temp".into(),
+            value: format!("{temp:.0}°"),
+        });
+    }
+    if let Some(humidity) = state.humidity {
+        metrics.push(crate::status::Metric {
+            label: "Humidity".into(),
+            value: format!("{humidity:.0}%"),
+        });
+    }
+    if let Some(pm) = state.pm25 {
+        metrics.push(crate::status::Metric {
+            label: "PM2.5".into(),
+            value: format!("{pm:.0}"),
+        });
+    }
+    if let Some(life) = state.hepa_life {
+        metrics.push(crate::status::Metric {
+            label: "Filter".into(),
+            value: format!("{life}%"),
+        });
+    }
+    crate::status::DeviceSnap {
+        id: format!("dyson:{}", device.serial),
+        kind: "dyson".into(),
+        name: device.name.clone(),
+        online,
+        headline,
+        detail: parts.join(" · "),
+        metrics,
+        seen: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or(0),
+    }
 }
 
 fn print_status(name: &str, state: &MachineState) {

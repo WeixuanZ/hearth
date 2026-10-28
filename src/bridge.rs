@@ -4,6 +4,7 @@ use crate::{
     config::{self, Config},
     dyson, frame,
     hapset::device_id,
+    status,
 };
 use anyhow::{anyhow, Context, Result};
 use hap::{
@@ -14,6 +15,8 @@ use hap::{
 };
 
 pub async fn serve(config: Config) -> Result<()> {
+    status::begin(&config);
+    let _status = StatusFile;
     let server = open(&config).await?;
     for device in config.devices {
         match device {
@@ -28,6 +31,13 @@ pub async fn serve(config: Config) -> Result<()> {
     );
     println!("This process has to stay awake and on the same network as the devices.");
 
+    tokio::spawn(async {
+        loop {
+            status::flush();
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    });
+
     tokio::select! {
         result = server.run_handle() => {
             result.map_err(|error| anyhow!("HomeKit stopped: {error}"))?;
@@ -35,6 +45,14 @@ pub async fn serve(config: Config) -> Result<()> {
         _ = tokio::signal::ctrl_c() => log::info!("stopping"),
     }
     Ok(())
+}
+
+struct StatusFile;
+
+impl Drop for StatusFile {
+    fn drop(&mut self) {
+        status::finish();
+    }
 }
 
 async fn open(config: &Config) -> Result<IpServer> {
