@@ -223,7 +223,8 @@ async fn run(
 fn publish(states: &watch::Sender<View>, device: &FrameDevice, live: &Live) {
     states
         .send(View {
-            on: live.on,
+            // Home has no art state. Art is the Frame's off, as on its remote.
+            on: live.on && live.art != Some(true),
             input: live.input,
             brightness: live.brightness,
         })
@@ -290,7 +291,12 @@ async fn refresh(device: &mut FrameDevice, live: &mut Live) -> Result<()> {
         device.model = info.model.clone();
         remember(device);
     }
-    if !info.on || device.token.is_empty() {
+    if !info.on {
+        // Out of standby it may come back in art or showing a source.
+        live.art = None;
+        return Ok(());
+    }
+    if device.token.is_empty() {
         return Ok(());
     }
     let replies = link::art(
@@ -321,27 +327,39 @@ async fn refresh(device: &mut FrameDevice, live: &mut Live) -> Result<()> {
 async fn handle(device: &mut FrameDevice, live: &mut Live, command: Command) -> Result<()> {
     match command {
         Command::Active(true) => {
-            if !live.on {
+            let powered = link::device_info(&device.host)
+                .await
+                .map(|info| info.on)
+                .unwrap_or(false);
+            if powered {
+                // A Frame showing art still reports power on. Home shows art
+                // as off, so on means leave art.
+                live.on = true;
+                if live.art != Some(false) {
+                    set_art(device, live, false).await?;
+                }
+            } else {
                 if !device.mac.is_empty() {
                     link::wake(&device.mac)?;
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
-                if link::device_info(&device.host)
+                if !link::device_info(&device.host)
                     .await
                     .map(|info| info.on)
                     .unwrap_or(false)
                 {
-                    live.on = true;
-                } else {
                     click(device, "KEY_POWER").await?;
-                    live.on = true;
                 }
+                live.on = true;
+                live.art = Some(false);
             }
         }
         Command::Active(false) => {
+            // Power off sends a Frame to art, not standby. If it does go to
+            // standby, the next poll sees that.
             click(device, "KEY_POWEROFF").await?;
-            live.on = false;
-            live.art = Some(false);
+            live.art = Some(true);
+            live.input = Input::Art as u32;
         }
         Command::Input(id) => {
             let Some(input) = Input::from_id(id) else {
