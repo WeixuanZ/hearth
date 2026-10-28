@@ -16,7 +16,7 @@ use hap::{
         accessory_information::AccessoryInformationService, air_purifier::AirPurifierService,
         air_quality_sensor::AirQualitySensorService, filter_maintenance::FilterMaintenanceService,
         heater_cooler::HeaterCoolerService, humidity_sensor::HumiditySensorService,
-        temperature_sensor::TemperatureSensorService, HapService,
+        switch::SwitchService, temperature_sensor::TemperatureSensorService, HapService,
     },
     HapType,
 };
@@ -201,6 +201,9 @@ pub(super) fn named_switch(
 ) -> Result<SwitchAccessory> {
     let mut switch =
         SwitchAccessory::new(id, info(device, name, suffix)).map_err(|error| anyhow!("{error}"))?;
+    // hap puts the switch right after the information service, at iid 8, but
+    // the firmware revision sits at a fixed iid 10. Home rejects the clash.
+    switch.switch = SwitchService::new(20, id);
     hook_bool(&mut switch.switch.power_state, suppress, tx, make);
     Ok(switch)
 }
@@ -387,4 +390,33 @@ pub(super) async fn apply_switch(accessory: &mut dyn HapAccessory, on: bool) -> 
         serde_json::json!(on),
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hapset::assert_unique_iids;
+
+    #[test]
+    fn iids_are_unique() {
+        let mut device = DysonDevice {
+            aid: 3,
+            name: "Purifier".into(),
+            serial: "ABC-DE-FGH1234A".into(),
+            model: "XY01".into(),
+            product_type: "000X".into(),
+            mqtt_password: "x".into(),
+            host: String::new(),
+            port: 1883,
+            heating: true,
+        };
+        let suppress = Arc::new(AtomicBool::new(false));
+        let (tx, _rx) = mpsc::channel(4);
+        assert_unique_iids(&build_purifier(&device, &suppress, &tx).unwrap());
+        assert_unique_iids(
+            &named_switch(4, &device, "Night", "-night", &suppress, &tx, Intent::Night).unwrap(),
+        );
+        device.heating = false;
+        assert_unique_iids(&build_purifier(&device, &suppress, &tx).unwrap());
+    }
 }

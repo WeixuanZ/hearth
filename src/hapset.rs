@@ -114,3 +114,24 @@ pub async fn put(
     }
     Ok(())
 }
+
+/// Home refuses a bridge as "out of compliance" when an accessory reuses an
+/// iid, so every connector's accessories are checked with this.
+#[cfg(test)]
+pub fn assert_unique_iids(accessory: &impl serde::Serialize) {
+    let value = serde_json::to_value(accessory).unwrap();
+    let mut seen = std::collections::HashSet::new();
+    for service in value["services"].as_array().unwrap() {
+        let iids = std::iter::once(&service["iid"]).chain(
+            service["characteristics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|characteristic| &characteristic["iid"]),
+        );
+        for iid in iids {
+            let iid = iid.as_u64().unwrap();
+            assert!(seen.insert(iid), "iid {iid} is used twice in {value}");
+        }
+    }
+}

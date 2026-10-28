@@ -102,8 +102,10 @@ pub async fn build(
     .to_service(1, device.aid)
     .map_err(|error| anyhow!("{error}"))?;
 
-    let television_id = 2 + info.get_characteristics().len() as u64;
-    let mut television = TelevisionService::new(television_id, device.aid);
+    // Fixed iid slots. hap gives optional characteristics fixed offsets even
+    // when absent (the information service reaches 14, the television 33), so
+    // counting the characteristics that are present lands on taken iids.
+    let mut television = TelevisionService::new(20, device.aid);
     television.set_primary(true);
     television.display_order = None;
     television.closed_captions = None;
@@ -129,8 +131,7 @@ pub async fn build(
         set_text(name, &device.name).await?;
     }
 
-    let speaker_id = television_id + 1 + television.get_characteristics().len() as u64;
-    let mut speaker = SpeakerService::new(speaker_id, device.aid);
+    let mut speaker = SpeakerService::new(40, device.aid);
     speaker.volume = None;
     speaker.active = None;
     hook_bool(&mut speaker.mute, suppress, tx, |_| Command::Mute);
@@ -143,7 +144,7 @@ pub async fn build(
         hook_u8(selector, suppress, tx, Command::Volume);
     }
 
-    let mut next = speaker_id + 1 + speaker.get_characteristics().len() as u64;
+    let mut next = 50;
     let mut inputs = Vec::new();
     for input in [
         Input::Art,
@@ -187,7 +188,7 @@ pub async fn build(
                 .await
                 .map_err(|error| anyhow!("{error}"))?;
         }
-        next += 1 + source.get_characteristics().len() as u64;
+        next += 10;
         inputs.push(source);
     }
     television.set_linked_services(inputs.iter().map(|source| source.get_id()).collect());
@@ -242,4 +243,25 @@ pub async fn apply(accessory: &mut dyn HapAccessory, view: &View) -> Result<()> 
         .await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hapset::assert_unique_iids;
+
+    #[tokio::test]
+    async fn iids_are_unique() {
+        let device = FrameDevice {
+            aid: 2,
+            name: "Television".into(),
+            model: "QE00LS03D".into(),
+            host: "10.0.0.2".into(),
+            mac: "00:11:22:33:44:55".into(),
+            token: String::new(),
+        };
+        let suppress = Arc::new(AtomicBool::new(false));
+        let (tx, _rx) = mpsc::channel(4);
+        assert_unique_iids(&build(&device, &suppress, &tx).await.unwrap());
+    }
 }
