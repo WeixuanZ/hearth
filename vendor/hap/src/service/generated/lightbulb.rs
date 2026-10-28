@@ -206,7 +206,10 @@ impl Serialize for LightbulbService {
         state.serialize_field("hidden", &self.get_hidden())?;
         state.serialize_field("primary", &self.get_primary())?;
         state.serialize_field("characteristics", &self.get_characteristics())?;
-        // linked services left out for now
+        let linked = self.get_linked_services();
+        if !linked.is_empty() {
+            state.serialize_field("linked", &linked)?;
+        }
         state.end()
     }
 }

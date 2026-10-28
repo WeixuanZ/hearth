@@ -26,7 +26,7 @@ pub enum Device {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DysonDevice {
-    /// First HomeKit accessory id. The fan uses this and the next three.
+    /// HomeKit accessory id. The fan and its switches are one accessory.
     #[serde(default)]
     pub aid: u64,
     pub name: String,
@@ -85,7 +85,7 @@ impl Device {
     /// How many accessory ids this connector consumes, starting at `aid`.
     pub fn aid_span(&self) -> u64 {
         match self {
-            Self::Dyson(_) => 4,
+            Self::Dyson(_) => 1,
             Self::Frame(_) => 1,
         }
     }
@@ -425,6 +425,6 @@ mod tests {
             }),
         ];
         assert!(assign_aids(&mut devices));
-        assert_eq!(devices[1].aid(), 6);
+        assert_eq!(devices[1].aid(), 3);
     }
 }

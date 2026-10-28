@@ -8,7 +8,7 @@ mod mqtt;
 mod protocol;
 
 use crate::config::{self, DysonDevice};
-use accessory::{apply_purifier, apply_switch, build_purifier, named_switch};
+use accessory::{apply_purifier, build_purifier};
 use anyhow::{anyhow, Context, Result};
 use hap::server::{IpServer, Server};
 use protocol::{
@@ -92,45 +92,8 @@ pub async fn spawn(device: DysonDevice, server: IpServer) -> Result<()> {
     let (intent_tx, intent_rx) = mpsc::channel::<Intent>(32);
     let (state_tx, state_rx) = watch::channel(MachineState::default());
     let suppress = Arc::new(AtomicBool::new(false));
-    let aid = device.aid;
     let purifier = server
-        .add_accessory(build_purifier(&device, &suppress, &intent_tx)?)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    let night = server
-        .add_accessory(named_switch(
-            aid + 1,
-            &device,
-            "Night mode",
-            "-night",
-            &suppress,
-            &intent_tx,
-            Intent::Night,
-        )?)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    let focus = server
-        .add_accessory(named_switch(
-            aid + 2,
-            &device,
-            "Focused jet",
-            "-focus",
-            &suppress,
-            &intent_tx,
-            Intent::Focus,
-        )?)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    let monitor = server
-        .add_accessory(named_switch(
-            aid + 3,
-            &device,
-            "Keep sensing",
-            "-sense",
-            &suppress,
-            &intent_tx,
-            Intent::Monitor,
-        )?)
+        .add_accessory(build_purifier(&device, &suppress, &intent_tx).await?)
         .await
         .map_err(|error| anyhow!("{error}"))?;
 
@@ -142,9 +105,6 @@ pub async fn spawn(device: DysonDevice, server: IpServer) -> Result<()> {
                 suppress.store(true, Ordering::SeqCst);
                 let result = async {
                     apply_purifier(purifier.lock().await.as_mut(), &current).await?;
-                    apply_switch(night.lock().await.as_mut(), current.night).await?;
-                    apply_switch(focus.lock().await.as_mut(), current.focus).await?;
-                    apply_switch(monitor.lock().await.as_mut(), current.monitoring).await?;
                     Ok::<(), anyhow::Error>(())
                 }
                 .await;

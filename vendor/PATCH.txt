@@ -1,3 +1,7 @@
 vendor/hap is ewilken/hap-rs v0.1.0-pre.15 (commit b13bf31).
-The only change is swapping get_if_addrs for if-addrs, so the crate links the
-system ifaddrs library once. See src/config.rs get_local_ip.
+Changes from upstream:
+- Swap get_if_addrs for if-addrs, so the crate links the system ifaddrs
+  library once. See src/config.rs get_local_ip.
+- Every service sends its linked services to Home ("linked"), when it has
+  any. Upstream left them out, so Home could not group linked services.
+- Clear the Rust warnings the crate raises.

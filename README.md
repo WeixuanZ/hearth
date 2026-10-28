@@ -94,13 +94,13 @@ System Settings → Energy is the other way to keep a Mac awake.
 
 **Heat.** Some fan firmware ignores heat commands that did not come from the infrared remote. If Home's heat control snaps back to off, the fan refused it. Set `heating = false` on that device to hide the control.
 
-**Art mode.** It is a separate channel from the remote. On some 2024 firmware that channel never answers. Hearth then does what the Frame's own power button does: one press from a source enters art, one press in art leaves it. If Home's Art input and the screen disagree, that is the set.
+**Art mode.** In Home, off is art and on is the picture, as on the Frame's own remote. Art mode is a separate channel from the remote. On some 2024 firmware that channel never answers. Hearth then does what the Frame's own power button does: one press from a source enters art, one press in art leaves it. If Home's Art input and the screen disagree, that is the set.
 
 Off sends the TV's power-off key, which is standby, not art. On sends a wake packet to the MAC address learned while the TV was on, then the power key if it is still dark. If the TV is fully off, `hearth status` cannot see it. Pairing and the art channel both need the panel awake.
 
 ## Adding a connector
 
-A connector is a module under `src/` and a `kind` in the config. It borrows a block of HomeKit accessory ids (`aid`; the fan uses four, the Frame uses one) and adds its accessories in `src/bridge.rs`. The bridge does not know how a device works.
+A connector is a module under `src/` and a `kind` in the config. It borrows a block of HomeKit accessory ids (`aid`; the fan and the Frame use one each) and adds its accessories in `src/bridge.rs`. The bridge does not know how a device works.
 
 ```toml
 [[devices]]

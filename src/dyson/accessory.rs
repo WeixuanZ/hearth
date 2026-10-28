@@ -1,8 +1,9 @@
-//! The purifier, as HomeKit accessories on the shared bridge.
+//! The purifier, as one HomeKit accessory on the shared bridge.
 //!
-//! The bridge carries the purifier (fan, air quality, humidity, heat) plus three
-//! switches Home has no other place for: night mode, the focused jet, and
-//! sensing while the fan is off.
+//! It carries the fan, air quality, humidity and heat, plus three switches Home
+//! has no other place for: night mode, the focused jet, and sensing while the
+//! fan is off. The switches are linked to the fan, so Home shows them inside it
+//! rather than as separate tiles.
 
 use super::protocol::{air_quality, percent_to_speed, speed_to_percent, Intent, MachineState};
 use crate::{
@@ -11,7 +12,8 @@ use crate::{
 };
 use anyhow::{anyhow, Result};
 use hap::{
-    accessory::{switch::SwitchAccessory, AccessoryInformation, HapAccessory},
+    accessory::{AccessoryInformation, HapAccessory},
+    characteristic::HapCharacteristic,
     service::{
         accessory_information::AccessoryInformationService, air_purifier::AirPurifierService,
         air_quality_sensor::AirQualitySensorService, filter_maintenance::FilterMaintenanceService,
@@ -33,7 +35,13 @@ pub(super) struct PurifierAccessory {
     heater: Option<HeaterCoolerService>,
     temperature: Option<TemperatureSensorService>,
     filter: FilterMaintenanceService,
+    switches: Vec<SwitchService>,
 }
+
+/// Service iids of the switches. Each switch spans three iids.
+const NIGHT: u64 = 170;
+const FOCUS: u64 = 180;
+const SENSE: u64 = 190;
 
 impl HapAccessory for PurifierAccessory {
     fn get_id(&self) -> u64 {
@@ -66,6 +74,7 @@ impl HapAccessory for PurifierAccessory {
         if let Some(temperature) = &self.temperature {
             services.push(temperature);
         }
+        services.extend(self.switches.iter().map(|switch| switch as &dyn HapService));
         services
     }
     fn get_mut_services(&mut self) -> Vec<&mut dyn HapService> {
@@ -82,6 +91,11 @@ impl HapAccessory for PurifierAccessory {
         if let Some(temperature) = &mut self.temperature {
             services.push(temperature);
         }
+        services.extend(
+            self.switches
+                .iter_mut()
+                .map(|switch| switch as &mut dyn HapService),
+        );
         services
     }
 }
@@ -95,24 +109,15 @@ impl Serialize for PurifierAccessory {
     }
 }
 
-fn info(device: &DysonDevice, name: &str, suffix: &str) -> AccessoryInformation {
-    AccessoryInformation {
-        name: name.into(),
-        manufacturer: "Dyson".into(),
-        model: device.model.clone(),
-        serial_number: format!("{}{suffix}", device.serial),
-        firmware_revision: Some("1.0".into()),
-        ..Default::default()
-    }
-}
-
-pub(super) fn build_purifier(
+pub(super) async fn build_purifier(
     device: &DysonDevice,
     suppress: &Arc<AtomicBool>,
     tx: &mpsc::Sender<Intent>,
 ) -> Result<PurifierAccessory> {
-    let mut purifier = AirPurifierService::new(20, 2);
+    let aid = device.aid;
+    let mut purifier = AirPurifierService::new(20, aid);
     purifier.set_primary(true);
+    purifier.set_linked_services(vec![NIGHT, FOCUS, SENSE]);
     purifier.lock_physical_controls = None;
     hook_u8(&mut purifier.active, suppress, tx, |value| {
         Intent::Power(value == 1)
@@ -132,7 +137,7 @@ pub(super) fn build_purifier(
         hook_u8(swing, suppress, tx, |value| Intent::Swing(value == 1));
     }
 
-    let mut air = AirQualitySensorService::new(40, 2);
+    let mut air = AirQualitySensorService::new(40, aid);
     air.nitrogen_dioxide_density = None;
     air.ozone_density = None;
     air.sulphur_dioxide_density = None;
@@ -141,13 +146,13 @@ pub(super) fn build_purifier(
     air.status_low_battery = None;
     air.status_tampered = None;
 
-    let mut humidity = HumiditySensorService::new(70, 2);
+    let mut humidity = HumiditySensorService::new(70, aid);
     humidity.status_fault = None;
     humidity.status_low_battery = None;
     humidity.status_tampered = None;
 
     let (heater, temperature) = if device.heating {
-        let mut heater = HeaterCoolerService::new(100, 2);
+        let mut heater = HeaterCoolerService::new(100, aid);
         heater.lock_physical_controls = None;
         heater.rotation_speed = None;
         heater.swing_mode = None;
@@ -166,45 +171,60 @@ pub(super) fn build_purifier(
         }
         (Some(heater), None)
     } else {
-        let mut temperature = TemperatureSensorService::new(100, 2);
+        let mut temperature = TemperatureSensorService::new(100, aid);
         temperature.status_fault = None;
         temperature.status_low_battery = None;
         temperature.status_tampered = None;
         (None, Some(temperature))
     };
 
-    let mut filter = FilterMaintenanceService::new(140, 2);
+    let mut filter = FilterMaintenanceService::new(140, aid);
     filter.filter_reset_change_indication = None;
 
+    let switches = vec![
+        switch(NIGHT, aid, "Night mode", suppress, tx, Intent::Night).await?,
+        switch(FOCUS, aid, "Focused jet", suppress, tx, Intent::Focus).await?,
+        switch(SENSE, aid, "Keep sensing", suppress, tx, Intent::Monitor).await?,
+    ];
+
     Ok(PurifierAccessory {
-        id: device.aid,
-        info: info(device, &device.name, "")
-            .to_service(1, device.aid)
-            .map_err(|error| anyhow!("{error}"))?,
+        id: aid,
+        info: AccessoryInformation {
+            name: device.name.clone(),
+            manufacturer: "Dyson".into(),
+            model: device.model.clone(),
+            serial_number: device.serial.clone(),
+            firmware_revision: Some("1.0".into()),
+            ..Default::default()
+        }
+        .to_service(1, aid)
+        .map_err(|error| anyhow!("{error}"))?,
         purifier,
         air,
         humidity,
         heater,
         temperature,
         filter,
+        switches,
     })
 }
 
-pub(super) fn named_switch(
-    id: u64,
-    device: &DysonDevice,
+async fn switch(
+    iid: u64,
+    aid: u64,
     name: &str,
-    suffix: &str,
     suppress: &Arc<AtomicBool>,
     tx: &mpsc::Sender<Intent>,
     make: impl Fn(bool) -> Intent + Send + Sync + 'static,
-) -> Result<SwitchAccessory> {
-    let mut switch =
-        SwitchAccessory::new(id, info(device, name, suffix)).map_err(|error| anyhow!("{error}"))?;
-    // hap puts the switch right after the information service, at iid 8, but
-    // the firmware revision sits at a fixed iid 10. Home rejects the clash.
-    switch.switch = SwitchService::new(20, id);
-    hook_bool(&mut switch.switch.power_state, suppress, tx, make);
+) -> Result<SwitchService> {
+    let mut switch = SwitchService::new(iid, aid);
+    if let Some(label) = switch.name.as_mut() {
+        label
+            .set_value(serde_json::json!(name))
+            .await
+            .map_err(|error| anyhow!("{error}"))?;
+    }
+    hook_bool(&mut switch.power_state, suppress, tx, make);
     Ok(switch)
 }
 
@@ -379,17 +399,32 @@ pub(super) async fn apply_purifier(
         )
         .await?;
     }
+
+    for (iid, on) in [
+        (NIGHT, state.night),
+        (FOCUS, state.focus),
+        (SENSE, state.monitoring),
+    ] {
+        put_switch(accessory, iid, on).await?;
+    }
     Ok(())
 }
 
-pub(super) async fn apply_switch(accessory: &mut dyn HapAccessory, on: bool) -> Result<()> {
-    put(
-        accessory,
-        HapType::Switch,
-        HapType::PowerState,
-        serde_json::json!(on),
-    )
-    .await
+/// The switches share a service type, so they are found by iid.
+async fn put_switch(accessory: &mut dyn HapAccessory, iid: u64, on: bool) -> Result<()> {
+    let service = accessory
+        .get_mut_services()
+        .into_iter()
+        .find(|service| service.get_id() == iid);
+    if let Some(power) =
+        service.and_then(|service| service.get_mut_characteristic(HapType::PowerState))
+    {
+        power
+            .set_value(serde_json::json!(on))
+            .await
+            .map_err(|error| anyhow!("{error}"))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -397,8 +432,8 @@ mod tests {
     use super::*;
     use crate::hapset::assert_unique_iids;
 
-    #[test]
-    fn iids_are_unique() {
+    #[tokio::test]
+    async fn iids_are_unique() {
         let mut device = DysonDevice {
             aid: 3,
             name: "Purifier".into(),
@@ -412,11 +447,49 @@ mod tests {
         };
         let suppress = Arc::new(AtomicBool::new(false));
         let (tx, _rx) = mpsc::channel(4);
-        assert_unique_iids(&build_purifier(&device, &suppress, &tx).unwrap());
-        assert_unique_iids(
-            &named_switch(4, &device, "Night", "-night", &suppress, &tx, Intent::Night).unwrap(),
-        );
+        assert_unique_iids(&build_purifier(&device, &suppress, &tx).await.unwrap());
         device.heating = false;
-        assert_unique_iids(&build_purifier(&device, &suppress, &tx).unwrap());
+        assert_unique_iids(&build_purifier(&device, &suppress, &tx).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn switches_live_in_the_purifier() {
+        let device = DysonDevice {
+            aid: 3,
+            name: "Purifier".into(),
+            serial: "ABC-DE-FGH1234A".into(),
+            model: "XY01".into(),
+            product_type: "000X".into(),
+            mqtt_password: "x".into(),
+            host: String::new(),
+            port: 1883,
+            heating: true,
+        };
+        let suppress = Arc::new(AtomicBool::new(false));
+        let (tx, _rx) = mpsc::channel(4);
+        let mut purifier = build_purifier(&device, &suppress, &tx).await.unwrap();
+        let state = MachineState {
+            focus: true,
+            ..Default::default()
+        };
+        apply_purifier(&mut purifier, &state).await.unwrap();
+
+        let value = serde_json::to_value(&purifier).unwrap();
+        let services = value["services"].as_array().unwrap();
+        let fan = services
+            .iter()
+            .find(|service| service["iid"] == 20)
+            .unwrap();
+        assert_eq!(fan["linked"], serde_json::json!([NIGHT, FOCUS, SENSE]));
+        let power = |iid: u64| {
+            let service = services
+                .iter()
+                .find(|service| service["iid"] == iid)
+                .unwrap();
+            service["characteristics"][0]["value"].clone()
+        };
+        assert_eq!(power(NIGHT), serde_json::json!(false));
+        assert_eq!(power(FOCUS), serde_json::json!(true));
+        assert_eq!(power(SENSE), serde_json::json!(false));
     }
 }
