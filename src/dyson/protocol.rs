@@ -25,7 +25,7 @@ pub enum Intent {
     HeatTargetC(f32),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MachineState {
     pub power_on: bool,
     pub auto: bool,
@@ -49,33 +49,6 @@ pub struct MachineState {
     pub hcho_mg_m3: Option<f32>,
     pub hepa_life: Option<u8>,
     pub topic_prefix: Option<String>,
-}
-
-impl Default for MachineState {
-    fn default() -> Self {
-        Self {
-            power_on: false,
-            auto: false,
-            speed: None,
-            oscillating: false,
-            oscillation_extended: false,
-            night: false,
-            focus: false,
-            monitoring: false,
-            heat_on: false,
-            heating_now: false,
-            heat_target_c: None,
-            temperature_c: None,
-            humidity: None,
-            pm25: None,
-            pm10: None,
-            voc_index: None,
-            no2_index: None,
-            hcho_mg_m3: None,
-            hepa_life: None,
-            topic_prefix: None,
-        }
-    }
 }
 
 /// Apple Home's air-quality scale: 0 unknown, 1 excellent … 5 poor.
@@ -452,8 +425,10 @@ mod tests {
 
     #[test]
     fn speed_and_heat_commands() {
-        let mut state = MachineState::default();
-        state.oscillation_extended = true;
+        let state = MachineState {
+            oscillation_extended: true,
+            ..MachineState::default()
+        };
         let fields = intent_fields(&state, &Intent::Swing(false));
         assert_eq!(fields, vec![("oson", "OIOF".into())]);
         let fields = intent_fields(&state, &Intent::Speed(10));

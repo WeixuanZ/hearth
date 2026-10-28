@@ -56,7 +56,7 @@ mod tests {
     fn round_trip_backspace_padding() {
         let json = br#"{"apPasswordHash":"local-secret"}"#;
         let mut padded = json.to_vec();
-        while padded.len() % 16 != 0 {
+        while !padded.len().is_multiple_of(16) {
             padded.push(0x08);
         }
         let mut buf = padded.clone();

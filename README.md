@@ -76,6 +76,17 @@ Use this or the launch agent, not both. The agent restarts the bridge as soon as
 
 The app has no Dock icon. To open it at login, add Hearth.app in System Settings → General → Login Items.
 
+## Releases
+
+Pull requests and pushes to `main` are formatted, linted, and tested. The menu bar is compiled on macOS as well.
+
+A release is a tag whose name matches the version in `Cargo.toml`. For 0.2.0 that tag is `v0.2.0`. The tag build publishes the bridge for Linux x86_64, Linux aarch64, macOS Apple silicon, and macOS Intel, plus the menu bar app and a checksum file.
+
+```sh
+git tag v0.2.0
+git push origin v0.2.0
+```
+
 ## Keep it running
 
 The computer must not be asleep, or Home shows the accessories as not responding. On a Mac, System Settings → Energy, or a launch agent:
