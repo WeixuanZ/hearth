@@ -7,7 +7,9 @@ use super::crypto::decrypt_local_credentials;
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 
-const USER_AGENT: &str = "android client";
+/// The HTTP client the MyDyson Android app uses. Since October 2026, Dyson's
+/// Cloudflare answers the login with 429 for the old "android client".
+const USER_AGENT: &str = "okhttp/4.12.0";
 
 fn api_host(country: &str) -> &'static str {
     if country.eq_ignore_ascii_case("CN") {
@@ -27,6 +29,25 @@ fn culture(country: &str) -> &'static str {
     }
 }
 
+/// Turns Dyson's 429 into advice. It can mean too many attempts, or that
+/// Cloudflare blocked the request outright, so waiting may not help.
+fn throttled(response: reqwest::Response) -> Result<reqwest::Response> {
+    if response.status() != reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return Ok(response);
+    }
+    let wait = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(|seconds| format!(" Dyson asks to wait {seconds} seconds."))
+        .unwrap_or_default();
+    Err(anyhow!(
+        "Dyson refused the request with 429 Too Many Requests.{wait} \
+         If waiting does not help, Dyson may be blocking this client"
+    ))
+}
+
 #[derive(Debug, Clone)]
 pub struct CloudDevice {
     pub name: String,
@@ -36,12 +57,17 @@ pub struct CloudDevice {
     pub mqtt_password: String,
 }
 
-pub async fn login(
-    email: &str,
-    password: &str,
-    country: &str,
-    otp: &str,
-) -> Result<Vec<CloudDevice>> {
+/// A login started with [`request_code`]. Dyson has emailed the code.
+pub struct Challenge {
+    client: reqwest::Client,
+    host: &'static str,
+    country: String,
+    email: String,
+    challenge_id: String,
+}
+
+/// Checks the account and asks Dyson to email a login code.
+pub async fn request_code(email: &str, country: &str) -> Result<Challenge> {
     let country = country.trim().to_ascii_uppercase();
     if country.len() != 2 {
         return Err(anyhow!("country must be a two-letter code, like GB"));
@@ -57,7 +83,8 @@ pub async fn login(
         .get(&provision)
         .send()
         .await
-        .context("could not reach the Dyson account service")?
+        .context("could not reach the Dyson account service")
+        .and_then(throttled)?
         .error_for_status()
         .context("Dyson rejected the provisioning call")?;
 
@@ -67,7 +94,8 @@ pub async fn login(
         .json(&serde_json::json!({ "email": email }))
         .send()
         .await
-        .context("could not check the MyDyson account")?
+        .context("could not check the MyDyson account")
+        .and_then(throttled)?
         .error_for_status()
         .context("MyDyson rejected that email")?
         .json()
@@ -89,7 +117,8 @@ pub async fn login(
         .json(&serde_json::json!({ "email": email }))
         .send()
         .await
-        .context("could not request the email code")?
+        .context("could not request the email code")
+        .and_then(throttled)?
         .error_for_status()
         .context("Dyson would not send a login code. Wait a few minutes and try again")?
         .json()
@@ -97,7 +126,27 @@ pub async fn login(
     let challenge_id = challenge
         .get("challengeId")
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("Dyson did not return a login challenge"))?;
+        .ok_or_else(|| anyhow!("Dyson did not return a login challenge"))?
+        .to_owned();
+
+    Ok(Challenge {
+        client,
+        host,
+        country,
+        email: email.to_owned(),
+        challenge_id,
+    })
+}
+
+/// Finishes the login with the emailed code and lists the account's fans.
+pub async fn verify(challenge: Challenge, password: &str, otp: &str) -> Result<Vec<CloudDevice>> {
+    let Challenge {
+        client,
+        host,
+        country,
+        email,
+        challenge_id,
+    } = challenge;
 
     let verify = client
         .post(format!("{host}/v3/userregistration/email/verify"))
@@ -113,7 +162,8 @@ pub async fn login(
         }))
         .send()
         .await
-        .context("could not check the email code")?;
+        .context("could not check the email code")
+        .and_then(throttled)?;
     if verify.status() == reqwest::StatusCode::UNAUTHORIZED
         || verify.status() == reqwest::StatusCode::BAD_REQUEST
     {
@@ -136,7 +186,8 @@ pub async fn login(
         .bearer_auth(token)
         .send()
         .await
-        .context("could not list devices on the account")?
+        .context("could not list devices on the account")
+        .and_then(throttled)?
         .error_for_status()?
         .json()
         .await?;

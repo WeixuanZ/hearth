@@ -27,10 +27,11 @@ use tokio::sync::{mpsc, watch};
 pub use cloud::CloudDevice;
 
 pub async fn login(email: String, country: String, serial: Option<String>) -> Result<()> {
+    let challenge = cloud::request_code(&email, &country).await?;
+    println!("Dyson has emailed a code to {email}.");
     let password = rpassword::prompt_password("MyDyson password: ")?;
-    println!("Dyson is emailing a code to {email}.");
     let otp = crate::prompt("Email code: ")?;
-    let devices = cloud::login(&email, &password, &country, &otp).await?;
+    let devices = cloud::verify(challenge, &password, &otp).await?;
     let device = choose(devices, serial)?;
 
     let mut saved = config::load_or_new()?;
