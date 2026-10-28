@@ -13,6 +13,12 @@ use hap::{
     storage::{FileStorage, Storage},
     Config as HapConfig, MacAddress, Pin,
 };
+use std::net::{IpAddr, Ipv6Addr};
+
+/// Listen on every address. hap picks the first interface address, often an
+/// IPv6 one, while mDNS advertises them all, so Home may dial one we ignore.
+/// On macOS `[::]` takes IPv4 too.
+const LISTEN_ON: IpAddr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
 
 pub async fn serve(config: Config) -> Result<()> {
     status::begin(&config);
@@ -65,7 +71,7 @@ async fn open(config: &Config) -> Result<IpServer> {
         Pin::new(config::parse_pin(&config.homekit_pin)?).map_err(|error| anyhow!("{error}"))?;
     let hap_config = match storage.load_config().await {
         Ok(mut existing) => {
-            existing.redetermine_local_ip();
+            existing.host = LISTEN_ON;
             existing.name = config.name.clone();
             existing.category = AccessoryCategory::Bridge;
             storage
@@ -77,6 +83,7 @@ async fn open(config: &Config) -> Result<IpServer> {
         Err(_) => {
             let created = HapConfig {
                 pin,
+                host: LISTEN_ON,
                 name: config.name.clone(),
                 device_id: MacAddress::new(device_id(&config.bridge_id)),
                 category: AccessoryCategory::Bridge,
