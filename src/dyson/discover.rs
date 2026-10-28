@@ -42,6 +42,6 @@ pub async fn find_host(serial: &str, wait: Duration) -> Result<String> {
     }
     let _ = mdns.shutdown();
     Err(anyhow!(
-        "could not find {serial} on the network. Put its address in host in the config, and check the Mac is on the same Wi-Fi"
+        "could not find {serial} on the network. Put its address in host in the config, and check this machine is on the same Wi-Fi"
     ))
 }

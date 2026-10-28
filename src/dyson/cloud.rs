@@ -3,7 +3,7 @@
 //! The account password is sent to Dyson over HTTPS and is not written to disk.
 //! What gets saved is the decrypted per-device password the fan already trusts.
 
-use crate::crypto::decrypt_local_credentials;
+use super::crypto::decrypt_local_credentials;
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 

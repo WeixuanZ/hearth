@@ -1,40 +1,30 @@
-//! The purifier, as one HomeKit bridge.
+//! The purifier, as HomeKit accessories on the shared bridge.
 //!
-//! Apple Home will only show a device that stays on the LAN and speaks HomeKit.
-//! This process is that device. The bridge carries the purifier (fan, air
-//! quality, humidity, heat) plus three switches Home has no other place for:
-//! night mode, the focused jet, and sensing while the fan is off.
+//! The bridge carries the purifier (fan, air quality, humidity, heat) plus three
+//! switches Home has no other place for: night mode, the focused jet, and
+//! sensing while the fan is off.
 
+use super::protocol::{air_quality, percent_to_speed, speed_to_percent, Intent, MachineState};
 use crate::{
-    config::{self, Config},
-    protocol::{air_quality, percent_to_speed, speed_to_percent, Intent, MachineState},
+    config::DysonDevice,
+    hapset::{hook_bool, hook_f32, hook_u8, put},
 };
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use hap::{
-    accessory::{
-        bridge::BridgeAccessory, switch::SwitchAccessory, AccessoryCategory, AccessoryInformation,
-        HapAccessory,
-    },
-    characteristic::CharacteristicCallbacks,
-    server::{IpServer, Server},
+    accessory::{switch::SwitchAccessory, AccessoryInformation, HapAccessory},
     service::{
         accessory_information::AccessoryInformationService, air_purifier::AirPurifierService,
         air_quality_sensor::AirQualitySensorService, filter_maintenance::FilterMaintenanceService,
         heater_cooler::HeaterCoolerService, humidity_sensor::HumiditySensorService,
         temperature_sensor::TemperatureSensorService, HapService,
     },
-    storage::{FileStorage, Storage},
-    Config as HapConfig, HapType, MacAddress, Pin,
+    HapType,
 };
 use serde::ser::{Serialize, SerializeStruct, Serializer};
-use sha2::{Digest, Sha256};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use tokio::sync::{mpsc, watch};
+use std::sync::{atomic::AtomicBool, Arc};
+use tokio::sync::mpsc;
 
-struct PurifierAccessory {
+pub(super) struct PurifierAccessory {
     id: u64,
     info: AccessoryInformationService,
     purifier: AirPurifierService,
@@ -105,75 +95,19 @@ impl Serialize for PurifierAccessory {
     }
 }
 
-fn device_id(serial: &str) -> [u8; 6] {
-    let digest = Sha256::digest(serial.as_bytes());
-    let mut mac = [0u8; 6];
-    mac.copy_from_slice(&digest[..6]);
-    mac[0] = (mac[0] | 0x02) & 0xFE;
-    mac
-}
-
-fn hook_u8(
-    characteristic: &mut impl CharacteristicCallbacks<u8>,
-    suppress: &Arc<AtomicBool>,
-    tx: &mpsc::Sender<Intent>,
-    make: impl Fn(u8) -> Intent + Send + Sync + 'static,
-) {
-    let suppress = suppress.clone();
-    let tx = tx.clone();
-    characteristic.on_update(Some(move |_old: &u8, new: &u8| {
-        if !suppress.load(Ordering::SeqCst) {
-            let _ = tx.try_send(make(*new));
-        }
-        Ok(())
-    }));
-}
-
-fn hook_bool(
-    characteristic: &mut impl CharacteristicCallbacks<bool>,
-    suppress: &Arc<AtomicBool>,
-    tx: &mpsc::Sender<Intent>,
-    make: impl Fn(bool) -> Intent + Send + Sync + 'static,
-) {
-    let suppress = suppress.clone();
-    let tx = tx.clone();
-    characteristic.on_update(Some(move |_old: &bool, new: &bool| {
-        if !suppress.load(Ordering::SeqCst) {
-            let _ = tx.try_send(make(*new));
-        }
-        Ok(())
-    }));
-}
-
-fn hook_f32(
-    characteristic: &mut impl CharacteristicCallbacks<f32>,
-    suppress: &Arc<AtomicBool>,
-    tx: &mpsc::Sender<Intent>,
-    make: impl Fn(f32) -> Intent + Send + Sync + 'static,
-) {
-    let suppress = suppress.clone();
-    let tx = tx.clone();
-    characteristic.on_update(Some(move |old: &f32, new: &f32| {
-        if !suppress.load(Ordering::SeqCst) && (old - new).abs() >= 0.2 {
-            let _ = tx.try_send(make(*new));
-        }
-        Ok(())
-    }));
-}
-
-fn info(config: &Config, name: &str, suffix: &str) -> AccessoryInformation {
+fn info(device: &DysonDevice, name: &str, suffix: &str) -> AccessoryInformation {
     AccessoryInformation {
         name: name.into(),
         manufacturer: "Dyson".into(),
-        model: config.model.clone(),
-        serial_number: format!("{}{suffix}", config.serial),
+        model: device.model.clone(),
+        serial_number: format!("{}{suffix}", device.serial),
         firmware_revision: Some("1.0".into()),
         ..Default::default()
     }
 }
 
-fn build_purifier(
-    config: &Config,
+pub(super) fn build_purifier(
+    device: &DysonDevice,
     suppress: &Arc<AtomicBool>,
     tx: &mpsc::Sender<Intent>,
 ) -> Result<PurifierAccessory> {
@@ -212,7 +146,7 @@ fn build_purifier(
     humidity.status_low_battery = None;
     humidity.status_tampered = None;
 
-    let (heater, temperature) = if config.heating {
+    let (heater, temperature) = if device.heating {
         let mut heater = HeaterCoolerService::new(100, 2);
         heater.lock_physical_controls = None;
         heater.rotation_speed = None;
@@ -243,9 +177,9 @@ fn build_purifier(
     filter.filter_reset_change_indication = None;
 
     Ok(PurifierAccessory {
-        id: 2,
-        info: info(config, &config.name, "")
-            .to_service(1, 2)
+        id: device.aid,
+        info: info(device, &device.name, "")
+            .to_service(1, device.aid)
             .map_err(|error| anyhow!("{error}"))?,
         purifier,
         air,
@@ -256,9 +190,9 @@ fn build_purifier(
     })
 }
 
-fn named_switch(
+pub(super) fn named_switch(
     id: u64,
-    config: &Config,
+    device: &DysonDevice,
     name: &str,
     suffix: &str,
     suppress: &Arc<AtomicBool>,
@@ -266,30 +200,15 @@ fn named_switch(
     make: impl Fn(bool) -> Intent + Send + Sync + 'static,
 ) -> Result<SwitchAccessory> {
     let mut switch =
-        SwitchAccessory::new(id, info(config, name, suffix)).map_err(|error| anyhow!("{error}"))?;
+        SwitchAccessory::new(id, info(device, name, suffix)).map_err(|error| anyhow!("{error}"))?;
     hook_bool(&mut switch.switch.power_state, suppress, tx, make);
     Ok(switch)
 }
 
-async fn put(
+pub(super) async fn apply_purifier(
     accessory: &mut dyn HapAccessory,
-    service: HapType,
-    kind: HapType,
-    value: serde_json::Value,
+    state: &MachineState,
 ) -> Result<()> {
-    let Some(service) = accessory.get_mut_service(service) else {
-        return Ok(());
-    };
-    if let Some(characteristic) = service.get_mut_characteristic(kind) {
-        characteristic
-            .set_value(value)
-            .await
-            .map_err(|error| anyhow!("{error}"))?;
-    }
-    Ok(())
-}
-
-async fn apply_purifier(accessory: &mut dyn HapAccessory, state: &MachineState) -> Result<()> {
     let on = if state.power_on { 1 } else { 0 };
     put(
         accessory,
@@ -460,7 +379,7 @@ async fn apply_purifier(accessory: &mut dyn HapAccessory, state: &MachineState) 
     Ok(())
 }
 
-async fn apply_switch(accessory: &mut dyn HapAccessory, on: bool) -> Result<()> {
+pub(super) async fn apply_switch(accessory: &mut dyn HapAccessory, on: bool) -> Result<()> {
     put(
         accessory,
         HapType::Switch,
@@ -468,129 +387,4 @@ async fn apply_switch(accessory: &mut dyn HapAccessory, on: bool) -> Result<()> 
         serde_json::json!(on),
     )
     .await
-}
-
-pub async fn serve(
-    config: Config,
-    mut states: watch::Receiver<MachineState>,
-    intents: mpsc::Sender<Intent>,
-) -> Result<()> {
-    let suppress = Arc::new(AtomicBool::new(false));
-    let bridge = BridgeAccessory::new(1, info(&config, &config.name, "-bridge"))
-        .map_err(|error| anyhow!("{error}"))?;
-    let purifier = build_purifier(&config, &suppress, &intents)?;
-    let night = named_switch(
-        3,
-        &config,
-        "Night mode",
-        "-night",
-        &suppress,
-        &intents,
-        Intent::Night,
-    )?;
-    let focus = named_switch(
-        4,
-        &config,
-        "Focused jet",
-        "-focus",
-        &suppress,
-        &intents,
-        Intent::Focus,
-    )?;
-    let monitor = named_switch(
-        5,
-        &config,
-        "Keep sensing",
-        "-sense",
-        &suppress,
-        &intents,
-        Intent::Monitor,
-    )?;
-
-    let dir = config::homekit_dir()?;
-    std::fs::create_dir_all(&dir)?;
-    let mut storage = FileStorage::new(dir.to_str().context("homekit path")?)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    let pin =
-        Pin::new(config::parse_pin(&config.homekit_pin)?).map_err(|error| anyhow!("{error}"))?;
-    let hap_config = match storage.load_config().await {
-        Ok(mut existing) => {
-            existing.redetermine_local_ip();
-            existing.name = config.name.clone();
-            existing.category = AccessoryCategory::Bridge;
-            storage
-                .save_config(&existing)
-                .await
-                .map_err(|error| anyhow!("{error}"))?;
-            existing
-        }
-        Err(_) => {
-            let created = HapConfig {
-                pin,
-                name: config.name.clone(),
-                device_id: MacAddress::new(device_id(&config.serial)),
-                category: AccessoryCategory::Bridge,
-                ..Default::default()
-            };
-            storage
-                .save_config(&created)
-                .await
-                .map_err(|error| anyhow!("{error}"))?;
-            created
-        }
-    };
-
-    let server = IpServer::new(hap_config, storage)
-        .await
-        .map_err(|error| anyhow!("HomeKit server failed to start: {error}"))?;
-    server
-        .add_accessory(bridge)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    let purifier = server
-        .add_accessory(purifier)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    let night = server
-        .add_accessory(night)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    let focus = server
-        .add_accessory(focus)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    let monitor = server
-        .add_accessory(monitor)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    let runtime = server.run_handle();
-
-    let updates = async move {
-        loop {
-            let current = states.borrow().clone();
-            suppress.store(true, Ordering::SeqCst);
-            let result = async {
-                apply_purifier(purifier.lock().await.as_mut(), &current).await?;
-                apply_switch(night.lock().await.as_mut(), current.night).await?;
-                apply_switch(focus.lock().await.as_mut(), current.focus).await?;
-                apply_switch(monitor.lock().await.as_mut(), current.monitoring).await?;
-                Ok::<(), anyhow::Error>(())
-            }
-            .await;
-            suppress.store(false, Ordering::SeqCst);
-            result?;
-            if states.changed().await.is_err() {
-                break;
-            }
-        }
-        Ok::<(), anyhow::Error>(())
-    };
-
-    tokio::pin!(runtime);
-    tokio::select! {
-        result = &mut runtime => result.map_err(|error| anyhow!("HomeKit stopped: {error}"))?,
-        result = updates => result?,
-    }
-    Ok(())
 }

@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.weixuan.dyson-home</string>
+	<string>com.weixuan.hearth</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/Users/YOU/.cargo/bin/dyson-home</string>
+		<string>/Users/YOU/.cargo/bin/hearth</string>
 		<string>run</string>
 	</array>
 	<key>RunAtLoad</key>
@@ -14,8 +14,8 @@
 	<key>KeepAlive</key>
 	<true/>
 	<key>StandardOutPath</key>
-	<string>/Users/YOU/Library/Logs/dyson-home.log</string>
+	<string>/Users/YOU/Library/Logs/hearth.log</string>
 	<key>StandardErrorPath</key>
-	<string>/Users/YOU/Library/Logs/dyson-home.log</string>
+	<string>/Users/YOU/Library/Logs/hearth.log</string>
 </dict>
 </plist>

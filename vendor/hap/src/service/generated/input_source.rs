@@ -174,13 +174,17 @@ impl HapService for InputSourceService {
 
 impl Serialize for InputSourceService {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut state = serializer.serialize_struct("HapService", 5)?;
+        let linked = self.get_linked_services();
+        let fields = 5 + usize::from(!linked.is_empty());
+        let mut state = serializer.serialize_struct("HapService", fields)?;
         state.serialize_field("iid", &self.get_id())?;
         state.serialize_field("type", &self.get_type())?;
         state.serialize_field("hidden", &self.get_hidden())?;
         state.serialize_field("primary", &self.get_primary())?;
         state.serialize_field("characteristics", &self.get_characteristics())?;
-        // linked services left out for now
+        if !linked.is_empty() {
+            state.serialize_field("linked", &linked)?;
+        }
         state.end()
     }
 }
