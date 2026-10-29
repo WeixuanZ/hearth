@@ -1,10 +1,73 @@
-# hearth
+<p align="center">
+  <img src="docs/icon.png" alt="Hearth" width="180">
+</p>
 
-A local HomeKit bridge for devices that do not speak HomeKit.
+<h1 align="center">Hearth</h1>
 
-One Rust process stays on the network and advertises a single bridge. Each device is a connector behind it. After a device is paired, hearth does not use that device's cloud. Home, scenes, and automations then see real accessories. Shortcuts and the manufacturer's app cannot do that.
+<p align="center">A local HomeKit bridge for devices that do not speak HomeKit.</p>
 
-An Apple TV or HomePod is the hub for control away from home. It does not replace this process. The machine running hearth has to stay awake, on the same network as the devices.
+Hearth is one process on your network. It advertises a single bridge, and each device is a connector behind that bridge. After a device is paired, hearth does not use that device's cloud. Home, scenes, and automations then see real accessories. Shortcuts and the manufacturer's app cannot do that.
+
+An Apple TV or HomePod is still the hub for control away from home. It does not replace this process. The machine running hearth has to stay awake, on the same network as the devices.
+
+## Run it
+
+There are two ways. Both run the same `hearth` process. Use one of them, not both: a launch agent will start the bridge again the moment the menu bar stops it.
+
+### Mac
+
+The menu bar app is the straightforward way. It has no Dock icon. The menu is where you start and stop the bridge, add a device, approve another computer, turn on start at login, and update the app from a GitHub release. The panel reads a status file the bridge already writes. It does not open a second connection to the fan or the television.
+
+The app is built for Apple silicon. Download `Hearth-v<version>-macos-arm64.zip` from the latest release, move `Hearth.app` to `/Applications`, and open it. To build it yourself, on a Mac:
+
+```sh
+cargo build --release
+macos/build.sh
+open macos/Hearth.app
+```
+
+Start at login is a switch in the menu. Quit closes the menu and leaves a running bridge alone.
+
+### Linux, and any machine without the menu
+
+Install the command-line service. Once the repository is public:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/WeixuanZ/hearth/main/install.sh | sh
+```
+
+That downloads the latest release for this machine, checks it against `SHA256SUMS`, and puts `hearth` in `~/.local/bin`. It does not work while the repository is private: GitHub will not serve the script or the binaries without a login. To build from this checkout instead:
+
+```sh
+cargo install --path .
+```
+
+Releases cover Linux x86_64, Linux aarch64, macOS Apple silicon, and macOS Intel. The menu bar app is Apple silicon only. On Intel, use the command.
+
+Keep it running with a user service. The machine must not sleep, or Home shows the accessories as not responding.
+
+```ini
+# ~/.config/systemd/user/hearth.service
+[Unit]
+Description=Hearth
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/hearth run
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user enable --now hearth.service
+sudo loginctl enable-linger "$USER"
+```
+
+`enable-linger` keeps the service up when you are logged out. On a Mac without the menu bar, `contrib/com.weixuan.hearth.plist` is the same idea. Edit the two paths in that file before loading it.
 
 ## Devices
 
@@ -17,31 +80,45 @@ Connectors included now. More can be added without a second bridge.
 
 Home has no formaldehyde sensor. Formaldehyde, VOC, and NO₂ are folded into the air-quality rating. The fan reports VOC and NO₂ as an index, not a density.
 
-## Install
+## One bridge, several computers
 
-Once the repository is public:
+Homebridge is one process on one computer. Install it again and Home sees a second bridge, with a second pairing code. Hearth is the same bridge on every computer that has joined. One of them serves Apple Home. If that one sleeps or is closed, another starts serving, and Home does not ask for the code again. A machine that is already serving keeps the job. Any of them can add or remove a device. The newer edit wins, so the clocks should be roughly right.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/WeixuanZ/hearth/main/install.sh | sh
+```mermaid
+flowchart TB
+  subgraph group [Computers that have joined]
+    lead[Serving Apple Home]
+    follow[Following]
+  end
+  newcomer[New computer]
+  home[Apple Home]
+  devices[Fan and television]
+
+  newcomer -.->|UDP hello, no secrets| lead
+  lead -->|sealed group key, after the code| newcomer
+  lead <-->|sealed config and pairing| follow
+  lead --> home
+  lead --> devices
+  follow -.->|same pairing, if the leader sleeps| home
 ```
 
-That downloads the latest release for this machine, checks it against `SHA256SUMS`, and puts `hearth` in `~/.local/bin`. It does not work while the repository is private: GitHub will not serve the script or the binaries without a login. To build from this checkout instead:
+A new computer shows a six-digit code. Type that code on a computer already in the group, then confirm on the new one. Until both of those happen, nothing is shared: no device list, no pairing, no keys. The two sides agree the code with a one-time key exchange. A different code means someone is in between, and the join stops.
+
+After that, the computers find each other with a UDP broadcast on port 47620, twice a second. That packet is only a hello: who is serving, and a hash that the config changed. It is signed, and it is not encrypted, because it holds no secrets. When a hash differs, the machine that is behind opens a TCP connection to that one computer on port 47621 and pulls the device list and the HomeKit pairing. Those messages are sealed with the group key.
+
+A firewall has to allow those two ports between the computers. The broadcast stops at the router, and it does not cross a VLAN. Wi-Fi that isolates clients from each other will hide the computers from each other.
+
+This only works when the machines are not each already paired as a different bridge. If they are, the menu says so and leaves both alone. Forget Home on one of them, then start it again.
+
+From the menu, approve, confirm, leave, or start a separate group. From the command line:
 
 ```sh
-cargo install --path .
+hearth cluster approve 123456
+hearth cluster confirm
+hearth cluster deny
+hearth cluster leave
+hearth cluster start
 ```
-
-The computer and the devices have to be on the same network.
-
-## Several computers
-
-Every hearth that has joined the same group is the same bridge. A new computer shows a six-digit code. Type that code on a computer already in the group, then confirm on the new one. Until both of those happen, nothing is shared. After that, the device list and the HomeKit pairing are sealed between them. One machine serves Apple Home. The others follow it, and any of them can add or remove a device. If the machine that is serving goes to sleep or is closed, another one starts serving, with the same pairing, so Home does not ask for the code again. A machine that is already serving keeps the job. The newer edit wins, so the clocks should be roughly right.
-
-That only works when the machines are not each already paired as a different bridge. If they are, the menu says so and leaves both alone. Forget Home on one of them, then start it again.
-
-Announcements use UDP port 47620. The sealed messages use TCP port 47621. A firewall has to allow those ports between the computers. A computer that has not been approved learns nothing from them.
-
-The menu bar app can add a supported device, approve a joining computer, turn on start at login, and update itself from a GitHub release. It checks for a release every few hours. The update replaces `Hearth.app` and opens it again. The app package is built for Apple silicon.
 
 ## Pair a device
 
@@ -67,6 +144,8 @@ hearth status
 hearth run
 ```
 
+On a Mac with the menu bar, add the device from the menu instead. `hearth run` is what the menu starts for you.
+
 ## Add it to Home
 
 ```sh
@@ -75,9 +154,9 @@ hearth pin
 
 prints the 8-digit code. In the Home app: **Add Accessory → More options… → Hearth**.
 
-Config is `~/.config/hearth/config.toml`, mode 0600. An existing `~/.config/dyson-home` is copied on the first run, including the HomeKit pairing. If Home still shows the old bridge name, remove it and add Hearth.
+Config is `~/.config/hearth/config.toml`, mode 0600. The group key is `cluster.json` next to it, also mode 0600, and it is never copied to the other computers inside the config. An existing `~/.config/dyson-home` is copied on the first run, including the HomeKit pairing. If Home still shows the old bridge name, remove it and add Hearth.
 
-`bridge_id` in that file is hashed into the HomeKit device id. Leave it alone, or Home treats the bridge as a new accessory.
+`bridge_id` in the config is hashed into the HomeKit device id. Leave it alone, or Home treats the bridge as a new accessory.
 
 **Rename a device.** Names come from the device or its app. To change one:
 
@@ -89,28 +168,7 @@ then restart the bridge. Home picks the name up on its next refresh, or at once 
 
 **Add it again.** Remove the bridge in Home while it is running, and it shows up to add again. If it was removed while the bridge was stopped, the bridge still thinks it is paired and stays hidden. The menu bar says "Paired with Home" then. Choose Forget Home there, tap again to confirm, and add it as above. Without the menu bar, stop the bridge, run `hearth unpair`, and start it.
 
-**Changes reach Home on their own.** The bridge remembers the shape of its accessories. When a device, a switch or a name changes, it tells Home to fetch the new set on the next start.
-
-## Keep it running
-
-Use one of these. Not both: the launch agent restarts the bridge as soon as the menu bar stops it.
-
-**Menu bar, Mac only.** It reads a status file the bridge already writes. It does not open a second connection to the fan or the TV. The panel shows whether the bridge is running, each device, and the pairing code. Start and Stop control the bridge. Quit closes the icon and leaves a running bridge alone. There is no Dock icon. To open it at login, add the app in System Settings → General → Login Items.
-
-```sh
-cargo build --release
-macos/build.sh
-open macos/Hearth.app
-```
-
-**Launch agent.** The machine must not sleep, or Home shows the accessories as not responding. Edit the two paths in the plist, then:
-
-```sh
-cp contrib/com.weixuan.hearth.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.weixuan.hearth.plist
-```
-
-System Settings → Energy is the other way to keep a Mac awake.
+**Changes reach Home on their own.** The bridge remembers the shape of its accessories. When a device, a switch, or a name changes, it tells Home to fetch the new set on the next start.
 
 ## Known limits
 
@@ -132,9 +190,48 @@ hearth frame input 2
 hearth frame key KEY_MENU
 ```
 
-## Adding a connector
+## Development
 
-A connector is a module under `src/` and a `kind` in the config. It borrows a block of HomeKit accessory ids (`aid`; the fan and the Frame use one each) and adds its accessories in `src/bridge.rs`. The bridge does not know how a device works.
+`hearth run` is the whole service. It listens for other copies of itself, decides whether this machine should serve Apple Home, and only then starts the HomeKit server. A follower does not advertise a bridge.
+
+| Path | What it is |
+|---|---|
+| `src/main.rs` | The command line |
+| `src/cluster.rs` | Membership, who serves, join, and the sync loop |
+| `src/cluster/wire.rs` | The frame around every message |
+| `src/cluster/crypto.rs` | The group key, the handshake, and the seals |
+| `src/bridge.rs` | The HomeKit server. The leader only |
+| `src/config.rs` | `config.toml`, and merging two copies |
+| `src/status.rs` | `status.json`, which the menu reads |
+| `src/dyson/`, `src/frame/` | The connectors |
+| `macos/` | The menu bar app, SwiftUI |
+| `vendor/hap/` | The HomeKit protocol library |
+
+On disk, under `~/.config/hearth/`:
+
+| File | What it is |
+|---|---|
+| `config.toml` | Bridge name, pairing code, devices |
+| `homekit/` | The HomeKit pairing |
+| `cluster.json` | The group key. Not part of the synced config |
+| `status.json` | What the menu shows |
+| `hearth.sock` | Menu commands on this machine only, mode 0600 |
+
+### Messages
+
+Every message between two hearths is one frame: a version byte, a kind byte, a 4-byte length, then a body. The body is JSON, parsed with serde. There is no hand-written parser. File bytes ride inside that JSON as base64, because a HomeKit directory is small.
+
+Hellos go out as a UDP broadcast to `255.255.255.255` port 47620. That is a broadcast, not a multicast. Once a computer has joined, the hello is signed with HMAC-SHA256. A stranger can read it and still cannot forge it.
+
+The device list and the pairing go over TCP port 47621. They are sealed with ChaCha20-Poly1305. The group key is not used raw. HKDF splits it into a key for hellos and a key for state. Each seal starts with a random 12-byte nonce, and the kind of message is mixed into the tag, so a state message cannot be replayed as something else. A flipped byte does not open.
+
+A computer joins by sending a one-time X25519 public key. Both sides derive the same six-digit code from the shared secret. The existing computer shows the code, someone types it, and the new computer confirms. Only then is the group key sealed and sent. The handshake keys are thrown away.
+
+The menu talks to the process on the same machine through the Unix socket. That socket is not encrypted. It never leaves the computer.
+
+### Adding a connector
+
+A connector is a module under `src/` and a `kind` in the config. It borrows a block of HomeKit accessory ids (`aid`; the fan and the Frame use one each) and adds its accessories in `src/bridge.rs`. The bridge does not know how a device works, and the connector does not know which machine is serving.
 
 ```toml
 [[devices]]
@@ -147,17 +244,27 @@ mac = "aa:bb:cc:dd:ee:ff"
 token = "…"
 ```
 
-## Releases
+### Build and test
 
-Pushes to `main` and pull requests are formatted, linted, and tested. The menu bar is compiled on macOS as well.
+```sh
+cargo fmt --check
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+```
 
-A release is a tag that matches the version in `Cargo.toml`. For 0.2.0 the tag is `v0.2.0`. The build publishes Linux x86_64, Linux aarch64, macOS Apple silicon, and macOS Intel, plus the menu bar app and `SHA256SUMS`. The install command uses those files. Actions artifacts from the same run expire and are not the install source.
+Pushes to `main` and pull requests run those, and compile the menu bar on macOS as well. The menu bar is Swift, not Rust: `macos/build.sh` compiles it with `swiftc` and signs it ad hoc, which is required on Apple silicon.
+
+### Releases
+
+A release is a tag that matches the version in `Cargo.toml`. For 0.2.0 the tag is `v0.2.0`. The build publishes the binaries, the menu bar app, and `SHA256SUMS`. The install command uses those files. Actions artifacts from the same run expire and are not the install source.
 
 ```sh
 git tag v0.2.0
 git push origin v0.2.0
 ```
 
-## Libraries
+### Libraries
 
 `vendor/hap` is [ewilken/hap-rs](https://github.com/ewilken/hap-rs) `v0.1.0-pre.15` (MIT/Apache-2.0), with two changes. It looks up the machine's address through `if-addrs`, because the original pair of crates both try to link the same system library and no longer build. The television and input-source services include their linked service list, which that crate left out, so Home can show Art and the HDMI sockets as inputs.
+
+Messages use `serde` and `serde_json`. The seals use `chacha20poly1305`, `hkdf`, `hmac`, and `x25519-dalek`. Comparisons of the join code use `subtle`, so they do not stop at the first wrong digit.

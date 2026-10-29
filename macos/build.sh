@@ -6,8 +6,9 @@ cd "$(dirname "$0")"
 root=$(cd .. && pwd)
 app="$root/macos/Hearth.app"
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp Info.plist "$app/Contents/Info.plist"
+cp icon.icns "$app/Contents/Resources/AppIcon.icns"
 
 arch=$(uname -m)
 swiftc -O -parse-as-library \
