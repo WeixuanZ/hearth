@@ -27,10 +27,12 @@ use tokio::sync::{mpsc, watch};
 #[derive(Debug, Clone)]
 pub enum Command {
     Active(bool),
+    Art(bool),
     Input(u32),
     Key(u8),
     Brightness(i32),
-    /// 0 is louder, 1 is quieter. That is how Home sends a relative volume button.
+    /// Home's volume button. HAP says 0 is louder, but Home on iOS sends 0 for
+    /// the down button, as tested on a Frame.
     Volume(u8),
     Mute,
 }
@@ -134,10 +136,63 @@ pub async fn status(device: &FrameDevice) -> Result<()> {
     Ok(())
 }
 
+fn configured() -> Result<FrameDevice> {
+    config::load()?
+        .devices
+        .into_iter()
+        .find_map(|device| match device {
+            config::Device::Frame(device) => Some(device),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("no Frame in the config. Run `hearth frame pair` first"))
+}
+
+pub async fn keys(keys: Vec<String>, hold: Option<f32>) -> Result<()> {
+    let device = configured()?;
+    let hold = hold.map(Duration::from_secs_f32);
+    for key in keys {
+        link::press(&device.host, &device.token, &key, hold).await?;
+        println!("sent {key}");
+    }
+    Ok(())
+}
+
+/// Runs `command` the way Home does, then prints what the TV reports.
+/// Without a command, only prints.
+pub async fn control(command: Option<Command>) -> Result<()> {
+    let mut device = configured()?;
+    let mut live = Live::default();
+    // A TV in deep standby does not answer until it is woken.
+    let _ = refresh(&mut device, &mut live).await;
+    if let Some(command) = command {
+        handle(&mut device, &mut live, command).await?;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        refresh(&mut device, &mut live).await?;
+    }
+    let art = match live.art {
+        Some(on) => on_off(on),
+        None => "unknown",
+    };
+    println!(
+        "power {}  art {art}",
+        if live.on { "on" } else { "standby" }
+    );
+    Ok(())
+}
+
+fn on_off(on: bool) -> &'static str {
+    if on {
+        "on"
+    } else {
+        "off"
+    }
+}
+
 pub async fn spawn(device: FrameDevice, server: IpServer) -> Result<()> {
     let (tx, rx) = mpsc::channel(32);
     let (state_tx, mut state_rx) = watch::channel(View {
         on: false,
+        art: false,
         input: 0,
         brightness: None,
     });
@@ -173,6 +228,7 @@ pub async fn spawn(device: FrameDevice, server: IpServer) -> Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
 struct Live {
     on: bool,
     input: u32,
@@ -187,14 +243,7 @@ async fn run(
     mut commands: mpsc::Receiver<Command>,
     states: watch::Sender<View>,
 ) -> Result<()> {
-    let mut live = Live {
-        on: false,
-        input: 0,
-        brightness: None,
-        art: None,
-        reachable: false,
-        seen: false,
-    };
+    let mut live = Live::default();
     let mut poll = tokio::time::interval(Duration::from_secs(20));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
@@ -223,8 +272,9 @@ async fn run(
 fn publish(states: &watch::Sender<View>, device: &FrameDevice, live: &Live) {
     states
         .send(View {
-            // Home has no art state. Art is the Frame's off, as on its remote.
-            on: live.on && live.art != Some(true),
+            // The set is on in art too. Art has its own switch.
+            on: live.on,
+            art: live.on && live.art == Some(true),
             input: live.input,
             brightness: live.brightness,
         })
@@ -239,7 +289,7 @@ fn frame_snap(device: &FrameDevice, live: &Live) -> crate::status::DeviceSnap {
         "Unreachable"
     } else if !live.on {
         "Standby"
-    } else if live.art == Some(true) || live.input == Input::Art as u32 {
+    } else if live.art == Some(true) {
         "Art"
     } else if let Some(input) = Input::from_id(live.input) {
         input.label()
@@ -308,14 +358,7 @@ async fn refresh(device: &mut FrameDevice, live: &mut Live) -> Result<()> {
     .await?;
     for reply in replies {
         match reply {
-            ArtReply::Mode(on) => {
-                live.art = Some(on);
-                if on {
-                    live.input = Input::Art as u32;
-                } else if live.input == Input::Art as u32 || live.input == 0 {
-                    live.input = Input::Hdmi1 as u32;
-                }
-            }
+            ArtReply::Mode(on) => live.art = Some(on),
             ArtReply::Brightness(level) => {
                 live.brightness = Some(protocol::home_brightness(level));
             }
@@ -326,55 +369,33 @@ async fn refresh(device: &mut FrameDevice, live: &mut Live) -> Result<()> {
 
 async fn handle(device: &mut FrameDevice, live: &mut Live, command: Command) -> Result<()> {
     match command {
-        Command::Active(true) => {
-            let powered = link::device_info(&device.host)
-                .await
-                .map(|info| info.on)
-                .unwrap_or(false);
-            if powered {
-                // A Frame showing art still reports power on. Home shows art
-                // as off, so on means leave art.
-                live.on = true;
-                if live.art != Some(false) {
-                    set_art(device, live, false).await?;
-                }
-            } else {
-                if !device.mac.is_empty() {
-                    link::wake(&device.mac)?;
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                }
-                if !link::device_info(&device.host)
-                    .await
-                    .map(|info| info.on)
-                    .unwrap_or(false)
-                {
-                    click(device, "KEY_POWER").await?;
-                }
-                live.on = true;
-                live.art = Some(false);
-            }
-        }
+        Command::Active(true) => power_on(device, live).await?,
         Command::Active(false) => {
-            // Power off sends a Frame to art, not standby. If it does go to
-            // standby, the next poll sees that.
-            click(device, "KEY_POWEROFF").await?;
-            live.art = Some(true);
-            live.input = Input::Art as u32;
+            // A click toggles art, and the 2024 firmware ignores KEY_POWEROFF.
+            // Only a held power key, repeated as a remote does, turns it off.
+            hold(device, "KEY_POWER", Duration::from_secs(4)).await?;
+            live.on = false;
+            live.art = None;
         }
         Command::Input(id) => {
             let Some(input) = Input::from_id(id) else {
                 return Ok(());
             };
+            if !live.on {
+                power_on(device, live).await?;
+            }
             live.input = id;
-            live.on = true;
-            match input {
-                Input::Art => set_art(device, live, true).await?,
-                other => {
-                    let _ = set_art(device, live, false).await;
-                    if let Some(key) = other.key() {
-                        click(device, key).await?;
-                    }
-                }
+            if live.art != Some(false) {
+                let _ = set_art(device, live, false).await;
+            }
+            click(device, input.key()).await?;
+        }
+        Command::Art(on) => {
+            if on && !live.on {
+                power_on(device, live).await?;
+            }
+            if live.on {
+                set_art(device, live, on).await?;
             }
         }
         Command::Key(value) => {
@@ -396,8 +417,8 @@ async fn handle(device: &mut FrameDevice, live: &mut Live, command: Command) -> 
                 log::info!("the TV did not confirm the art brightness");
             }
         }
-        Command::Volume(0) => click(device, "KEY_VOLUP").await?,
-        Command::Volume(_) => click(device, "KEY_VOLDOWN").await?,
+        Command::Volume(0) => click(device, "KEY_VOLDOWN").await?,
+        Command::Volume(_) => click(device, "KEY_VOLUP").await?,
         Command::Mute => click(device, "KEY_MUTE").await?,
     }
     Ok(())
@@ -438,11 +459,48 @@ async fn set_art(device: &mut FrameDevice, live: &mut Live, on: bool) -> Result<
     Ok(())
 }
 
+/// From standby, one power click brings up the picture, not art.
+async fn power_on(device: &mut FrameDevice, live: &mut Live) -> Result<()> {
+    match link::device_info(&device.host).await {
+        Ok(info) if info.on => {
+            live.on = true;
+            return Ok(());
+        }
+        // In network standby the remote channel still listens.
+        Ok(_) => click(device, "KEY_POWER").await?,
+        // Fully asleep, it answers only a wake packet, which may be enough.
+        Err(_) => {
+            link::wake(&device.mac)?;
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            if !link::device_info(&device.host)
+                .await
+                .is_ok_and(|info| info.on)
+            {
+                click(device, "KEY_POWER").await?;
+            }
+        }
+    }
+    live.on = true;
+    live.art = Some(false);
+    if live.input == 0 {
+        live.input = Input::Hdmi1 as u32;
+    }
+    Ok(())
+}
+
 async fn click(device: &mut FrameDevice, key: &str) -> Result<()> {
+    press(device, key, None).await
+}
+
+async fn hold(device: &mut FrameDevice, key: &str, time: Duration) -> Result<()> {
+    press(device, key, Some(time)).await
+}
+
+async fn press(device: &mut FrameDevice, key: &str, hold: Option<Duration>) -> Result<()> {
     if device.token.is_empty() {
         anyhow::bail!("not paired. Run `hearth frame pair` while the TV is on");
     }
-    if let Some(token) = link::click(&device.host, &device.token, key).await? {
+    if let Some(token) = link::press(&device.host, &device.token, key, hold).await? {
         if token != device.token {
             device.token = token;
             remember(device);

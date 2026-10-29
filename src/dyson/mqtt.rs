@@ -149,9 +149,13 @@ pub async fn session(
     let writer = std::sync::Arc::new(Mutex::new(writer));
 
     {
+        // The broker drops a client when another logs in with the same id.
+        // Using the serial, as the app does, let `hearth status` or the app
+        // knock the bridge off. A fresh id per connection avoids that.
+        let client_id = format!("hearth-{:08x}", rand::random::<u32>());
         let mut write = writer.lock().await;
         write
-            .write_all(&encode_connect(username, username, password, 30))
+            .write_all(&encode_connect(&client_id, username, password, 30))
             .await
             .context("mqtt connect")?;
         write.flush().await.ok();

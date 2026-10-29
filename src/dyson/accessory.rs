@@ -5,7 +5,9 @@
 //! fan is off. The switches are linked to the fan, so Home shows them inside it
 //! rather than as separate tiles.
 
-use super::protocol::{air_quality, percent_to_speed, speed_to_percent, Intent, MachineState};
+use super::protocol::{
+    air_quality, percent_to_speed, speed_to_percent, sweep, Intent, MachineState, SWEEPS,
+};
 use crate::{
     config::DysonDevice,
     hapset::{hook_bool, hook_f32, hook_u8, put},
@@ -42,6 +44,12 @@ pub(super) struct PurifierAccessory {
 const NIGHT: u64 = 170;
 const FOCUS: u64 = 180;
 const SENSE: u64 = 190;
+/// The sweep switches follow, one per entry in `SWEEPS`, 10 apart.
+const SWEEP: u64 = 200;
+
+fn sweep_iids() -> impl Iterator<Item = (u64, u16)> {
+    (SWEEP..).step_by(10).zip(SWEEPS)
+}
 
 impl HapAccessory for PurifierAccessory {
     fn get_id(&self) -> u64 {
@@ -117,7 +125,12 @@ pub(super) async fn build_purifier(
     let aid = device.aid;
     let mut purifier = AirPurifierService::new(20, aid);
     purifier.set_primary(true);
-    purifier.set_linked_services(vec![NIGHT, FOCUS, SENSE]);
+    purifier.set_linked_services(
+        [NIGHT, FOCUS, SENSE]
+            .into_iter()
+            .chain(sweep_iids().map(|(iid, _)| iid))
+            .collect(),
+    );
     purifier.lock_physical_controls = None;
     hook_u8(&mut purifier.active, suppress, tx, |value| {
         Intent::Power(value == 1)
@@ -129,6 +142,8 @@ pub(super) async fn build_purifier(
         |value| Intent::Auto(value == 1),
     );
     if let Some(speed) = purifier.rotation_speed.as_mut() {
+        // Ten speeds, so the slider snaps to 10 % steps.
+        limit(speed, None, None, Some(10.0))?;
         hook_f32(speed, suppress, tx, |percent| {
             Intent::Speed(percent_to_speed(percent))
         });
@@ -151,7 +166,7 @@ pub(super) async fn build_purifier(
     humidity.status_low_battery = None;
     humidity.status_tampered = None;
 
-    let (heater, temperature) = if device.heating {
+    let (mut heater, mut temperature) = if device.heating {
         let mut heater = HeaterCoolerService::new(100, aid);
         heater.lock_physical_controls = None;
         heater.rotation_speed = None;
@@ -160,6 +175,17 @@ pub(super) async fn build_purifier(
         hook_u8(&mut heater.active, suppress, tx, |value| {
             Intent::Heat(value == 1)
         });
+        // The fan only heats. Offering Auto or Cool would read as heat off.
+        HapCharacteristic::set_valid_values(
+            &mut heater.target_heater_cooler_state,
+            Some(vec![serde_json::json!(1)]),
+        )
+        .map_err(|error| anyhow!("{error}"))?;
+        heater
+            .target_heater_cooler_state
+            .set_value(serde_json::json!(1))
+            .await
+            .map_err(|error| anyhow!("{error}"))?;
         hook_u8(
             &mut heater.target_heater_cooler_state,
             suppress,
@@ -167,6 +193,8 @@ pub(super) async fn build_purifier(
             |value| Intent::Heat(value == 1),
         );
         if let Some(target) = heater.heating_threshold_temperature.as_mut() {
+            // The fan heats to 1–37 °C. Home's default stops at 25.
+            limit(target, Some(1.0), Some(37.0), Some(1.0))?;
             hook_f32(target, suppress, tx, Intent::HeatTargetC);
         }
         (Some(heater), None)
@@ -181,11 +209,36 @@ pub(super) async fn build_purifier(
     let mut filter = FilterMaintenanceService::new(140, aid);
     filter.filter_reset_change_indication = None;
 
-    let switches = vec![
+    // hap sends an empty Name otherwise, which Home refuses.
+    name(purifier.name.as_mut(), &device.name).await?;
+    name(air.name.as_mut(), "Air quality").await?;
+    name(humidity.name.as_mut(), "Humidity").await?;
+    name(filter.name.as_mut(), "Filter").await?;
+    if let Some(heater) = heater.as_mut() {
+        name(heater.name.as_mut(), "Heater").await?;
+    }
+    if let Some(temperature) = temperature.as_mut() {
+        name(temperature.name.as_mut(), "Temperature").await?;
+    }
+
+    let mut switches = vec![
         switch(NIGHT, aid, "Night mode", suppress, tx, Intent::Night).await?,
         switch(FOCUS, aid, "Focused jet", suppress, tx, Intent::Focus).await?,
         switch(SENSE, aid, "Keep sensing", suppress, tx, Intent::Monitor).await?,
     ];
+    // Home has no oscillation angle, so each of the app's sweeps is a switch.
+    // Turning one off stops oscillation.
+    for (iid, width) in sweep_iids() {
+        let label = format!("Sweep {width}");
+        let make = move |on| {
+            if on {
+                Intent::Sweep(width)
+            } else {
+                Intent::Swing(false)
+            }
+        };
+        switches.push(switch(iid, aid, &label, suppress, tx, make).await?);
+    }
 
     Ok(PurifierAccessory {
         id: aid,
@@ -212,20 +265,49 @@ pub(super) async fn build_purifier(
 async fn switch(
     iid: u64,
     aid: u64,
-    name: &str,
+    label: &str,
     suppress: &Arc<AtomicBool>,
     tx: &mpsc::Sender<Intent>,
     make: impl Fn(bool) -> Intent + Send + Sync + 'static,
 ) -> Result<SwitchService> {
     let mut switch = SwitchService::new(iid, aid);
-    if let Some(label) = switch.name.as_mut() {
-        label
-            .set_value(serde_json::json!(name))
+    name(switch.name.as_mut(), label).await?;
+    name(switch.configured_name.as_mut(), label).await?;
+    hook_bool(&mut switch.power_state, suppress, tx, make);
+    Ok(switch)
+}
+
+async fn name(characteristic: Option<&mut impl HapCharacteristic>, text: &str) -> Result<()> {
+    if let Some(characteristic) = characteristic {
+        characteristic
+            .set_value(serde_json::json!(text))
             .await
             .map_err(|error| anyhow!("{error}"))?;
     }
-    hook_bool(&mut switch.power_state, suppress, tx, make);
-    Ok(switch)
+    Ok(())
+}
+
+/// Narrows a number characteristic to what the fan accepts.
+fn limit(
+    characteristic: &mut impl HapCharacteristic,
+    min: Option<f32>,
+    max: Option<f32>,
+    step: Option<f32>,
+) -> Result<()> {
+    let to_json = |value: Option<f32>| value.map(|value| serde_json::json!(value));
+    if min.is_some() {
+        HapCharacteristic::set_min_value(characteristic, to_json(min))
+            .map_err(|error| anyhow!("{error}"))?;
+    }
+    if max.is_some() {
+        HapCharacteristic::set_max_value(characteristic, to_json(max))
+            .map_err(|error| anyhow!("{error}"))?;
+    }
+    if step.is_some() {
+        HapCharacteristic::set_step_value(characteristic, to_json(step))
+            .map_err(|error| anyhow!("{error}"))?;
+    }
+    Ok(())
 }
 
 pub(super) async fn apply_purifier(
@@ -370,7 +452,8 @@ pub(super) async fn apply_purifier(
         accessory,
         HapType::HeaterCooler,
         HapType::TargetHeaterCoolerState,
-        serde_json::json!(if state.heat_on { 1 } else { 0 }),
+        // Always heat. Whether it is heating is Active, above.
+        serde_json::json!(1),
     )
     .await?;
     if let Some(target) = state.heat_target_c {
@@ -406,6 +489,15 @@ pub(super) async fn apply_purifier(
         (SENSE, state.monitoring),
     ] {
         put_switch(accessory, iid, on).await?;
+    }
+    // The preset nearest the fan's sweep is on while it oscillates.
+    let nearest = sweep(state).and_then(|current| {
+        SWEEPS
+            .into_iter()
+            .min_by_key(|width| width.abs_diff(current))
+    });
+    for (iid, width) in sweep_iids() {
+        put_switch(accessory, iid, state.oscillating && nearest == Some(width)).await?;
     }
     Ok(())
 }
@@ -470,6 +562,9 @@ mod tests {
         let mut purifier = build_purifier(&device, &suppress, &tx).await.unwrap();
         let state = MachineState {
             focus: true,
+            oscillating: true,
+            oscillation_low: Some(56),
+            oscillation_high: Some(144),
             ..Default::default()
         };
         apply_purifier(&mut purifier, &state).await.unwrap();
@@ -480,7 +575,10 @@ mod tests {
             .iter()
             .find(|service| service["iid"] == 20)
             .unwrap();
-        assert_eq!(fan["linked"], serde_json::json!([NIGHT, FOCUS, SENSE]));
+        assert_eq!(
+            fan["linked"],
+            serde_json::json!([NIGHT, FOCUS, SENSE, 200, 210, 220, 230])
+        );
         let power = |iid: u64| {
             let service = services
                 .iter()
@@ -491,5 +589,36 @@ mod tests {
         assert_eq!(power(NIGHT), serde_json::json!(false));
         assert_eq!(power(FOCUS), serde_json::json!(true));
         assert_eq!(power(SENSE), serde_json::json!(false));
+        // An 88 degree sweep lights the 90 preset only.
+        let sweeps: Vec<_> = (200..=230).step_by(10).map(power).collect();
+        assert_eq!(
+            sweeps,
+            [false, true, false, false].map(|on| serde_json::json!(on))
+        );
+
+        let characteristic = |kind: &str| {
+            services
+                .iter()
+                .flat_map(|service| service["characteristics"].as_array().unwrap())
+                .find(|characteristic| characteristic["type"] == kind)
+                .unwrap()
+                .clone()
+        };
+        let threshold = characteristic("12");
+        assert_eq!(
+            (
+                &threshold["minValue"],
+                &threshold["maxValue"],
+                &threshold["minStep"]
+            ),
+            (
+                &serde_json::json!(1.0),
+                &serde_json::json!(37.0),
+                &serde_json::json!(1.0)
+            )
+        );
+        let target = characteristic("B2");
+        assert_eq!(target["valid-values"], serde_json::json!([1]));
+        assert_eq!(target["value"], serde_json::json!(1));
     }
 }

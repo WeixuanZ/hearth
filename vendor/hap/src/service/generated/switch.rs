@@ -8,6 +8,7 @@ use crate::{
         HapCharacteristic,
 		power_state::PowerStateCharacteristic,
 		name::NameCharacteristic,
+		configured_name::ConfiguredNameCharacteristic,
 	},
     HapType,
 };
@@ -31,6 +32,9 @@ pub struct SwitchService {
 
 	/// Name characteristic (optional).
 	pub name: Option<NameCharacteristic>,
+
+	/// Configured Name characteristic (optional). Home labels the switch with it.
+	pub configured_name: Option<ConfiguredNameCharacteristic>,
 }
 
 impl SwitchService {
@@ -41,6 +45,7 @@ impl SwitchService {
             hap_type: HapType::Switch,
 			power_state: PowerStateCharacteristic::new(id + 1 + 0, accessory_id),
 			name: Some(NameCharacteristic::new(id + 1 + 0 + 1, accessory_id)),
+			configured_name: Some(ConfiguredNameCharacteristic::new(id + 1 + 0 + 2, accessory_id)),
 			..Default::default()
         }
     }
@@ -113,6 +118,9 @@ impl HapService for SwitchService {
 		if let Some(c) = &self.name {
 		    characteristics.push(c);
 		}
+		if let Some(c) = &self.configured_name {
+		    characteristics.push(c);
+		}
 		characteristics
     }
 
@@ -122,6 +130,9 @@ impl HapService for SwitchService {
 			&mut self.power_state,
 		];
 		if let Some(c) = &mut self.name {
+		    characteristics.push(c);
+		}
+		if let Some(c) = &mut self.configured_name {
 		    characteristics.push(c);
 		}
 		characteristics

@@ -12,8 +12,8 @@ Connectors included now. More can be added without a second bridge.
 
 | Device | Connection | In Home |
 |---|---|---|
-| Dyson Purifier Hot+Cool Formaldehyde (HP09) | The fan's own MQTT, after one MyDyson login | Purifier, air quality, PM2.5, PM10, humidity, temperature, heat, HEPA life, and switches for night, focused jet, and keep sensing |
-| Samsung The Frame, 2024 (LS03D, including the 65") | The TV's own websocket on port 8002, not SmartThings | One television: power, remote, volume, Art and HDMI 1–4 as inputs, art brightness |
+| Dyson Purifier Hot+Cool Formaldehyde (HP09) | The fan's own MQTT, after one MyDyson login | One purifier: power, auto, 10 speeds, oscillation, heat to 1–37 °C, air quality, PM2.5, PM10, humidity, temperature, HEPA life, and switches for night, focused jet, keep sensing, and each oscillation sweep |
+| Samsung The Frame, 2024 (LS03D, including the 65") | The TV's own websocket on port 8002, not SmartThings | One television: power, an art mode switch, HDMI 1–4, remote, volume, art brightness |
 
 Home has no formaldehyde sensor. Formaldehyde, VOC, and NO₂ are folded into the air-quality rating. The fan reports VOC and NO₂ as an index, not a density.
 
@@ -69,6 +69,22 @@ Config is `~/.config/hearth/config.toml`, mode 0600. An existing `~/.config/dyso
 
 `bridge_id` in that file is hashed into the HomeKit device id. Leave it alone, or Home treats the bridge as a new accessory.
 
+**Rename a device.** Names come from the device or its app. To change one:
+
+```sh
+hearth rename "Old name" "New name"
+```
+
+then restart the bridge. Home picks the name up on its next refresh, or at once when the bridge is added again. Avoid naming a device after its room: Home hides a room's name at the start of an accessory's name.
+
+**Add it again.** Remove the bridge in Home while it is running, and it shows up to add again. If it was removed while the bridge was stopped, the bridge still thinks it is paired and stays hidden. Then:
+
+```sh
+hearth unpair
+```
+
+restart the bridge, and add it as above.
+
 ## Keep it running
 
 Use one of these. Not both: the launch agent restarts the bridge as soon as the menu bar stops it.
@@ -92,11 +108,23 @@ System Settings → Energy is the other way to keep a Mac awake.
 
 ## Known limits
 
-**Heat.** Some fan firmware ignores heat commands that did not come from the infrared remote. If Home's heat control snaps back to off, the fan refused it. Set `heating = false` on that device to hide the control.
+**Heat.** The fan stops heating when the focused jet is turned off, and Home shows the heater go off. Some firmware also ignores heat commands that did not come from the infrared remote. Set `heating = false` on that device to hide the control.
 
-**Art mode.** In Home, off is art and on is the picture, as on the Frame's own remote. Art mode is a separate channel from the remote. On some 2024 firmware that channel never answers. Hearth then does what the Frame's own power button does: one press from a source enters art, one press in art leaves it. If Home's Art input and the screen disagree, that is the set.
+**Oscillation.** Home has no angle, so the purifier has a switch for each of the Dyson app's sweeps: 45, 90, 180 and 350 degrees, centred where the fan points. Home's own Oscillate keeps the range set in the Dyson app, or sweeps 90° if that range is narrower than 30°.
 
-Off sends the TV's power-off key, which is standby, not art. On sends a wake packet to the MAC address learned while the TV was on, then the power key if it is still dark. If the TV is fully off, `hearth status` cannot see it. Pairing and the art channel both need the panel awake.
+**Fan connection.** Set `host` on the fan if it does not announce itself on the network. The fan serves one live session, so stop the bridge before `hearth status` or `hearth dyson set`.
+
+**The Frame.** Power is the TV's own on and off. Art mode is a switch beside it, and the inputs are HDMI 1–4. Arrows, select, back and volume are in Control Center's remote. A 2024 Frame ignores the power-off key, and one power press only toggles art, so off holds the power key as the remote does. On from standby is one press, which brings up the picture. A TV that has dropped off the network gets a wake packet first. Pairing and the art channel both need the panel awake.
+
+To try a device without Home, the way Home drives it:
+
+```sh
+hearth dyson set swing 180
+hearth frame power off
+hearth frame art on
+hearth frame input 2
+hearth frame key KEY_MENU
+```
 
 ## Adding a connector
 

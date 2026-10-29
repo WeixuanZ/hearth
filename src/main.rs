@@ -27,6 +27,16 @@ enum Command {
     Status,
     /// Print the pairing code Apple Home will ask for.
     Pin,
+    /// Rename a device, as Home will show it after the bridge restarts.
+    Rename {
+        /// The device's current name.
+        from: String,
+        /// The new name.
+        to: String,
+    },
+    /// Forget Home's pairing, so the bridge can be added again. Use this when
+    /// the bridge was removed from Home but does not show up to add.
+    Unpair,
     /// A Dyson purifier.
     Dyson {
         #[command(subcommand)]
@@ -52,6 +62,9 @@ enum DysonCommand {
         #[arg(long)]
         serial: Option<String>,
     },
+    /// Send one command, as Home would, like `power on` or `speed 4`.
+    /// Stop the bridge first.
+    Set { what: String, value: String },
 }
 
 #[derive(Subcommand)]
@@ -65,6 +78,31 @@ enum FrameCommand {
         #[arg(long, default_value = "The Frame")]
         name: String,
     },
+    /// Press remote keys in order, like KEY_POWER or KEY_HDMI1.
+    Key {
+        #[arg(required = true)]
+        keys: Vec<String>,
+        /// Hold each key down for this many seconds, as a long press.
+        #[arg(long)]
+        hold: Option<f32>,
+    },
+    /// Turn the TV on or off, as Home does.
+    Power {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// Turn art mode on or off, as Home does.
+    Art {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// Switch to HDMI 1–4, as Home does.
+    Input {
+        #[arg(value_parser = clap::value_parser!(u32).range(1..=4))]
+        hdmi: u32,
+    },
+    /// Print the TV's power and art mode.
+    Info,
 }
 
 #[tokio::main]
@@ -94,15 +132,44 @@ async fn main() -> Result<()> {
             let config = config::load()?;
             println!("{}", config.homekit_pin);
         }
+        Command::Rename { from, to } => {
+            let mut config = config::load()?;
+            config::rename(&mut config, &from, &to)?;
+            config::save(&config)?;
+            println!(
+                "Renamed {from} to {}. Restart the bridge to show it in Home.",
+                to.trim()
+            );
+        }
+        Command::Unpair => {
+            let removed = config::clear_pairings()?;
+            let config = config::load()?;
+            println!("Forgot {removed} pairing(s).");
+            println!("Restart the bridge, then in Home: Add Accessory → More options… → Hearth.");
+            println!("Code: {}", config.homekit_pin);
+        }
         Command::Dyson { command } => match command {
             DysonCommand::Login {
                 email,
                 country,
                 serial,
             } => dyson::login(email, country, serial).await?,
+            DysonCommand::Set { what, value } => dyson::set(&what, &value).await?,
         },
         Command::Frame { command } => match command {
             FrameCommand::Pair { host, name } => frame::pair(host, name).await?,
+            FrameCommand::Key { keys, hold } => frame::keys(keys, hold).await?,
+            FrameCommand::Power { state } => {
+                frame::control(Some(frame::Command::Active(state == "on"))).await?
+            }
+            FrameCommand::Art { state } => {
+                frame::control(Some(frame::Command::Art(state == "on"))).await?
+            }
+            // HDMI 1 is input id 2. See frame::protocol::Input.
+            FrameCommand::Input { hdmi } => {
+                frame::control(Some(frame::Command::Input(hdmi + 1))).await?
+            }
+            FrameCommand::Info => frame::control(None).await?,
         },
     }
     Ok(())

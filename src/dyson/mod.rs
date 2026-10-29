@@ -88,6 +88,35 @@ pub async fn status(device: &DysonDevice) -> Result<()> {
     drive(device.clone(), true, None).await
 }
 
+/// Sends one command the way Home does, then prints what the fan reports.
+/// Stop the bridge first: the fan serves one live session.
+pub async fn set(what: &str, value: &str) -> Result<()> {
+    let intent = Intent::parse(what, value).ok_or_else(|| {
+        anyhow!("try power|auto|swing|night|focus|monitor|heat on|off, speed 1-10, swing 90, or heat 21")
+    })?;
+    let device = config::load()?
+        .devices
+        .into_iter()
+        .find_map(|device| match device {
+            config::Device::Dyson(device) => Some(device),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("no fan in the config. Run `hearth dyson login` first"))?;
+    let name = device.name.clone();
+    let (state_tx, mut state_rx) = watch::channel(MachineState::default());
+    let (intent_tx, intent_rx) = mpsc::channel(1);
+    tokio::spawn(drive(device, false, Some((state_tx, intent_rx))));
+    // Commands depend on the current state, such as the oscillation range.
+    tokio::time::timeout(Duration::from_secs(20), state_rx.changed())
+        .await
+        .context("the fan did not answer. Is the bridge holding its session?")??;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    intent_tx.send(intent).await?;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    print_status(&name, &state_rx.borrow());
+    Ok(())
+}
+
 pub async fn spawn(device: DysonDevice, server: IpServer) -> Result<()> {
     let (intent_tx, intent_rx) = mpsc::channel::<Intent>(32);
     let (state_tx, state_rx) = watch::channel(MachineState::default());
@@ -208,6 +237,7 @@ async fn drive(
         tokio::select! {
             incoming = event_rx.recv() => {
                 let Some(incoming) = incoming else { break };
+                log::debug!("fan: {}", incoming.payload);
                 if protocol::apply_message(&mut state, &incoming.topic, &incoming.payload) {
                     if state.topic_prefix.is_some() {
                         prefix = state.topic_prefix.clone();
@@ -269,6 +299,7 @@ async fn publish(
         return;
     };
     let fields = intent_fields(state, intent);
+    log::info!("fan: {intent:?} -> {fields:?}");
     let _ = commands
         .send(mqtt::Publish {
             topic: command_topic(prefix, serial),
@@ -355,7 +386,7 @@ fn snap(device: &DysonDevice, state: &MachineState) -> crate::status::DeviceSnap
 fn print_status(name: &str, state: &MachineState) {
     println!("{name}");
     println!(
-        "power {}  auto {}  speed {}  swing {}  night {}  focus {}  heat {}",
+        "power {}  auto {}  speed {}  swing {} {}–{}°  night {}  focus {}  monitor {}  heat {} to {}",
         on_off(state.power_on),
         on_off(state.auto),
         state
@@ -363,9 +394,16 @@ fn print_status(name: &str, state: &MachineState) {
             .map(|speed| speed.to_string())
             .unwrap_or_else(|| "-".into()),
         on_off(state.oscillating),
+        state.oscillation_low.unwrap_or(0),
+        state.oscillation_high.unwrap_or(0),
         on_off(state.night),
         on_off(state.focus),
+        on_off(state.monitoring),
         on_off(state.heat_on),
+        state
+            .heat_target_c
+            .map(|n| format!("{n:.0}°C"))
+            .unwrap_or_else(|| "-".into()),
     );
     println!(
         "temp {}  humidity {}  PM2.5 {}  PM10 {}  formaldehyde {} mg/m³  HEPA {}%",

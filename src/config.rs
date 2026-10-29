@@ -96,6 +96,57 @@ impl Device {
             Self::Frame(device) => &device.name,
         }
     }
+
+    pub fn set_name(&mut self, name: String) {
+        match self {
+            Self::Dyson(device) => device.name = name,
+            Self::Frame(device) => device.name = name,
+        }
+    }
+}
+
+/// Renames the device now called `from`, ignoring case.
+pub fn rename(config: &mut Config, from: &str, to: &str) -> Result<()> {
+    let to = to.trim();
+    // Home refuses a name that starts or ends with anything but a letter or digit.
+    let edges_ok = to.chars().next().is_some_and(char::is_alphanumeric)
+        && to.chars().last().is_some_and(char::is_alphanumeric);
+    if !edges_ok {
+        anyhow::bail!("a name must start and end with a letter or digit");
+    }
+    let names: Vec<String> = config
+        .devices
+        .iter()
+        .map(|device| device.name().to_owned())
+        .collect();
+    let device = config
+        .devices
+        .iter_mut()
+        .find(|device| device.name().eq_ignore_ascii_case(from.trim()))
+        .ok_or_else(|| {
+            anyhow::anyhow!("no device is called {from}. Devices: {}", names.join(", "))
+        })?;
+    device.set_name(to.to_owned());
+    Ok(())
+}
+
+/// Forgets every Home that paired with the bridge, so it can be added again.
+/// Returns how many pairings there were.
+pub fn clear_pairings() -> Result<usize> {
+    let dir = homekit_dir()?.join("pairings");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Ok(0);
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let path = entry?.path();
+        if path.is_file() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("could not remove {}", path.display()))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 pub fn assign_aids(devices: &mut [Device]) -> bool {
@@ -426,5 +477,27 @@ mod tests {
         ];
         assert!(assign_aids(&mut devices));
         assert_eq!(devices[1].aid(), 3);
+    }
+
+    #[test]
+    fn rename_finds_a_device_by_name_and_checks_the_new_one() {
+        let mut config = Config {
+            name: "Hearth".into(),
+            homekit_pin: "000-00-000".into(),
+            bridge_id: "ABC".into(),
+            devices: vec![Device::Frame(FrameDevice {
+                aid: 2,
+                name: "Living room".into(),
+                model: String::new(),
+                host: "10.0.0.2".into(),
+                mac: String::new(),
+                token: String::new(),
+            })],
+        };
+        rename(&mut config, "living ROOM", " Television ").unwrap();
+        assert_eq!(config.devices[0].name(), "Television");
+        assert!(rename(&mut config, "Nothing", "Other").is_err());
+        assert!(rename(&mut config, "Television", "TV!").is_err());
+        assert!(rename(&mut config, "Television", "  ").is_err());
     }
 }

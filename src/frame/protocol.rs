@@ -11,9 +11,10 @@ use serde_json::{json, Value};
 pub const REMOTE_CHANNEL: &str = "samsung.remote.control";
 pub const ART_CHANNEL: &str = "com.samsung.art-app";
 
+/// The HDMI sockets. Art mode is a switch of its own, not an input. The ids
+/// start at 2 because 1 was the art input, and Home remembers ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
-    Art = 1,
     Hdmi1 = 2,
     Hdmi2 = 3,
     Hdmi3 = 4,
@@ -21,30 +22,23 @@ pub enum Input {
 }
 
 impl Input {
+    pub const ALL: [Self; 4] = [Self::Hdmi1, Self::Hdmi2, Self::Hdmi3, Self::Hdmi4];
+
     pub fn from_id(id: u32) -> Option<Self> {
-        Some(match id {
-            1 => Self::Art,
-            2 => Self::Hdmi1,
-            3 => Self::Hdmi2,
-            4 => Self::Hdmi3,
-            5 => Self::Hdmi4,
-            _ => return None,
-        })
+        Self::ALL.into_iter().find(|input| *input as u32 == id)
     }
 
-    pub fn key(self) -> Option<&'static str> {
+    pub fn key(self) -> &'static str {
         match self {
-            Self::Art => None,
-            Self::Hdmi1 => Some("KEY_HDMI1"),
-            Self::Hdmi2 => Some("KEY_HDMI2"),
-            Self::Hdmi3 => Some("KEY_HDMI3"),
-            Self::Hdmi4 => Some("KEY_HDMI4"),
+            Self::Hdmi1 => "KEY_HDMI1",
+            Self::Hdmi2 => "KEY_HDMI2",
+            Self::Hdmi3 => "KEY_HDMI3",
+            Self::Hdmi4 => "KEY_HDMI4",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Art => "Art",
             Self::Hdmi1 => "HDMI 1",
             Self::Hdmi2 => "HDMI 2",
             Self::Hdmi3 => "HDMI 3",
@@ -52,12 +46,9 @@ impl Input {
         }
     }
 
-    /// HomeKit input source type. Application for Art, HDMI for the sockets.
+    /// HomeKit input source type: HDMI.
     pub fn source_type(self) -> u8 {
-        match self {
-            Self::Art => 10,
-            _ => 3,
-        }
+        3
     }
 }
 
@@ -75,10 +66,15 @@ pub fn channel_path(channel: &str, token: &str) -> String {
 }
 
 pub fn key_payload(key: &str) -> String {
+    key_command("Click", key)
+}
+
+/// `Press` and `Release` hold a key down, as a long press on the remote.
+pub fn key_command(cmd: &str, key: &str) -> String {
     json!({
         "method": "ms.remote.control",
         "params": {
-            "Cmd": "Click",
+            "Cmd": cmd,
             "DataOfCmd": key,
             "Option": "false",
             "TypeOfRemote": "SendRemoteKey"
@@ -87,9 +83,12 @@ pub fn key_payload(key: &str) -> String {
     .to_string()
 }
 
-pub fn art_payload(request: &str, value: Option<&str>) -> String {
+/// `id` is echoed back in the reply. Newer firmware ignores a request without one.
+pub fn art_payload(request: &str, value: Option<&str>, id: &str) -> String {
     let mut data = serde_json::Map::new();
     data.insert("request".into(), json!(request));
+    data.insert("id".into(), json!(id));
+    data.insert("request_id".into(), json!(id));
     if let Some(value) = value {
         data.insert("value".into(), json!(value));
     }
@@ -204,6 +203,17 @@ pub fn parse_art_message(text: &str) -> Option<ArtReply> {
         .and_then(parse_mode)
     {
         return Some(ArtReply::Mode(mode));
+    }
+    // A 2024 Frame answers a set, and announces a change, with "status".
+    let event = data.get("event").and_then(Value::as_str).unwrap_or("");
+    if matches!(event, "set_artmode_status" | "art_mode_changed") {
+        if let Some(mode) = data
+            .get("status")
+            .and_then(Value::as_str)
+            .and_then(parse_mode)
+        {
+            return Some(ArtReply::Mode(mode));
+        }
     }
     let brightness = data
         .get("brightness")
@@ -343,15 +353,27 @@ mod tests {
     }
 
     #[test]
+    fn art_reply_reads_status_from_a_set_or_a_change() {
+        let set = r#"{"data":"{\n  \"event\": \"set_artmode_status\",\n  \"request_id\": \"abc\",\n  \"status\": \"on\"\n}","event":"d2d_service_message"}"#;
+        assert_eq!(parse_art_message(set), Some(ArtReply::Mode(true)));
+        let changed = r#"{"data":"{\"event\": \"art_mode_changed\", \"status\": \"off\"}","event":"d2d_service_message"}"#;
+        assert_eq!(parse_art_message(changed), Some(ArtReply::Mode(false)));
+        let image = r#"{"data":"{\"event\": \"image_selected\", \"is_shown\": \"Yes\"}","event":"d2d_service_message"}"#;
+        assert_eq!(parse_art_message(image), None);
+    }
+
+    #[test]
     fn key_and_art_payloads_use_the_samsung_envelope() {
         let key = key_payload("KEY_POWEROFF");
         assert!(key.contains("SendRemoteKey"));
         assert!(key.contains("KEY_POWEROFF"));
-        let art = art_payload("set_artmode_status", Some("on"));
+        let art = art_payload("set_artmode_status", Some("on"), "abc");
         assert!(art.contains("art_app_request"));
         assert!(art.contains("set_artmode_status"));
+        assert!(art.contains(r#"\"request_id\":\"abc\""#));
         assert_eq!(hap_remote_key(8), Some("KEY_ENTER"));
-        assert_eq!(Input::from_id(1), Some(Input::Art));
-        assert_eq!(Input::Hdmi2.key(), Some("KEY_HDMI2"));
+        assert_eq!(Input::from_id(1), None);
+        assert_eq!(Input::from_id(3), Some(Input::Hdmi2));
+        assert_eq!(Input::Hdmi2.key(), "KEY_HDMI2");
     }
 }

@@ -120,6 +120,9 @@ pub async fn put(
 #[cfg(test)]
 pub fn assert_unique_iids(accessory: &impl serde::Serialize) {
     let value = serde_json::to_value(accessory).unwrap();
+    if let Ok(dir) = std::env::var("HEARTH_DUMP") {
+        std::fs::write(format!("{dir}/aid{}.json", value["aid"]), value.to_string()).unwrap();
+    }
     let mut seen = std::collections::HashSet::new();
     for service in value["services"].as_array().unwrap() {
         let iids = std::iter::once(&service["iid"]).chain(

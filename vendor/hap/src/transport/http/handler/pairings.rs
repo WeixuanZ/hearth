@@ -1,5 +1,5 @@
 use futures::future::{BoxFuture, FutureExt};
-use hyper::{body::Buf, Body};
+use hyper::Body;
 use log::{debug, info};
 use std::{ops::Deref, str};
 use uuid::Uuid;
@@ -49,13 +49,13 @@ impl TlvHandlerExt for Pairings {
 
     fn parse(&self, body: Body) -> BoxFuture<'_,Result<HandlerType, tlv::ErrorContainer>> {
         async {
-            let aggregated_body = hyper::body::aggregate(body)
+            let aggregated_body = hyper::body::to_bytes(body)
                 .await
                 .map_err(|_| tlv::ErrorContainer::new(StepNumber::Unknown as u8, tlv::Error::Unknown))?;
 
-            debug!("received body: {:?}", aggregated_body.chunk());
+            debug!("received body: {:?}", &aggregated_body[..]);
 
-            let mut decoded = tlv::decode(aggregated_body.chunk());
+            let mut decoded = tlv::decode(&aggregated_body[..]);
             if decoded.get(&(Type::State as u8)) != Some(&vec![1]) {
                 return Err(tlv::ErrorContainer::new(0, tlv::Error::Unknown));
             }

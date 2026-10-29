@@ -107,7 +107,13 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     match timeout(wait, socket.next()).await {
-        Ok(Some(Ok(Message::Text(text)))) => Ok(Some(text.to_string())),
+        Ok(Some(Ok(Message::Text(text)))) => {
+            // Connect messages carry the pairing token. Keep it out of logs.
+            if !text.contains("\"token\"") {
+                log::debug!("tv: {text}");
+            }
+            Ok(Some(text.to_string()))
+        }
         Ok(Some(Ok(Message::Close(_)))) | Ok(None) => Ok(None),
         Ok(Some(Ok(_))) => Ok(None),
         Ok(Some(Err(error))) => Err(anyhow!(error)),
@@ -131,7 +137,14 @@ pub async fn pair(host: &str) -> Result<String> {
     anyhow::bail!("the TV did not hand back a token. Turn it on and press Allow")
 }
 
-pub async fn click(host: &str, token: &str, key: &str) -> Result<Option<String>> {
+/// Holds a key down for `hold`, or clicks it when `hold` is `None`. A Frame
+/// only powers fully off on a held power key; a click toggles art.
+pub async fn press(
+    host: &str,
+    token: &str,
+    key: &str,
+    hold: Option<Duration>,
+) -> Result<Option<String>> {
     let mut socket = connect(host, protocol::REMOTE_CHANNEL, token).await?;
     let mut found = None;
     let start = tokio::time::Instant::now();
@@ -144,10 +157,28 @@ pub async fn click(host: &str, token: &str, key: &str) -> Result<Option<String>>
             break;
         }
     }
-    socket
-        .send(Message::Text(protocol::key_payload(key).into()))
-        .await
-        .context("could not send the key")?;
+    let send = |payload: String| Message::Text(payload.into());
+    match hold {
+        None => socket.send(send(protocol::key_payload(key))).await,
+        Some(hold) => {
+            // A 2024 Frame reads one Press as a short press. A physical remote
+            // repeats Press while the button is down, so do the same.
+            let until = tokio::time::Instant::now() + hold;
+            while tokio::time::Instant::now() < until {
+                socket
+                    .send(send(protocol::key_command("Press", key)))
+                    .await
+                    .context("could not press the key")?;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            socket
+                .send(send(protocol::key_command("Release", key)))
+                .await
+        }
+    }
+    .context("could not send the key")?;
+    // Closing at once can drop the key before the TV reads it.
+    tokio::time::sleep(Duration::from_millis(300)).await;
     let _ = socket.close(None).await;
     Ok(found)
 }
@@ -159,22 +190,61 @@ pub async fn art(
     value: Option<&str>,
 ) -> Result<Vec<ArtReply>> {
     let mut socket = connect(host, protocol::ART_CHANNEL, token).await?;
+    // The TV answers "No Authorized" to anything sent before the channel is ready.
+    wait_ready(&mut socket).await?;
+    let id = request_id();
     socket
-        .send(Message::Text(protocol::art_payload(request, value).into()))
+        .send(Message::Text(
+            protocol::art_payload(request, value, &id).into(),
+        ))
         .await
         .context("could not send the art command")?;
     let mut replies = Vec::new();
     let start = tokio::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(2) {
-        let Some(text) = read_text(&mut socket, Duration::from_millis(700)).await? else {
+    while start.elapsed() < Duration::from_secs(3) {
+        let Some(text) = read_text(&mut socket, Duration::from_secs(3)).await? else {
             break;
         };
         if let Some(reply) = protocol::parse_art_message(&text) {
+            let answered = matches!(reply, ArtReply::Mode(_));
             replies.push(reply);
+            if answered {
+                break;
+            }
         }
     }
     let _ = socket.close(None).await;
     Ok(replies)
+}
+
+async fn wait_ready<S>(socket: &mut WebSocketStream<S>) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(4);
+    while tokio::time::Instant::now() < deadline {
+        let wait = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let Some(text) = read_text(socket, wait).await? else {
+            continue;
+        };
+        if text.contains("\"ms.channel.ready\"") {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("the TV did not open the channel")
+}
+
+fn request_id() -> String {
+    let bytes: [u8; 16] = rand::random();
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
 }
 
 pub async fn device_info(host: &str) -> Result<DeviceInfo> {

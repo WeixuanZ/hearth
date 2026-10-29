@@ -1,8 +1,9 @@
 //! The Frame, as one HomeKit television.
 //!
-//! Art is an input, next to the four HDMI sockets. Brightness is the art-mode
-//! brightness. Volume buttons send the TV's own volume keys, because the set
-//! does not tell us the level.
+//! Power is the television's own on and off. Art mode is a switch linked to it,
+//! so it sits beside power rather than among the HDMI inputs. Brightness is the
+//! art-mode brightness. Volume buttons send the TV's own volume keys, because
+//! the set does not tell us the level. Navigation is Control Center's remote.
 
 use super::protocol::Input;
 use crate::{
@@ -15,7 +16,7 @@ use hap::{
     characteristic::HapCharacteristic,
     service::{
         accessory_information::AccessoryInformationService, input_source::InputSourceService,
-        speaker::SpeakerService, television::TelevisionService, HapService,
+        speaker::SpeakerService, switch::SwitchService, television::TelevisionService, HapService,
     },
     HapType,
 };
@@ -32,7 +33,11 @@ pub struct FrameAccessory {
     television: TelevisionService,
     speaker: SpeakerService,
     inputs: Vec<InputSourceService>,
+    art: SwitchService,
 }
+
+/// Service iid of the art switch, after the input slots (50 to 98).
+const ART: u64 = 100;
 
 impl HapAccessory for FrameAccessory {
     fn get_id(&self) -> u64 {
@@ -54,6 +59,7 @@ impl HapAccessory for FrameAccessory {
     fn get_services(&self) -> Vec<&dyn HapService> {
         let mut services: Vec<&dyn HapService> = vec![&self.info, &self.television, &self.speaker];
         services.extend(self.inputs.iter().map(|input| input as &dyn HapService));
+        services.push(&self.art);
         services
     }
     fn get_mut_services(&mut self) -> Vec<&mut dyn HapService> {
@@ -64,6 +70,7 @@ impl HapAccessory for FrameAccessory {
                 .iter_mut()
                 .map(|input| input as &mut dyn HapService),
         );
+        services.push(&mut self.art);
         services
     }
 }
@@ -146,13 +153,7 @@ pub async fn build(
 
     let mut next = 50;
     let mut inputs = Vec::new();
-    for input in [
-        Input::Art,
-        Input::Hdmi1,
-        Input::Hdmi2,
-        Input::Hdmi3,
-        Input::Hdmi4,
-    ] {
+    for input in Input::ALL {
         let mut source = InputSourceService::new(next, device.aid);
         set_text(&mut source.configured_name, input.label()).await?;
         set_text(&mut source.name, input.label()).await?;
@@ -191,7 +192,18 @@ pub async fn build(
         next += 10;
         inputs.push(source);
     }
-    television.set_linked_services(inputs.iter().map(|source| source.get_id()).collect());
+    let mut art = SwitchService::new(ART, device.aid);
+    if let Some(name) = art.name.as_mut() {
+        set_text(name, "Art mode").await?;
+    }
+    if let Some(name) = art.configured_name.as_mut() {
+        set_text(name, "Art mode").await?;
+    }
+    hook_bool(&mut art.power_state, suppress, tx, Command::Art);
+
+    let mut linked: Vec<u64> = inputs.iter().map(|source| source.get_id()).collect();
+    linked.push(ART);
+    television.set_linked_services(linked);
 
     Ok(FrameAccessory {
         id: device.aid,
@@ -199,6 +211,7 @@ pub async fn build(
         television,
         speaker,
         inputs,
+        art,
     })
 }
 
@@ -212,6 +225,7 @@ async fn set_text(characteristic: &mut impl HapCharacteristic, text: &str) -> Re
 #[derive(Clone)]
 pub struct View {
     pub on: bool,
+    pub art: bool,
     pub input: u32,
     pub brightness: Option<i32>,
 }
@@ -222,6 +236,13 @@ pub async fn apply(accessory: &mut dyn HapAccessory, view: &View) -> Result<()> 
         HapType::Television,
         HapType::Active,
         json!(if view.on { 1 } else { 0 }),
+    )
+    .await?;
+    put(
+        accessory,
+        HapType::Switch,
+        HapType::PowerState,
+        json!(view.art),
     )
     .await?;
     if view.input != 0 {
@@ -262,6 +283,25 @@ mod tests {
         };
         let suppress = Arc::new(AtomicBool::new(false));
         let (tx, _rx) = mpsc::channel(4);
-        assert_unique_iids(&build(&device, &suppress, &tx).await.unwrap());
+        let frame = build(&device, &suppress, &tx).await.unwrap();
+        assert_unique_iids(&frame);
+
+        let value = serde_json::to_value(&frame).unwrap();
+        let services = value["services"].as_array().unwrap();
+        let television = services
+            .iter()
+            .find(|service| service["iid"] == 20)
+            .unwrap();
+        assert_eq!(television["linked"], json!([50, 60, 70, 80, ART]));
+        let art = services
+            .iter()
+            .find(|service| service["iid"] == ART)
+            .unwrap();
+        let name = art["characteristics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|characteristic| characteristic["value"].as_str());
+        assert_eq!(name, Some("Art mode"));
     }
 }

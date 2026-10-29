@@ -1,7 +1,7 @@
 use aead::{generic_array::GenericArray, AeadInPlace, NewAead};
 use chacha20poly1305::ChaCha20Poly1305;
 use futures::future::{BoxFuture, FutureExt};
-use hyper::{body::Buf, Body};
+use hyper::Body;
 use log::{debug, info};
 use num::BigUint;
 use rand::{rngs::OsRng, RngCore};
@@ -70,13 +70,13 @@ impl TlvHandlerExt for PairSetup {
 
     fn parse(&self, body: Body) -> BoxFuture<'_,Result<Step, tlv::ErrorContainer>> {
         async {
-            let aggregated_body = hyper::body::aggregate(body)
+            let aggregated_body = hyper::body::to_bytes(body)
                 .await
                 .map_err(|_| tlv::ErrorContainer::new(StepNumber::Unknown as u8, tlv::Error::Unknown))?;
 
-            debug!("received body: {:?}", aggregated_body.chunk());
+            debug!("received body: {:?}", &aggregated_body[..]);
 
-            let mut decoded = tlv::decode(aggregated_body.chunk());
+            let mut decoded = tlv::decode(&aggregated_body[..]);
             match decoded.get(&(Type::State as u8)) {
                 Some(method) => match method[0] {
                     x if x == StepNumber::SrpStartRequest as u8 => Ok(Step::Start),

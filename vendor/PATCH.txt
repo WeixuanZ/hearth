@@ -4,4 +4,8 @@ Changes from upstream:
   library once. See src/config.rs get_local_ip.
 - Every service sends its linked services to Home ("linked"), when it has
   any. Upstream left them out, so Home could not group linked services.
+- Read the whole request body. Upstream parsed only its first chunk, so a
+  request split across frames, like Home's event subscriptions for a TV,
+  failed with 500 and Home reconnected without end.
+- The switch service carries Configured Name, which Home labels it by.
 - Clear the Rust warnings the crate raises.

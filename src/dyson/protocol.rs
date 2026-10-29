@@ -15,6 +15,8 @@ pub enum Intent {
     /// Manual fan speed, 1 through 10.
     Speed(u8),
     Swing(bool),
+    /// Oscillate across this many degrees, around where the fan points.
+    Sweep(u16),
     Night(bool),
     /// Front jet (focused) versus the wide, diffused stream.
     Focus(bool),
@@ -25,6 +27,34 @@ pub enum Intent {
     HeatTargetC(f32),
 }
 
+impl Intent {
+    /// Parses `hearth dyson set` arguments, like `power on` or `speed 4`.
+    pub fn parse(what: &str, value: &str) -> Option<Self> {
+        let on = match value {
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => None,
+        };
+        Some(match what {
+            "power" => Self::Power(on?),
+            "auto" => Self::Auto(on?),
+            "speed" => Self::Speed(value.parse().ok().filter(|n| (1..=10).contains(n))?),
+            "swing" => match on {
+                Some(on) => Self::Swing(on),
+                None => Self::Sweep(value.parse().ok()?),
+            },
+            "night" => Self::Night(on?),
+            "focus" => Self::Focus(on?),
+            "monitor" => Self::Monitor(on?),
+            "heat" => match on {
+                Some(on) => Self::Heat(on),
+                None => Self::HeatTargetC(value.parse().ok()?),
+            },
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MachineState {
     pub power_on: bool,
@@ -33,6 +63,9 @@ pub struct MachineState {
     pub oscillating: bool,
     /// Some firmware says `OION`/`OIOF` instead of `ON`/`OFF`.
     pub oscillation_extended: bool,
+    /// Sweep limits in degrees (`osal`, `osau`). Equal limits sweep nothing.
+    pub oscillation_low: Option<u16>,
+    pub oscillation_high: Option<u16>,
     pub night: bool,
     pub focus: bool,
     pub monitoring: bool,
@@ -191,6 +224,12 @@ fn apply_machine_fields(state: &mut MachineState, map: &Map<String, Value>) {
         state.oscillation_extended = matches!(oson.as_str(), "OION" | "OIOF");
         state.oscillating = matches!(oson.as_str(), "ON" | "OION");
     }
+    if let Some(low) = field_str(map, "osal").and_then(|raw| raw.trim().parse().ok()) {
+        state.oscillation_low = Some(low);
+    }
+    if let Some(high) = field_str(map, "osau").and_then(|raw| raw.trim().parse().ok()) {
+        state.oscillation_high = Some(high);
+    }
     if let Some(night) = field_str(map, "nmod") {
         state.night = night == "ON";
     }
@@ -295,19 +334,21 @@ pub fn intent_fields(state: &MachineState, intent: &Intent) -> Vec<(&'static str
             ("auto", "OFF".into()),
             ("fnsp", format!("{:04}", (*speed).clamp(1, 10))),
         ],
-        Intent::Swing(on) => {
-            let value = match (state.oscillation_extended, on) {
-                (true, true) => "OION",
-                (true, false) => "OIOF",
-                (false, true) => "ON",
-                (false, false) => "OFF",
+        // Equal limits oscillate across nothing, so a range too narrow to
+        // see becomes a 90° sweep. A wider one, set in the Dyson app, stays.
+        Intent::Swing(true) => match sweep(state) {
+            Some(width) if width >= MIN_SWEEP => oscillate(state, None),
+            _ => oscillate(state, Some(DEFAULT_SWEEP)),
+        },
+        Intent::Swing(false) => {
+            let off = if state.oscillation_extended {
+                "OIOF"
+            } else {
+                "OFF"
             };
-            let mut fields = vec![("oson", value.into())];
-            if *on {
-                fields.insert(0, ("fpwr", "ON".into()));
-            }
-            fields
+            vec![("oson", off.into())]
         }
+        Intent::Sweep(width) => oscillate(state, Some(*width)),
         Intent::Night(true) => vec![("nmod", "ON".into())],
         Intent::Night(false) => vec![("nmod", "OFF".into())],
         Intent::Focus(true) => vec![("fdir", "ON".into())],
@@ -323,6 +364,43 @@ pub fn intent_fields(state: &MachineState, intent: &Intent) -> Vec<(&'static str
             ]
         }
     }
+}
+
+/// The sweeps the Dyson app offers, in degrees.
+pub const SWEEPS: [u16; 4] = [45, 90, 180, 350];
+const DEFAULT_SWEEP: u16 = 90;
+/// The fan rejects a narrower range. Its limits sit in 5–355.
+const MIN_SWEEP: u16 = 30;
+
+/// Degrees between the oscillation limits.
+pub fn sweep(state: &MachineState) -> Option<u16> {
+    Some(
+        state
+            .oscillation_high?
+            .saturating_sub(state.oscillation_low?),
+    )
+}
+
+/// Oscillation on, with a new sweep of `width` around where the fan points.
+fn oscillate(state: &MachineState, width: Option<u16>) -> Vec<(&'static str, String)> {
+    let on = if state.oscillation_extended {
+        "OION"
+    } else {
+        "ON"
+    };
+    let mut fields = vec![("fpwr", "ON".into()), ("oson", on.into())];
+    if let Some(width) = width {
+        let width = width.clamp(MIN_SWEEP, 350);
+        let centre = match (state.oscillation_low, state.oscillation_high) {
+            (Some(low), Some(high)) => (low + high) / 2,
+            _ => 180,
+        };
+        let low = centre.saturating_sub(width / 2).clamp(5, 355 - width);
+        fields.push(("ancp", "CUST".into()));
+        fields.push(("osal", format!("{low:04}")));
+        fields.push(("osau", format!("{:04}", low + width)));
+    }
+    fields
 }
 
 pub fn state_set_payload(fields: &[(&str, String)]) -> String {
@@ -443,6 +521,72 @@ mod tests {
         assert_eq!(hmax, "2950");
         let payload = state_set_payload(&fields);
         assert!(payload.contains("STATE-SET") && payload.contains("LAPP"));
+    }
+
+    #[test]
+    fn oscillation_widens_a_range_that_sweeps_nothing() {
+        let mut state = MachineState::default();
+        let current = r#"{"msg":"CURRENT-STATE","product-state":{"oson":"OFF","osal":"0100","osau":"0100","ancp":"CUST"}}"#;
+        assert!(apply_message(&mut state, "000X/SN/status/current", current));
+        assert_eq!(
+            (state.oscillation_low, state.oscillation_high),
+            (Some(100), Some(100))
+        );
+        let fields = intent_fields(&state, &Intent::Swing(true));
+        let get = |key: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("oson"), Some("ON"));
+        assert_eq!(get("ancp"), Some("CUST"));
+        assert_eq!(get("osal"), Some("0055"));
+        assert_eq!(get("osau"), Some("0145"));
+
+        // A range set in the Dyson app is kept.
+        state.oscillation_low = Some(45);
+        state.oscillation_high = Some(315);
+        let fields = intent_fields(&state, &Intent::Swing(true));
+        assert!(!fields.iter().any(|(k, _)| *k == "osal" || *k == "osau"));
+
+        // Near the end stops, the sweep stays inside 5–355.
+        state.oscillation_low = Some(350);
+        state.oscillation_high = Some(350);
+        let fields = intent_fields(&state, &Intent::Swing(true));
+        let get = |key: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!((get("osal"), get("osau")), (Some("0265"), Some("0355")));
+
+        // Off sends only oson.
+        let fields = intent_fields(&state, &Intent::Swing(false));
+        assert_eq!(fields, vec![("oson", "OFF".into())]);
+
+        // A preset sweep keeps its centre and stays inside the limits.
+        state.oscillation_low = Some(56);
+        state.oscillation_high = Some(146);
+        assert_eq!(sweep(&state), Some(90));
+        let fields = intent_fields(&state, &Intent::Sweep(45));
+        let get = |key: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!((get("osal"), get("osau")), (Some("0079"), Some("0124")));
+        let fields = intent_fields(&state, &Intent::Sweep(350));
+        let get = |key: &str| {
+            fields
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!((get("osal"), get("osau")), (Some("0005"), Some("0355")));
+        assert_eq!(Intent::parse("swing", "180"), Some(Intent::Sweep(180)));
     }
 
     #[test]
