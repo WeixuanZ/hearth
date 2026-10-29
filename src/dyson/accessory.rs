@@ -550,6 +550,8 @@ mod tests {
             host: String::new(),
             port: 1883,
             heating: false,
+            updated: 0,
+            removed: false,
         };
         let suppress = Arc::new(AtomicBool::new(false));
         let (tx, _rx) = mpsc::channel(4);
@@ -602,6 +604,8 @@ mod tests {
             host: String::new(),
             port: 1883,
             heating: true,
+            updated: 0,
+            removed: false,
         };
         let suppress = Arc::new(AtomicBool::new(false));
         let (tx, _rx) = mpsc::channel(4);
@@ -622,6 +626,8 @@ mod tests {
             host: String::new(),
             port: 1883,
             heating: true,
+            updated: 0,
+            removed: false,
         };
         let suppress = Arc::new(AtomicBool::new(false));
         let (tx, _rx) = mpsc::channel(4);

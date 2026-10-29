@@ -14,15 +14,16 @@ use hap::{
     Config as HapConfig, MacAddress, Pin,
 };
 use std::net::{IpAddr, Ipv6Addr};
+use tokio::sync::watch;
 
 /// Listen on every address. hap picks the first interface address, often an
 /// IPv6 one, while mDNS advertises them all, so Home may dial one we ignore.
 /// On macOS `[::]` takes IPv4 too.
 const LISTEN_ON: IpAddr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
 
-pub async fn serve(config: Config) -> Result<()> {
+pub async fn serve(mut config: Config, mut stop: watch::Receiver<bool>) -> Result<()> {
+    config.devices = config::live_devices(&config);
     status::begin(&config);
-    let _status = StatusFile;
     let server = open(&config).await?;
     for device in config.devices {
         match device {
@@ -37,28 +38,31 @@ pub async fn serve(config: Config) -> Result<()> {
     );
     println!("This process has to stay awake and on the same network as the devices.");
 
-    tokio::spawn(async {
+    let mut flush_stop = stop.clone();
+    let flush = tokio::spawn(async move {
         loop {
-            status::flush();
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::select! {
+                changed = flush_stop.changed() => {
+                    if changed.is_err() || *flush_stop.borrow() {
+                        break;
+                    }
+                }
+                () = tokio::time::sleep(std::time::Duration::from_secs(2)) => status::flush(),
+            }
         }
     });
 
-    tokio::select! {
+    let result = tokio::select! {
         result = server.run_handle() => {
-            result.map_err(|error| anyhow!("HomeKit stopped: {error}"))?;
+            result.map_err(|error| anyhow!("HomeKit stopped: {error}"))
         }
-        _ = tokio::signal::ctrl_c() => log::info!("stopping"),
-    }
-    Ok(())
-}
-
-struct StatusFile;
-
-impl Drop for StatusFile {
-    fn drop(&mut self) {
-        status::finish();
-    }
+        _ = stop.changed() => {
+            log::info!("releasing HomeKit so another machine can serve");
+            Ok(())
+        }
+    };
+    flush.abort();
+    result
 }
 
 async fn open(config: &Config) -> Result<IpServer> {

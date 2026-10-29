@@ -1,4 +1,5 @@
 mod bridge;
+mod cluster;
 mod config;
 mod dyson;
 mod frame;
@@ -22,7 +23,15 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Advertise every configured device, and keep doing so.
+    /// Other hearth processes on this network share the work.
     Run,
+    /// The devices the menu can add.
+    Products,
+    /// Stop showing a device in Home. Other machines drop it too.
+    Remove {
+        /// The device's name.
+        name: String,
+    },
     /// Read each device once. Does not start HomeKit.
     Status,
     /// Print the pairing code Apple Home will ask for.
@@ -59,6 +68,18 @@ enum DysonCommand {
         #[arg(long, default_value = "GB")]
         country: String,
         /// Serial, if the account has more than one fan.
+        #[arg(long)]
+        serial: Option<String>,
+    },
+    /// Ask Dyson to email a login code. The menu uses this, then `submit`.
+    Request {
+        #[arg(long)]
+        email: String,
+        #[arg(long, default_value = "GB")]
+        country: String,
+    },
+    /// Finish a login started with `request`. Reads the password and the code.
+    Submit {
         #[arg(long)]
         serial: Option<String>,
     },
@@ -113,12 +134,21 @@ async fn main() -> Result<()> {
     env_logger::init();
 
     match Cli::parse().command {
-        Command::Run => {
-            let config = config::load()?;
-            if config.devices.is_empty() {
-                anyhow::bail!("no devices yet. Run `hearth dyson login` or `hearth frame pair`");
-            }
-            bridge::serve(config).await?;
+        Command::Run => cluster::run().await?,
+        Command::Products => {
+            println!(
+                "{}",
+                serde_json::json!([
+                    {"id": "dyson-hp09", "kind": "dyson", "name": "Dyson Purifier Hot+Cool Formaldehyde"},
+                    {"id": "frame-2024", "kind": "frame", "name": "Samsung The Frame"}
+                ])
+            );
+        }
+        Command::Remove { name } => {
+            let mut config = config::load()?;
+            config::remove_device(&mut config, &name)?;
+            config::save(&config)?;
+            println!("Removed {name}. The bridge picks that up within a few seconds.");
         }
         Command::Status => {
             let config = config::load()?;
@@ -148,6 +178,7 @@ async fn main() -> Result<()> {
             // already in a home.
             let mut config = config::load()?;
             config.bridge_id = format!("hearth-{:016x}", rand::random::<u64>());
+            config.updated = config::now_secs();
             config::save(&config)?;
             println!("Forgot {removed} pairing(s), and took a new HomeKit identity.");
             println!("Restart the bridge, then in Home: Add Accessory → More options… → Hearth.");
@@ -160,6 +191,12 @@ async fn main() -> Result<()> {
                 country,
                 serial,
             } => dyson::login(email, country, serial).await?,
+            DysonCommand::Request { email, country } => dyson::request(email, country).await?,
+            DysonCommand::Submit { serial } => {
+                let password = secret("MyDyson password: ")?;
+                let code = secret("Email code: ")?;
+                dyson::submit(password, code, serial).await?
+            }
             DysonCommand::Set { what, value } => dyson::set(&what, &value).await?,
         },
         Command::Frame { command } => match command {
@@ -191,6 +228,21 @@ async fn status(device: &config::Device) -> Result<()> {
 pub fn prompt(label: &str) -> Result<String> {
     print!("{label}");
     io::stdout().flush()?;
+    read_required()
+}
+
+/// A prompt on a terminal, or one line from the menu.
+fn secret(label: &str) -> Result<String> {
+    if io::IsTerminal::is_terminal(&io::stdin()) {
+        if label.contains("password") {
+            return Ok(rpassword::prompt_password(label)?);
+        }
+        return prompt(label);
+    }
+    read_required()
+}
+
+fn read_required() -> Result<String> {
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line)?;
     let line = line.trim().to_owned();

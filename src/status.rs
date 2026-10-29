@@ -40,6 +40,10 @@ struct Snapshot {
     pin: String,
     /// Whether a Home holds a pairing. The menu bar offers to forget it.
     paired: bool,
+    /// `leader` serves Home. `standby` follows another machine. `conflict` is two Homes.
+    role: String,
+    /// Hostname of the machine whose bridge Home is talking to.
+    leader: String,
     devices: Vec<DeviceSnap>,
 }
 
@@ -53,6 +57,8 @@ pub fn begin(config: &Config) {
         name: config.name.clone(),
         pin: config.homekit_pin.clone(),
         paired: config::paired(),
+        role: "leader".into(),
+        leader: String::new(),
         devices,
     };
     let mut guard = STATE.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -91,6 +97,49 @@ pub fn flush() {
     let copy = state.clone();
     drop(guard);
     let _ = write(&copy);
+}
+
+pub fn set_membership(role: &str, leader: &str) {
+    let mut guard = STATE.lock().unwrap_or_else(|poison| poison.into_inner());
+    let Some(state) = guard.as_mut() else {
+        return;
+    };
+    state.role = role.to_owned();
+    state.leader = leader.to_owned();
+    state.updated = now();
+    let copy = state.clone();
+    drop(guard);
+    let _ = write(&copy);
+}
+
+/// What a machine shows while it is not the HomeKit bridge.
+pub fn publish_standby(config: &Config, leader: &str, role: &str) {
+    let devices = config
+        .devices
+        .iter()
+        .filter(|device| !device.removed())
+        .map(|device| {
+            let mut snap = waiting(device);
+            if !leader.is_empty() {
+                snap.headline = format!("Via {leader}");
+            }
+            snap
+        })
+        .collect();
+    let snap = Snapshot {
+        pid: std::process::id(),
+        updated: now(),
+        name: config.name.clone(),
+        pin: config.homekit_pin.clone(),
+        paired: config::paired(),
+        role: role.to_owned(),
+        leader: leader.to_owned(),
+        devices,
+    };
+    let mut guard = STATE.lock().unwrap_or_else(|poison| poison.into_inner());
+    *guard = Some(snap.clone());
+    drop(guard);
+    let _ = write(&snap);
 }
 
 pub fn finish() {

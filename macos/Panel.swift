@@ -7,18 +7,21 @@ struct Panel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if model.running || model.forgetting {
+            if model.adding {
+                AddDevice(model: model)
+                    .padding(.top, 14)
+            } else if model.running || model.forgetting {
                 HomeCard(model: model)
                     .padding(.top, 14)
             }
-            if let devices = model.snapshot?.devices, model.running, !devices.isEmpty {
+            if !model.adding, let devices = model.snapshot?.devices, model.running, !devices.isEmpty {
                 VStack(spacing: 8) {
                     ForEach(devices) { device in
-                        DeviceCard(device: device)
+                        DeviceCard(device: device, model: model)
                     }
                 }
                 .padding(.top, 14)
-            } else {
+            } else if !model.adding {
                 empty
                     .padding(.top, 16)
             }
@@ -26,7 +29,7 @@ struct Panel: View {
                 .padding(.top, 16)
         }
         .padding(16)
-        .frame(width: 312, alignment: .leading)
+        .frame(width: 320, alignment: .leading)
     }
 
     private var header: some View {
@@ -40,10 +43,24 @@ struct Panel: View {
                         ? Color(red: 0.18, green: 0.70, blue: 0.44)
                         : Color.primary.opacity(0.22))
                     .frame(width: 7, height: 7)
-                Text(model.running ? "Running" : "Stopped")
+                Text(statusLine)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var statusLine: String {
+        switch model.snapshot?.role {
+        case "standby":
+            let who = model.snapshot?.leader ?? ""
+            return who.isEmpty ? "Following another Mac" : "Following \(who)"
+        case "conflict":
+            return "Two different Homes"
+        case "starting":
+            return "Looking for other Macs"
+        default:
+            return model.running ? "Serving Home" : "Stopped"
         }
     }
 
@@ -63,6 +80,26 @@ struct Panel: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let notice = model.notice, !notice.isEmpty {
+                Text(notice)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let tag = model.updateTag {
+                Button(model.updating ? "Updating \(tag)" : "Update to \(tag)") {
+                    model.installUpdate()
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.updating)
+            }
+            Toggle("Start at login", isOn: Binding(
+                get: { model.loginItem },
+                set: { model.setLogin($0) }
+            ))
+            .font(.system(size: 12))
+            .toggleStyle(.switch)
+            .controlSize(.small)
             HStack(spacing: 8) {
                 Button(model.starting ? "Starting" : (model.running ? "Stop" : "Start")) {
                     if model.running {
@@ -74,6 +111,9 @@ struct Panel: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .disabled(model.starting)
+                Button("Add") { model.adding = true }
+                    .buttonStyle(.bordered)
+                    .disabled(model.products.isEmpty)
                 Spacer()
                 Button("Quit") {
                     NSApplication.shared.terminate(nil)
@@ -195,6 +235,7 @@ private struct HomeCard: View {
 
 private struct DeviceCard: View {
     let device: DeviceSnap
+    @ObservedObject var model: BridgeModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -210,6 +251,18 @@ private struct DeviceCard: View {
                 Text(device.headline)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(device.online ? Color.primary : Color.secondary)
+                Menu {
+                    Button("Remove from Home", role: .destructive) {
+                        model.removeDevice(device.name)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 16)
             }
             if !device.detail.isEmpty {
                 Text(device.detail)

@@ -66,6 +66,18 @@ pub struct Challenge {
     challenge_id: String,
 }
 
+impl Challenge {
+    pub fn email(&self) -> &str {
+        &self.email
+    }
+    pub fn country(&self) -> &str {
+        &self.country
+    }
+    pub fn id(&self) -> &str {
+        &self.challenge_id
+    }
+}
+
 /// Checks the account and asks Dyson to email a login code.
 pub async fn request_code(email: &str, country: &str) -> Result<Challenge> {
     let country = country.trim().to_ascii_uppercase();
@@ -135,6 +147,25 @@ pub async fn request_code(email: &str, country: &str) -> Result<Challenge> {
         country,
         email: email.to_owned(),
         challenge_id,
+    })
+}
+
+/// Continues a login after the code email, on a new process.
+pub fn resume(email: &str, country: &str, challenge_id: &str) -> Result<Challenge> {
+    let country = country.trim().to_ascii_uppercase();
+    if country.len() != 2 || challenge_id.is_empty() {
+        return Err(anyhow!("the login code request expired. Ask for another"));
+    }
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    Ok(Challenge {
+        client,
+        host: api_host(&country),
+        country,
+        email: email.to_owned(),
+        challenge_id: challenge_id.to_owned(),
     })
 }
 

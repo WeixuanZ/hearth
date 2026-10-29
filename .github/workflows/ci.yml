@@ -53,6 +53,6 @@ jobs:
         run: |
           swiftc -parse-as-library \
             -target arm64-apple-macosx13.0 \
-            -framework SwiftUI -framework AppKit \
+            -framework SwiftUI -framework AppKit -framework ServiceManagement \
             -o "$RUNNER_TEMP/Hearth" \
-            HearthBar.swift Model.swift Panel.swift
+            HearthBar.swift Model.swift Panel.swift MenuExtras.swift

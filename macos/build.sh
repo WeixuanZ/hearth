@@ -12,9 +12,9 @@ cp Info.plist "$app/Contents/Info.plist"
 arch=$(uname -m)
 swiftc -O -parse-as-library \
   -target "${arch}-apple-macosx13.0" \
-  -framework SwiftUI -framework AppKit \
+  -framework SwiftUI -framework AppKit -framework ServiceManagement \
   -o "$app/Contents/MacOS/Hearth" \
-  HearthBar.swift Model.swift Panel.swift
+  HearthBar.swift Model.swift Panel.swift MenuExtras.swift
 
 # Not "hearth": on a case-insensitive disk that is the same file as "Hearth",
 # and copying it would replace the app itself.

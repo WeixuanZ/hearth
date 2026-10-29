@@ -62,6 +62,8 @@ pub async fn login(email: String, country: String, serial: Option<String>) -> Re
             host: String::new(),
             port: 1883,
             heating: true,
+            updated: 0,
+            removed: false,
         },
     );
     let path = config::save(&saved)?;
@@ -70,6 +72,92 @@ pub async fn login(email: String, country: String, serial: Option<String>) -> Re
     println!("Apple Home pairing code: {}", saved.homekit_pin);
     println!("Next: hearth run");
     Ok(())
+}
+
+pub async fn request(email: String, country: String) -> Result<()> {
+    let challenge = cloud::request_code(&email, &country).await?;
+    let pending = PendingLogin {
+        email: challenge.email().to_owned(),
+        country: challenge.country().to_owned(),
+        challenge_id: challenge.id().to_owned(),
+    };
+    save_pending(&pending)?;
+    println!("Dyson has emailed a code to {email}.");
+    Ok(())
+}
+
+pub async fn submit(password: String, code: String, serial: Option<String>) -> Result<()> {
+    let pending = load_pending()?;
+    let challenge = cloud::resume(&pending.email, &pending.country, &pending.challenge_id)?;
+    let devices = cloud::verify(challenge, &password, &code).await?;
+    let device = choose(devices, serial)?;
+    store_fan(device)?;
+    let _ = std::fs::remove_file(pending_path()?);
+    Ok(())
+}
+
+fn store_fan(device: CloudDevice) -> Result<()> {
+    let mut saved = config::load_or_new()?;
+    if saved.bridge_id.is_empty() {
+        saved.bridge_id = device.serial.clone();
+    }
+    config::upsert_dyson(
+        &mut saved,
+        DysonDevice {
+            aid: 0,
+            name: product_name(&device.model),
+            serial: device.serial,
+            model: device.model,
+            product_type: device.product_type,
+            mqtt_password: device.mqtt_password,
+            host: String::new(),
+            port: 1883,
+            heating: true,
+            updated: 0,
+            removed: false,
+        },
+    );
+    let path = config::save(&saved)?;
+    println!("Saved {}.", path.display());
+    println!("Apple Home pairing code: {}", saved.homekit_pin);
+    Ok(())
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PendingLogin {
+    email: String,
+    country: String,
+    challenge_id: String,
+}
+
+fn pending_path() -> Result<std::path::PathBuf> {
+    Ok(config::config_dir()?.join("dyson-login.json"))
+}
+
+fn save_pending(pending: &PendingLogin) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = config::config_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(pending_path()?)?;
+    file.write_all(serde_json::to_string(pending)?.as_bytes())?;
+    Ok(())
+}
+
+fn load_pending() -> Result<PendingLogin> {
+    let path = pending_path()?;
+    let text = std::fs::read_to_string(&path).with_context(|| {
+        format!(
+            "no login in progress. Run `hearth dyson request` ({})",
+            path.display()
+        )
+    })?;
+    serde_json::from_str(&text).context("the saved login could not be read")
 }
 
 fn choose(devices: Vec<CloudDevice>, serial: Option<String>) -> Result<CloudDevice> {
