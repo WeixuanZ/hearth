@@ -1,6 +1,6 @@
 //! What the CLI prints: tables for people, JSON for scripts and agents.
 
-use crate::surfaces::control;
+use crate::{config, surfaces::control};
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::io::IsTerminal;
@@ -72,6 +72,24 @@ pub async fn set(device: &str, capability: &str, value: &str, as_json: bool) -> 
     if as_json {
         print_json(&json!({ "ok": true }))
     } else {
+        Ok(())
+    }
+}
+
+/// Renames through the running bridge, which tells Home at once, or in the
+/// config when the bridge is off.
+pub async fn rename(device: &str, name: &str, as_json: bool) -> Result<()> {
+    if control::running().await {
+        control::request(json!({ "op": "rename", "device": device, "name": name })).await?;
+    } else {
+        let mut config = config::load()?;
+        config::rename(&mut config, device, name)?;
+        config::save(&config)?;
+    }
+    if as_json {
+        print_json(&json!({ "ok": true }))
+    } else {
+        println!("Renamed {device} to {}.", name.trim());
         Ok(())
     }
 }

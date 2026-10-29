@@ -75,7 +75,7 @@ pub fn snapshot(device: &DysonDevice, state: &MachineState) -> Snapshot {
     ]);
 
     Snapshot {
-        id: format!("dyson:{}", device.serial),
+        id: device.id(),
         kind: "dyson",
         category: "purifier",
         name: device.name.clone(),

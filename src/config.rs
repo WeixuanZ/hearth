@@ -69,6 +69,19 @@ pub struct FrameDevice {
     pub art_aid: u64,
 }
 
+impl DysonDevice {
+    /// Stable while the bridge runs: the menu bar, the CLI and Home name it by this.
+    pub fn id(&self) -> String {
+        format!("dyson:{}", self.serial)
+    }
+}
+
+impl FrameDevice {
+    pub fn id(&self) -> String {
+        format!("frame:{}", self.host)
+    }
+}
+
 fn default_mqtt_port() -> u16 {
     1883
 }
@@ -100,6 +113,13 @@ impl Device {
         }
     }
 
+    pub fn id(&self) -> String {
+        match self {
+            Self::Dyson(device) => device.id(),
+            Self::Frame(device) => device.id(),
+        }
+    }
+
     pub fn name(&self) -> &str {
         match self {
             Self::Dyson(device) => &device.name,
@@ -115,7 +135,8 @@ impl Device {
     }
 }
 
-/// Renames the device now called `from`, ignoring case.
+/// Renames the device whose id is `from`, or that is now called `from`,
+/// ignoring case.
 pub fn rename(config: &mut Config, from: &str, to: &str) -> Result<()> {
     let to = to.trim();
     // Home refuses a name that starts or ends with anything but a letter or digit.
@@ -132,7 +153,7 @@ pub fn rename(config: &mut Config, from: &str, to: &str) -> Result<()> {
     let device = config
         .devices
         .iter_mut()
-        .find(|device| device.name().eq_ignore_ascii_case(from.trim()))
+        .find(|device| device.id() == from || device.name().eq_ignore_ascii_case(from.trim()))
         .ok_or_else(|| {
             anyhow::anyhow!("no device is called {from}. Devices: {}", names.join(", "))
         })?;

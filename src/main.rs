@@ -21,6 +21,7 @@ Examples:
   hearth set purifier speed 4
   hearth set purifier sweep 90
   hearth get purifier temperature --json
+  hearth rename tv \"Living room TV\"  Renames it in Home too
 
 A device is its id, name, connector (dyson, frame), kind (purifier, tv), or a
 part of its name. A value is on or off, a number, or an option id listed by
@@ -65,12 +66,12 @@ enum Command {
     Run,
     /// Print the Apple Home pairing code.
     Pin,
-    /// Rename a device. Home shows it after the bridge restarts.
+    /// Rename a device, in the menu bar, the CLI and Home.
     Rename {
-        /// The device's current name.
-        from: String,
+        /// The device: as for `get`, or its current name if the bridge is off.
+        device: String,
         /// The new name.
-        to: String,
+        name: String,
     },
     /// Forget Apple Home, and take a new HomeKit identity. For a bridge
     /// Home will not add again.
@@ -141,15 +142,7 @@ async fn main() -> Result<()> {
             run::serve(config).await?;
         }
         Command::Pin => println!("{}", config::load()?.homekit_pin),
-        Command::Rename { from, to } => {
-            let mut config = config::load()?;
-            config::rename(&mut config, &from, &to)?;
-            config::save(&config)?;
-            println!(
-                "Renamed {from} to {}. Restart the bridge to show it in Home.",
-                to.trim()
-            );
-        }
+        Command::Rename { device, name } => cli::rename(&device, &name, cli.json).await?,
         Command::Unpair => {
             let removed = config::clear_pairings()?;
             // A new identity too. Home may still hold the old one, if it was

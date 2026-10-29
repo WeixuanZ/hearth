@@ -13,10 +13,14 @@ use crate::{
             status_topic, Intent, MachineState, DEFAULT_PRODUCT_TYPES,
         },
     },
+    surfaces::homekit::characteristics::follow_name,
 };
 use accessory::{apply_purifier, build_purifier};
 use anyhow::{anyhow, Result};
-use hap::server::{IpServer, Server};
+use hap::{
+    server::{IpServer, Server},
+    HapType,
+};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -54,6 +58,7 @@ pub async fn spawn(device: DysonDevice, server: IpServer) -> Result<()> {
         .add_accessory(build_purifier(&device, &suppress, &intent_tx).await?)
         .await
         .map_err(|error| anyhow!("{error}"))?;
+    follow_name(&id, purifier.clone(), HapType::AirPurifier);
 
     tokio::spawn(async move {
         let updates = async move {
