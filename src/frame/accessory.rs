@@ -1,7 +1,7 @@
 //! The Frame, as one HomeKit television.
 //!
-//! Power is the television's own on and off. Art mode is a switch linked to it,
-//! so it sits beside power rather than among the HDMI inputs. Brightness is the
+//! Power is the television's own on and off. Art mode is a switch in the same
+//! accessory, so it sits beside power rather than among the inputs. Brightness is the
 //! art-mode brightness. Volume buttons send the TV's own volume keys, because
 //! the set does not tell us the level. Navigation is Control Center's remote.
 
@@ -201,9 +201,9 @@ pub async fn build(
     }
     hook_bool(&mut art.power_state, suppress, tx, Command::Art);
 
-    let mut linked: Vec<u64> = inputs.iter().map(|source| source.get_id()).collect();
-    linked.push(ART);
-    television.set_linked_services(linked);
+    // Home lists every service linked to the TV in its input picker, so only
+    // the inputs are linked. The art switch sits beside them.
+    television.set_linked_services(inputs.iter().map(|source| source.get_id()).collect());
 
     Ok(FrameAccessory {
         id: device.aid,
@@ -292,7 +292,7 @@ mod tests {
             .iter()
             .find(|service| service["iid"] == 20)
             .unwrap();
-        assert_eq!(television["linked"], json!([50, 60, 70, 80, ART]));
+        assert_eq!(television["linked"], json!([50, 60, 70, 80]));
         let art = services
             .iter()
             .find(|service| service["iid"] == ART)
