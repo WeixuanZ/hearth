@@ -7,6 +7,10 @@ struct Panel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            if model.snapshot?.join != nil || model.snapshot?.join_code != nil || model.snapshot?.other != nil {
+                joinCards
+                    .padding(.top, 14)
+            }
             if model.adding {
                 AddDevice(model: model)
                     .padding(.top, 14)
@@ -57,11 +61,74 @@ struct Panel: View {
             return who.isEmpty ? "Following another Mac" : "Following \(who)"
         case "conflict":
             return "Two different Homes"
+        case "joining":
+            return "Waiting to join"
         case "starting":
             return "Looking for other Macs"
         default:
             return model.running ? "Serving Home" : "Stopped"
         }
+    }
+
+    private var joinCards: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let code = model.snapshot?.join_code, !code.isEmpty {
+                joinCode(code, host: model.snapshot?.leader ?? "")
+            }
+            if let ask = model.snapshot?.join {
+                approve(ask.name)
+            }
+            if let other = model.snapshot?.other, !other.isEmpty, model.snapshot?.join_code == nil {
+                otherGroup(other)
+            }
+        }
+    }
+
+    private func joinCode(_ code: String, host: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(host.isEmpty ? "Type this code on the other computer" : "Type this code on \(host)")
+                .font(.system(size: 13, weight: .semibold))
+            Text(code)
+                .font(.system(size: 28, weight: .semibold, design: .monospaced))
+                .textSelection(.enabled)
+            Text("Type this on the other computer. Then confirm here, and only if that computer asked for this code.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            Button("I typed it there") { model.confirmJoin() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            Button("Stay separate") { model.startGroup() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardFill)
+    }
+
+    private func approve(_ name: String) -> some View {
+        ApproveJoin(name: name, model: model)
+    }
+
+    private func otherGroup(_ name: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(name) is a separate Hearth")
+                .font(.system(size: 13, weight: .semibold))
+            Text("Joining it leaves this group. The other computer has to approve.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            Button("Join it") { model.leaveGroup() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(cardFill)
+    }
+
+    private var cardFill: some View {
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.primary.opacity(0.045))
     }
 
     private var empty: some View {

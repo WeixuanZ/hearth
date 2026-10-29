@@ -69,3 +69,32 @@ struct AddDevice: View {
         .textFieldStyle(.roundedBorder)
     }
 }
+
+struct ApproveJoin: View {
+    let name: String
+    @ObservedObject var model: BridgeModel
+    @State private var code = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(name) wants to join")
+                .font(.system(size: 13, weight: .semibold))
+            Text("Type the code on its screen. If it is different, decline.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            TextField("Code", text: $code)
+            HStack {
+                Button("Not now") { model.declineJoin() }
+                Button("Approve") { model.approveJoin(code) }
+                    .disabled(code.isEmpty)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.045))
+        )
+        .textFieldStyle(.roundedBorder)
+    }
+}

@@ -41,11 +41,36 @@ struct Snapshot {
     /// Whether a Home holds a pairing. The menu bar offers to forget it.
     paired: bool,
     /// `leader` serves Home. `standby` follows another machine. `conflict` is two Homes.
+    /// `joining` is waiting to be approved. `starting` is looking for the group.
     role: String,
-    /// Hostname of the machine whose bridge Home is talking to.
+    /// Hostname of the machine whose bridge Home is talking to, or the computer
+    /// this one is asking to join.
     leader: String,
+    /// A computer is asking to join. The code stays on the other screen.
+    join: Option<JoinAsk>,
+    /// The code this computer shows while it waits to be approved.
+    join_code: Option<String>,
+    /// Another group is on the network, announced under this name.
+    other: Option<String>,
     devices: Vec<DeviceSnap>,
 }
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+struct JoinAsk {
+    name: String,
+}
+
+struct ClusterExtras {
+    ask: Option<String>,
+    code: Option<String>,
+    other: Option<String>,
+}
+
+static EXTRAS: Mutex<ClusterExtras> = Mutex::new(ClusterExtras {
+    ask: None,
+    code: None,
+    other: None,
+});
 
 static STATE: Mutex<Option<Snapshot>> = Mutex::new(None);
 
@@ -59,6 +84,9 @@ pub fn begin(config: &Config) {
         paired: config::paired(),
         role: "leader".into(),
         leader: String::new(),
+        join: None,
+        join_code: None,
+        other: None,
         devices,
     };
     let mut guard = STATE.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -99,17 +127,33 @@ pub fn flush() {
     let _ = write(&copy);
 }
 
-pub fn set_membership(role: &str, leader: &str) {
+pub fn set_cluster_note(
+    config: &Config,
+    role: &str,
+    leader: &str,
+    ask: Option<String>,
+    code: Option<String>,
+    other: Option<String>,
+) {
+    {
+        let mut extras = EXTRAS.lock().unwrap_or_else(|poison| poison.into_inner());
+        extras.ask = ask;
+        extras.code = code;
+        extras.other = other;
+    }
     let mut guard = STATE.lock().unwrap_or_else(|poison| poison.into_inner());
-    let Some(state) = guard.as_mut() else {
+    if let Some(state) = guard.as_mut() {
+        state.role = role.to_owned();
+        state.leader = leader.to_owned();
+        state.updated = now();
+        state.pid = std::process::id();
+        let copy = state.clone();
+        drop(guard);
+        let _ = write(&copy);
         return;
-    };
-    state.role = role.to_owned();
-    state.leader = leader.to_owned();
-    state.updated = now();
-    let copy = state.clone();
+    }
     drop(guard);
-    let _ = write(&copy);
+    publish_standby(config, leader, role);
 }
 
 /// What a machine shows while it is not the HomeKit bridge.
@@ -134,6 +178,9 @@ pub fn publish_standby(config: &Config, leader: &str, role: &str) {
         paired: config::paired(),
         role: role.to_owned(),
         leader: leader.to_owned(),
+        join: None,
+        join_code: None,
+        other: None,
         devices,
     };
     let mut guard = STATE.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -188,11 +235,17 @@ fn status_path() -> Result<std::path::PathBuf> {
 }
 
 fn write(snapshot: &Snapshot) -> Result<()> {
+    let mut snapshot = snapshot.clone();
+    let extras = EXTRAS.lock().unwrap_or_else(|poison| poison.into_inner());
+    snapshot.join = extras.ask.clone().map(|name| JoinAsk { name });
+    snapshot.join_code = extras.code.clone();
+    snapshot.other = extras.other.clone();
+    drop(extras);
     let dir = config::config_dir()?;
     fs::create_dir_all(&dir)?;
     let path = dir.join("status.json");
     let tmp = dir.join("status.json.tmp");
-    let text = serde_json::to_string_pretty(snapshot)?;
+    let text = serde_json::to_string_pretty(&snapshot)?;
     {
         let mut file = fs::OpenOptions::new()
             .write(true)

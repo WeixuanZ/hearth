@@ -46,6 +46,11 @@ enum Command {
     /// Forget Home's pairing, so the bridge can be added again. Use this when
     /// the bridge was removed from Home but does not show up to add.
     Unpair,
+    /// Share one bridge with the other computers on this network.
+    Cluster {
+        #[command(subcommand)]
+        command: ClusterCommand,
+    },
     /// A Dyson purifier.
     Dyson {
         #[command(subcommand)]
@@ -56,6 +61,20 @@ enum Command {
         #[command(subcommand)]
         command: FrameCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum ClusterCommand {
+    /// Approve a computer that asked to join. Type the code it is showing.
+    Approve { code: String },
+    /// Say the code was typed on the other computer, and finish joining.
+    Confirm,
+    /// Decline the computer that is asking to join.
+    Deny,
+    /// Leave this group. Another computer then has to approve this one.
+    Leave,
+    /// Stay as a separate group instead of joining one.
+    Start,
 }
 
 #[derive(Subcommand)]
@@ -185,6 +204,13 @@ async fn main() -> Result<()> {
             println!("If Home still shows an old Hearth, remove it there.");
             println!("Code: {}", config.homekit_pin);
         }
+        Command::Cluster { command } => match command {
+            ClusterCommand::Approve { code } => cluster::approve(&code).await?,
+            ClusterCommand::Confirm => cluster::confirm().await?,
+            ClusterCommand::Deny => cluster::decline().await?,
+            ClusterCommand::Leave => cluster::leave().await?,
+            ClusterCommand::Start => cluster::start_own().await?,
+        },
         Command::Dyson { command } => match command {
             DysonCommand::Login {
                 email,

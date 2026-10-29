@@ -35,13 +35,13 @@ The computer and the devices have to be on the same network.
 
 ## Several computers
 
-Every hearth on the network is the same bridge. One machine serves Apple Home. The others follow it, and any of them can add or remove a device. The list is shared. If the machine that is serving goes to sleep or is closed, another one starts serving, with the same pairing, so Home does not ask for the code again. A machine that is already serving keeps the job. The newer edit wins, so the clocks should be roughly right.
+Every hearth that has joined the same group is the same bridge. A new computer shows a six-digit code. Type that code on a computer already in the group, then confirm on the new one. Until both of those happen, nothing is shared. After that, the device list and the HomeKit pairing are sealed between them. One machine serves Apple Home. The others follow it, and any of them can add or remove a device. If the machine that is serving goes to sleep or is closed, another one starts serving, with the same pairing, so Home does not ask for the code again. A machine that is already serving keeps the job. The newer edit wins, so the clocks should be roughly right.
 
 That only works when the machines are not each already paired as a different bridge. If they are, the menu says so and leaves both alone. Forget Home on one of them, then start it again.
 
-Device passwords travel between these machines in the clear, on UDP port 47620 and TCP port 47621. That is the same trust as the rest of the local network. Do not run this on a network you do not trust. A firewall has to allow those ports between the computers.
+Announcements use UDP port 47620. The sealed messages use TCP port 47621. A firewall has to allow those ports between the computers. A computer that has not been approved learns nothing from them.
 
-The menu bar app can add a supported device, turn on start at login, and update itself from a GitHub release. It checks for a release every few hours. The update replaces `Hearth.app` and opens it again.
+The menu bar app can add a supported device, approve a joining computer, turn on start at login, and update itself from a GitHub release. It checks for a release every few hours. The update replaces `Hearth.app` and opens it again. The app package is built for Apple silicon.
 
 ## Pair a device
 

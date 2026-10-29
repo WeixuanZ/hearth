@@ -11,7 +11,14 @@ struct Snapshot: Codable {
     var paired: Bool?
     var role: String?
     var leader: String?
+    var join: JoinAsk?
+    var join_code: String?
+    var other: String?
     var devices: [DeviceSnap]
+}
+
+struct JoinAsk: Codable {
+    var name: String
 }
 
 struct DeviceSnap: Codable, Identifiable {
@@ -191,6 +198,36 @@ final class BridgeModel: ObservableObject {
 
     func removeDevice(_ name: String) {
         runAsync(["remove", name]) { [weak self] code, text in
+            self?.notice = code == 0 ? nil : text
+        }
+    }
+
+    func approveJoin(_ code: String) {
+        runAsync(["cluster", "approve", code]) { [weak self] code, text in
+            self?.notice = code == 0 ? nil : text
+        }
+    }
+
+    func confirmJoin() {
+        runAsync(["cluster", "confirm"], input: nil) { [weak self] code, text in
+            self?.notice = code == 0 ? nil : text
+        }
+    }
+
+    func declineJoin() {
+        runAsync(["cluster", "deny"], input: nil) { [weak self] code, text in
+            self?.notice = code == 0 ? nil : text
+        }
+    }
+
+    func leaveGroup() {
+        runAsync(["cluster", "leave"], input: nil) { [weak self] code, text in
+            self?.notice = code == 0 ? nil : text
+        }
+    }
+
+    func startGroup() {
+        runAsync(["cluster", "start"], input: nil) { [weak self] code, text in
             self?.notice = code == 0 ? nil : text
         }
     }
