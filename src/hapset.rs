@@ -1,13 +1,43 @@
 //! Small helpers shared by every connector when it talks to HomeKit.
 
+use crate::config;
 use anyhow::{anyhow, Result};
-use hap::{accessory::HapAccessory, characteristic::CharacteristicCallbacks, HapType};
+use hap::{
+    accessory::HapAccessory,
+    characteristic::{CharacteristicCallbacks, HapCharacteristic},
+    HapType,
+};
 use sha2::{Digest, Sha256};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
 use tokio::sync::mpsc;
+
+/// Shows a Configured Name, as last named in Home or else `default`, and
+/// keeps what Home renames it to. Home stores a rename on the accessory, so
+/// without this the bridge would show the default again after a restart.
+pub async fn configured_name(
+    characteristic: &mut (impl HapCharacteristic + CharacteristicCallbacks<String>),
+    aid: u64,
+    default: &str,
+) -> Result<()> {
+    let key = format!("{aid}.{}", characteristic.get_id());
+    let saved = config::load()
+        .ok()
+        .and_then(|config| config.names.get(&key).cloned());
+    characteristic
+        .set_value(serde_json::json!(saved.as_deref().unwrap_or(default)))
+        .await
+        .map_err(|error| anyhow!("{error}"))?;
+    characteristic.on_update(Some(move |_old: &String, new: &String| {
+        if let Err(error) = config::save_name(&key, new) {
+            log::warn!("could not keep the name {new}: {error:#}");
+        }
+        Ok(())
+    }));
+    Ok(())
+}
 
 pub fn device_id(seed: &str) -> [u8; 6] {
     let digest = Sha256::digest(seed.as_bytes());

@@ -8,7 +8,7 @@
 use super::protocol::Input;
 use crate::{
     config::FrameDevice,
-    hapset::{hook_bool, hook_i32, hook_u32, hook_u8, put},
+    hapset::{configured_name, hook_bool, hook_i32, hook_u32, hook_u8, put},
 };
 use anyhow::{anyhow, Result};
 use hap::{
@@ -131,7 +131,7 @@ pub async fn build(
     if let Some(brightness) = television.brightness.as_mut() {
         hook_i32(brightness, suppress, tx, Command::Brightness);
     }
-    set(&mut television.configured_name, json!(device.name)).await?;
+    configured_name(&mut television.configured_name, device.aid, &device.name).await?;
     if let Some(name) = television.name.as_mut() {
         set(name, json!(device.name)).await?;
     }
@@ -150,7 +150,7 @@ pub async fn build(
     let mut inputs = Vec::new();
     for (iid, input) in (50..).step_by(10).zip(Input::ALL) {
         let mut source = InputSourceService::new(iid, device.aid);
-        set(&mut source.configured_name, json!(input.label())).await?;
+        configured_name(&mut source.configured_name, device.aid, input.label()).await?;
         set(&mut source.name, json!(input.label())).await?;
         set(&mut source.input_source_type, json!(input.source_type())).await?;
         set(&mut source.is_configured, json!(1u8)).await?;
@@ -192,7 +192,7 @@ pub async fn build_art(
         set(name, json!("Art mode")).await?;
     }
     if let Some(name) = art.switch.configured_name.as_mut() {
-        set(name, json!("Art mode")).await?;
+        configured_name(name, aid, "Art mode").await?;
     }
     hook_bool(&mut art.switch.power_state, suppress, tx, Command::Art);
     Ok(art)

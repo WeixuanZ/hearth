@@ -5,7 +5,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{fs, io::Write, path::PathBuf};
+use std::{collections::BTreeMap, fs, io::Write, path::PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Config {
@@ -15,6 +15,10 @@ pub struct Config {
     pub bridge_id: String,
     #[serde(default)]
     pub devices: Vec<Device>,
+    /// Names given in Home, by `aid.iid`. Home keeps a rename on the
+    /// accessory, so the bridge saves it here to show it after a restart.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub names: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -154,6 +158,14 @@ pub fn paired() -> bool {
     !pairing_files().is_empty()
 }
 
+/// Keeps a name given in Home, so the next start shows it again.
+pub fn save_name(key: &str, name: &str) -> Result<()> {
+    let mut config = load()?;
+    config.names.insert(key.to_owned(), name.to_owned());
+    save(&config)?;
+    Ok(())
+}
+
 /// Forgets every Home that paired with the bridge, so it can be added again.
 /// Returns how many pairings there were.
 pub fn clear_pairings() -> Result<usize> {
@@ -272,6 +284,7 @@ pub fn load_or_new() -> Result<Config> {
             homekit_pin: format_pin(&random_pin()),
             bridge_id: String::new(),
             devices: Vec::new(),
+            names: BTreeMap::new(),
         }),
     }
 }
@@ -314,7 +327,7 @@ fn from_legacy(value: &toml::Value) -> Config {
             name: {
                 let name = text("name");
                 if name.is_empty() {
-                    "Purifier".into()
+                    crate::dyson::product_name(&text("model"))
                 } else {
                     name
                 }
@@ -333,6 +346,7 @@ fn from_legacy(value: &toml::Value) -> Config {
                 .and_then(|item| item.as_bool())
                 .unwrap_or(true),
         })],
+        names: BTreeMap::new(),
     }
 }
 
@@ -380,9 +394,11 @@ pub fn upsert_dyson(config: &mut Config, device: DysonDevice) {
         .iter_mut()
         .find(|item| matches!(item, Device::Dyson(fan) if fan.serial == device.serial))
     {
-        let aid = existing.aid;
+        // A fresh login keeps the id and the name chosen since.
+        let (aid, name) = (existing.aid, std::mem::take(&mut existing.name));
         *existing = device;
         existing.aid = aid;
+        existing.name = name;
         return;
     }
     config.devices.push(Device::Dyson(device));
@@ -542,6 +558,40 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_login_keeps_the_name_and_id() {
+        let fan = |name: &str, password: &str| DysonDevice {
+            aid: 0,
+            name: name.into(),
+            serial: "ABC".into(),
+            model: "XY01".into(),
+            product_type: "000X".into(),
+            mqtt_password: password.into(),
+            host: String::new(),
+            port: 1883,
+            heating: true,
+        };
+        let mut config = Config {
+            name: "Hearth".into(),
+            homekit_pin: "000-00-000".into(),
+            bridge_id: "ABC".into(),
+            devices: Vec::new(),
+            names: BTreeMap::new(),
+        };
+        upsert_dyson(&mut config, fan("Study fan", "old"));
+        upsert_dyson(&mut config, fan(&crate::dyson::product_name("XY01"), "new"));
+        let Device::Dyson(saved) = &config.devices[0] else {
+            unreachable!()
+        };
+        assert_eq!((saved.name.as_str(), saved.aid), ("Study fan", 2));
+        assert_eq!(saved.mqtt_password, "new");
+        assert_eq!(
+            crate::dyson::product_name("HP07"),
+            "Dyson Purifier Hot+Cool"
+        );
+        assert_eq!(crate::dyson::product_name("XY01"), "Dyson Purifier Cool");
+    }
+
+    #[test]
     fn rename_finds_a_device_by_name_and_checks_the_new_one() {
         let mut config = Config {
             name: "Hearth".into(),
@@ -553,6 +603,7 @@ mod tests {
                 host: "10.0.0.2".into(),
                 ..Default::default()
             })],
+            names: BTreeMap::new(),
         };
         rename(&mut config, "living ROOM", " Television ").unwrap();
         assert_eq!(config.devices[0].name(), "Television");

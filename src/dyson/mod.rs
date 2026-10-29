@@ -26,6 +26,18 @@ use tokio::sync::{mpsc, watch};
 
 pub use cloud::CloudDevice;
 
+/// The product's own name, the default in Home. A MyDyson name is often a
+/// room, which Home drops from the start of an accessory's name.
+pub fn product_name(model: &str) -> String {
+    let product = match model {
+        "HP09" => "Purifier Hot+Cool Formaldehyde",
+        hot if hot.starts_with("HP") => "Purifier Hot+Cool",
+        humid if humid.starts_with("PH") => "Purifier Humidify+Cool",
+        _ => "Purifier Cool",
+    };
+    format!("Dyson {product}")
+}
+
 pub async fn login(email: String, country: String, serial: Option<String>) -> Result<()> {
     let challenge = cloud::request_code(&email, &country).await?;
     println!("Dyson has emailed a code to {email}.");
@@ -42,7 +54,7 @@ pub async fn login(email: String, country: String, serial: Option<String>) -> Re
         &mut saved,
         DysonDevice {
             aid: 0,
-            name: device.name,
+            name: product_name(&device.model),
             serial: device.serial,
             model: device.model,
             product_type: device.product_type,

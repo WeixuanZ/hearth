@@ -1,16 +1,17 @@
 //! The purifier, as one HomeKit accessory on the shared bridge.
 //!
-//! It carries the fan, air quality, humidity and heat, plus three switches Home
-//! has no other place for: night mode, the focused jet, and sensing while the
-//! fan is off. The switches are linked to the fan, so Home shows them inside it
-//! rather than as separate tiles.
+//! It carries the fan, air quality, humidity and heat, plus switches Home has
+//! no other place for, named as in the Dyson app: Night mode, Jet focus (one
+//! concentrated stream rather than a wide one), Continuous monitoring (sensing
+//! while the fan is off), and one per oscillation sweep. The switches are
+//! linked to the fan, so Home shows them inside it rather than as tiles.
 
 use super::protocol::{
     air_quality, percent_to_speed, speed_to_percent, sweep, Intent, MachineState, SWEEPS,
 };
 use crate::{
     config::DysonDevice,
-    hapset::{hook_bool, hook_f32, hook_u8, put},
+    hapset::{configured_name, hook_bool, hook_f32, hook_u8, put},
 };
 use anyhow::{anyhow, Result};
 use hap::{
@@ -223,8 +224,16 @@ pub(super) async fn build_purifier(
 
     let mut switches = vec![
         switch(NIGHT, aid, "Night mode", suppress, tx, Intent::Night).await?,
-        switch(FOCUS, aid, "Focused jet", suppress, tx, Intent::Focus).await?,
-        switch(SENSE, aid, "Keep sensing", suppress, tx, Intent::Monitor).await?,
+        switch(FOCUS, aid, "Jet focus", suppress, tx, Intent::Focus).await?,
+        switch(
+            SENSE,
+            aid,
+            "Continuous monitoring",
+            suppress,
+            tx,
+            Intent::Monitor,
+        )
+        .await?,
     ];
     // Home has no oscillation angle, so each of the app's sweeps is a switch.
     // Turning one off stops oscillation.
@@ -272,7 +281,9 @@ async fn switch(
 ) -> Result<SwitchService> {
     let mut switch = SwitchService::new(iid, aid);
     name(switch.name.as_mut(), label).await?;
-    name(switch.configured_name.as_mut(), label).await?;
+    if let Some(name) = switch.configured_name.as_mut() {
+        configured_name(name, aid, label).await?;
+    }
     hook_bool(&mut switch.power_state, suppress, tx, make);
     Ok(switch)
 }

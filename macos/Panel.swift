@@ -146,6 +146,10 @@ private struct HomeCard: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 24)
+            Button("Home says it is already added?") { confirming = true }
+                .buttonStyle(.link)
+                .font(.system(size: 12))
+                .padding(.leading, 24)
         }
     }
 
