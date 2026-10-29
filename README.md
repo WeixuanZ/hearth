@@ -13,7 +13,7 @@ Connectors included now. More can be added without a second bridge.
 | Device | Connection | In Home |
 |---|---|---|
 | Dyson Purifier Hot+Cool Formaldehyde (HP09) | The fan's own MQTT, after one MyDyson login | One purifier: power, auto, 10 speeds, oscillation, heat to 1–37 °C, air quality, PM2.5, PM10, humidity, temperature, HEPA life, and switches for night, focused jet, keep sensing, and each oscillation sweep |
-| Samsung The Frame, 2024 (LS03D, including the 65") | The TV's own websocket on port 8002, not SmartThings | One television: power, an art mode switch, HDMI 1–4, remote, volume, art brightness |
+| Samsung The Frame, 2024 (LS03D, including the 65") | The TV's own websocket and IP Control, not SmartThings | One television: power, TV and HDMI 1–4 as inputs, remote, volume, art brightness. Art mode is a tile of its own |
 
 Home has no formaldehyde sensor. Formaldehyde, VOC, and NO₂ are folded into the air-quality rating. The fan reports VOC and NO₂ as an index, not a density.
 
@@ -41,14 +41,14 @@ A fan. `login` asks for the MyDyson password and the code Dyson emails. It store
 hearth dyson login --email you@example.com --country GB
 ```
 
-A Frame. Turn the TV on. On the TV, allow device connection and Power On with Mobile (Settings → General → External Device Manager, and Connection).
+A Frame. Turn the TV on, out of art mode. On the TV, allow device connection and Power On with Mobile (Settings → General → External Device Manager, and Connection), and turn on IP Remote (Settings → General → Network → Expert Settings).
 
 ```sh
 hearth frame pair
 hearth frame pair --host 192.168.1.40
 ```
 
-If the screen asks, press Allow. That is the only time the TV has to be on for pairing.
+Press Allow twice: once for the remote, once for IP Control. IP Control is what picks an input and powers the TV fully off. Without it, inputs fall back to remote keys, which newer firmware ignores. Both stay local.
 
 Check, then start:
 
@@ -108,13 +108,13 @@ System Settings → Energy is the other way to keep a Mac awake.
 
 ## Known limits
 
-**Heat.** The fan stops heating when the focused jet is turned off, and Home shows the heater go off. Some firmware also ignores heat commands that did not come from the infrared remote. Set `heating = false` on that device to hide the control.
+**Heat.** Turning heat on turns the fan on, since it heats only while it blows. The fan stops heating when the focused jet is turned off, and Home shows the heater go off. Some firmware also ignores heat commands that did not come from the infrared remote. Set `heating = false` on that device to hide the control.
 
 **Oscillation.** Home has no angle, so the purifier has a switch for each of the Dyson app's sweeps: 45, 90, 180 and 350 degrees, centred where the fan points. Home's own Oscillate keeps the range set in the Dyson app, or sweeps 90° if that range is narrower than 30°.
 
 **Fan connection.** Set `host` on the fan if it does not announce itself on the network. The fan serves one live session, so stop the bridge before `hearth status` or `hearth dyson set`.
 
-**The Frame.** Power is the TV's own on and off. Art mode is a switch beside it, and the inputs are HDMI 1–4. Arrows, select, back and volume are in Control Center's remote. A 2024 Frame ignores the power-off key, and one power press only toggles art, so off holds the power key as the remote does. On from standby is one press, which brings up the picture. A TV that has dropped off the network gets a wake packet first. Pairing and the art channel both need the panel awake.
+**The Frame.** Power is the TV's own on and off, and the inputs are TV and HDMI 1–4. Art mode is a tile of its own: Home shows a TV as power and an input picker only. Arrows, select, back and volume are in Control Center's remote, which keeps one connection to the TV open, so keys land at once. With IP Control, power and inputs go through it, and Home shows the input the TV is on. An input with nothing plugged in is refused. Without it, off holds the power key as the remote does, since a 2024 Frame ignores the power-off key, and on from standby is one press. Pairing and the art channel both need the panel awake.
 
 To try a device without Home, the way Home drives it:
 

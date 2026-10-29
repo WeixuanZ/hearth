@@ -96,12 +96,12 @@ enum FrameCommand {
         #[arg(value_parser = ["on", "off"])]
         state: String,
     },
-    /// Switch to HDMI 1–4, as Home does.
+    /// Switch to HDMI 1–4, or `tv` for the TV's own source, as Home does.
     Input {
-        #[arg(value_parser = clap::value_parser!(u32).range(1..=4))]
-        hdmi: u32,
+        #[arg(value_parser = ["tv", "1", "2", "3", "4"])]
+        source: String,
     },
-    /// Print the TV's power and art mode.
+    /// Print the TV's power, art mode and input.
     Info,
 }
 
@@ -166,8 +166,8 @@ async fn main() -> Result<()> {
                 frame::control(Some(frame::Command::Art(state == "on"))).await?
             }
             // HDMI 1 is input id 2. See frame::protocol::Input.
-            FrameCommand::Input { hdmi } => {
-                frame::control(Some(frame::Command::Input(hdmi + 1))).await?
+            FrameCommand::Input { source } => {
+                frame::control(Some(frame::Command::Input(frame::input_id(&source)))).await?
             }
             FrameCommand::Info => frame::control(None).await?,
         },

@@ -1,9 +1,9 @@
-//! The Frame, as one HomeKit television.
+//! The Frame, as a HomeKit television and an art mode switch.
 //!
-//! Power is the television's own on and off. Art mode is a switch in the same
-//! accessory, so it sits beside power rather than among the inputs. Brightness is the
-//! art-mode brightness. Volume buttons send the TV's own volume keys, because
-//! the set does not tell us the level. Navigation is Control Center's remote.
+//! Power is the television's own on and off. Art mode is a separate accessory:
+//! Home shows a TV as power and an input picker only, and lists any service
+//! linked to it as an input. Brightness is the art-mode brightness. Volume
+//! buttons send the TV's own volume keys. Navigation is Control Center's remote.
 
 use super::protocol::Input;
 use crate::{
@@ -12,7 +12,7 @@ use crate::{
 };
 use anyhow::{anyhow, Result};
 use hap::{
-    accessory::{AccessoryInformation, HapAccessory},
+    accessory::{switch::SwitchAccessory, AccessoryInformation, HapAccessory},
     characteristic::HapCharacteristic,
     service::{
         accessory_information::AccessoryInformationService, input_source::InputSourceService,
@@ -33,11 +33,7 @@ pub struct FrameAccessory {
     television: TelevisionService,
     speaker: SpeakerService,
     inputs: Vec<InputSourceService>,
-    art: SwitchService,
 }
-
-/// Service iid of the art switch, after the input slots (50 to 98).
-const ART: u64 = 100;
 
 impl HapAccessory for FrameAccessory {
     fn get_id(&self) -> u64 {
@@ -59,7 +55,6 @@ impl HapAccessory for FrameAccessory {
     fn get_services(&self) -> Vec<&dyn HapService> {
         let mut services: Vec<&dyn HapService> = vec![&self.info, &self.television, &self.speaker];
         services.extend(self.inputs.iter().map(|input| input as &dyn HapService));
-        services.push(&self.art);
         services
     }
     fn get_mut_services(&mut self) -> Vec<&mut dyn HapService> {
@@ -70,7 +65,6 @@ impl HapAccessory for FrameAccessory {
                 .iter_mut()
                 .map(|input| input as &mut dyn HapService),
         );
-        services.push(&mut self.art);
         services
     }
 }
@@ -84,30 +78,34 @@ impl Serialize for FrameAccessory {
     }
 }
 
+fn info(device: &FrameDevice, name: &str, suffix: &str) -> AccessoryInformation {
+    let serial = if device.mac.is_empty() {
+        &device.host
+    } else {
+        &device.mac
+    };
+    AccessoryInformation {
+        name: name.into(),
+        manufacturer: "Samsung".into(),
+        model: if device.model.is_empty() {
+            "The Frame 2024".into()
+        } else {
+            device.model.clone()
+        },
+        serial_number: format!("{serial}{suffix}"),
+        firmware_revision: Some("2024".into()),
+        ..Default::default()
+    }
+}
+
 pub async fn build(
     device: &FrameDevice,
     suppress: &Arc<AtomicBool>,
     tx: &mpsc::Sender<Command>,
 ) -> Result<FrameAccessory> {
-    let model = if device.model.is_empty() {
-        "The Frame 2024".into()
-    } else {
-        device.model.clone()
-    };
-    let info = AccessoryInformation {
-        name: device.name.clone(),
-        manufacturer: "Samsung".into(),
-        model,
-        serial_number: if device.mac.is_empty() {
-            device.host.clone()
-        } else {
-            device.mac.clone()
-        },
-        firmware_revision: Some("2024".into()),
-        ..Default::default()
-    }
-    .to_service(1, device.aid)
-    .map_err(|error| anyhow!("{error}"))?;
+    let info = info(device, &device.name, "")
+        .to_service(1, device.aid)
+        .map_err(|error| anyhow!("{error}"))?;
 
     // Fixed iid slots. hap gives optional characteristics fixed offsets even
     // when absent (the information service reaches 14, the television 33), so
@@ -133,9 +131,9 @@ pub async fn build(
     if let Some(brightness) = television.brightness.as_mut() {
         hook_i32(brightness, suppress, tx, Command::Brightness);
     }
-    set_text(&mut television.configured_name, &device.name).await?;
+    set(&mut television.configured_name, json!(device.name)).await?;
     if let Some(name) = television.name.as_mut() {
-        set_text(name, &device.name).await?;
+        set(name, json!(device.name)).await?;
     }
 
     let mut speaker = SpeakerService::new(40, device.aid);
@@ -143,66 +141,31 @@ pub async fn build(
     speaker.active = None;
     hook_bool(&mut speaker.mute, suppress, tx, |_| Command::Mute);
     if let Some(kind) = speaker.volume_control_type.as_mut() {
-        kind.set_value(json!(1u8))
-            .await
-            .map_err(|error| anyhow!("{error}"))?;
+        set(kind, json!(1u8)).await?;
     }
     if let Some(selector) = speaker.volume_selector.as_mut() {
         hook_u8(selector, suppress, tx, Command::Volume);
     }
 
-    let mut next = 50;
     let mut inputs = Vec::new();
-    for input in Input::ALL {
-        let mut source = InputSourceService::new(next, device.aid);
-        set_text(&mut source.configured_name, input.label()).await?;
-        set_text(&mut source.name, input.label()).await?;
-        source
-            .input_source_type
-            .set_value(json!(input.source_type()))
-            .await
-            .map_err(|error| anyhow!("{error}"))?;
-        source
-            .is_configured
-            .set_value(json!(1u8))
-            .await
-            .map_err(|error| anyhow!("{error}"))?;
-        source
-            .current_visibility_state
-            .set_value(json!(0u8))
-            .await
-            .map_err(|error| anyhow!("{error}"))?;
+    for (iid, input) in (50..).step_by(10).zip(Input::ALL) {
+        let mut source = InputSourceService::new(iid, device.aid);
+        set(&mut source.configured_name, json!(input.label())).await?;
+        set(&mut source.name, json!(input.label())).await?;
+        set(&mut source.input_source_type, json!(input.source_type())).await?;
+        set(&mut source.is_configured, json!(1u8)).await?;
+        set(&mut source.current_visibility_state, json!(0u8)).await?;
         if let Some(identifier) = source.identifier.as_mut() {
-            identifier
-                .set_value(json!(input as u32))
-                .await
-                .map_err(|error| anyhow!("{error}"))?;
+            set(identifier, json!(input as u32)).await?;
         }
         if let Some(kind) = source.input_device_type.as_mut() {
-            kind.set_value(json!(1u8))
-                .await
-                .map_err(|error| anyhow!("{error}"))?;
+            set(kind, json!(1u8)).await?;
         }
         if let Some(target) = source.target_visibility_state.as_mut() {
-            target
-                .set_value(json!(0u8))
-                .await
-                .map_err(|error| anyhow!("{error}"))?;
+            set(target, json!(0u8)).await?;
         }
-        next += 10;
         inputs.push(source);
     }
-    let mut art = SwitchService::new(ART, device.aid);
-    if let Some(name) = art.name.as_mut() {
-        set_text(name, "Art mode").await?;
-    }
-    if let Some(name) = art.configured_name.as_mut() {
-        set_text(name, "Art mode").await?;
-    }
-    hook_bool(&mut art.power_state, suppress, tx, Command::Art);
-
-    // Home lists every service linked to the TV in its input picker, so only
-    // the inputs are linked. The art switch sits beside them.
     television.set_linked_services(inputs.iter().map(|source| source.get_id()).collect());
 
     Ok(FrameAccessory {
@@ -211,13 +174,33 @@ pub async fn build(
         television,
         speaker,
         inputs,
-        art,
     })
 }
 
-async fn set_text(characteristic: &mut impl HapCharacteristic, text: &str) -> Result<()> {
+/// Art mode, as a tile of its own beside the TV.
+pub async fn build_art(
+    device: &FrameDevice,
+    suppress: &Arc<AtomicBool>,
+    tx: &mpsc::Sender<Command>,
+) -> Result<SwitchAccessory> {
+    let aid = device.art_aid;
+    let mut art = SwitchAccessory::new(aid, info(device, "Art mode", "-art"))
+        .map_err(|error| anyhow!("{error}"))?;
+    // hap puts the switch at iid 8, under the firmware revision's fixed iid 10.
+    art.switch = SwitchService::new(20, aid);
+    if let Some(name) = art.switch.name.as_mut() {
+        set(name, json!("Art mode")).await?;
+    }
+    if let Some(name) = art.switch.configured_name.as_mut() {
+        set(name, json!("Art mode")).await?;
+    }
+    hook_bool(&mut art.switch.power_state, suppress, tx, Command::Art);
+    Ok(art)
+}
+
+async fn set(characteristic: &mut impl HapCharacteristic, value: serde_json::Value) -> Result<()> {
     characteristic
-        .set_value(json!(text))
+        .set_value(value)
         .await
         .map_err(|error| anyhow!("{error}"))
 }
@@ -236,13 +219,6 @@ pub async fn apply(accessory: &mut dyn HapAccessory, view: &View) -> Result<()> 
         HapType::Television,
         HapType::Active,
         json!(if view.on { 1 } else { 0 }),
-    )
-    .await?;
-    put(
-        accessory,
-        HapType::Switch,
-        HapType::PowerState,
-        json!(view.art),
     )
     .await?;
     if view.input != 0 {
@@ -266,42 +242,55 @@ pub async fn apply(accessory: &mut dyn HapAccessory, view: &View) -> Result<()> 
     Ok(())
 }
 
+pub async fn apply_art(accessory: &mut dyn HapAccessory, view: &View) -> Result<()> {
+    put(
+        accessory,
+        HapType::Switch,
+        HapType::PowerState,
+        json!(view.art),
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::hapset::assert_unique_iids;
 
     #[tokio::test]
-    async fn iids_are_unique() {
+    async fn the_tv_links_only_inputs_and_art_stands_alone() {
         let device = FrameDevice {
             aid: 2,
+            art_aid: 4,
             name: "Television".into(),
             model: "QE00LS03D".into(),
             host: "10.0.0.2".into(),
             mac: "00:11:22:33:44:55".into(),
-            token: String::new(),
+            ..Default::default()
         };
         let suppress = Arc::new(AtomicBool::new(false));
         let (tx, _rx) = mpsc::channel(4);
         let frame = build(&device, &suppress, &tx).await.unwrap();
         assert_unique_iids(&frame);
-
         let value = serde_json::to_value(&frame).unwrap();
-        let services = value["services"].as_array().unwrap();
-        let television = services
-            .iter()
-            .find(|service| service["iid"] == 20)
-            .unwrap();
-        assert_eq!(television["linked"], json!([50, 60, 70, 80]));
-        let art = services
-            .iter()
-            .find(|service| service["iid"] == ART)
-            .unwrap();
-        let name = art["characteristics"]
+        let television = value["services"]
             .as_array()
             .unwrap()
             .iter()
-            .find_map(|characteristic| characteristic["value"].as_str());
-        assert_eq!(name, Some("Art mode"));
+            .find(|service| service["iid"] == 20)
+            .unwrap();
+        assert_eq!(television["linked"], json!([50, 60, 70, 80, 90]));
+
+        let art = build_art(&device, &suppress, &tx).await.unwrap();
+        assert_unique_iids(&art);
+        let value = serde_json::to_value(&art).unwrap();
+        assert_eq!(value["aid"], 4);
+        let names: Vec<_> = value["services"][1]["characteristics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|characteristic| characteristic["value"].as_str())
+            .collect();
+        assert_eq!(names, ["Art mode", "Art mode"]);
     }
 }

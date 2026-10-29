@@ -355,10 +355,12 @@ pub fn intent_fields(state: &MachineState, intent: &Intent) -> Vec<(&'static str
         Intent::Focus(false) => vec![("fdir", "OFF".into())],
         Intent::Monitor(true) => vec![("rhtm", "ON".into())],
         Intent::Monitor(false) => vec![("rhtm", "OFF".into())],
-        Intent::Heat(true) => vec![("hmod", "HEAT".into())],
+        // The fan heats only while it blows, so heat turns it on.
+        Intent::Heat(true) => vec![("fpwr", "ON".into()), ("hmod", "HEAT".into())],
         Intent::Heat(false) => vec![("hmod", "OFF".into())],
         Intent::HeatTargetC(celsius) => {
             vec![
+                ("fpwr", "ON".into()),
                 ("hmod", "HEAT".into()),
                 ("hmax", c_to_heat_target(*celsius)),
             ]
@@ -519,6 +521,9 @@ mod tests {
             .1
             .as_str();
         assert_eq!(hmax, "2950");
+        assert!(fields.contains(&("fpwr", "ON".into())));
+        let fields = intent_fields(&state, &Intent::Heat(true));
+        assert_eq!(fields[0], ("fpwr", "ON".into()));
         let payload = state_set_payload(&fields);
         assert!(payload.contains("STATE-SET") && payload.contains("LAPP"));
     }

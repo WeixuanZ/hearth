@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 pub const REMOTE_CHANNEL: &str = "samsung.remote.control";
 pub const ART_CHANNEL: &str = "com.samsung.art-app";
 
-/// The HDMI sockets. Art mode is a switch of its own, not an input. The ids
+/// The TV's sources. Art mode is a switch of its own, not an input. The ids
 /// start at 2 because 1 was the art input, and Home remembers ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
@@ -19,22 +19,36 @@ pub enum Input {
     Hdmi2 = 3,
     Hdmi3 = 4,
     Hdmi4 = 5,
+    /// Samsung's own source: the tuner and the apps.
+    Tv = 6,
 }
 
 impl Input {
-    pub const ALL: [Self; 4] = [Self::Hdmi1, Self::Hdmi2, Self::Hdmi3, Self::Hdmi4];
+    pub const ALL: [Self; 5] = [Self::Tv, Self::Hdmi1, Self::Hdmi2, Self::Hdmi3, Self::Hdmi4];
 
     pub fn from_id(id: u32) -> Option<Self> {
         Self::ALL.into_iter().find(|input| *input as u32 == id)
     }
 
-    pub fn key(self) -> &'static str {
+    /// From IP Control's name for it.
+    pub fn from_source(source: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|input| input.source() == source)
+    }
+
+    /// IP Control's name for it.
+    pub fn source(self) -> &'static str {
         match self {
-            Self::Hdmi1 => "KEY_HDMI1",
-            Self::Hdmi2 => "KEY_HDMI2",
-            Self::Hdmi3 => "KEY_HDMI3",
-            Self::Hdmi4 => "KEY_HDMI4",
+            Self::Hdmi1 => "HDMI1",
+            Self::Hdmi2 => "HDMI2",
+            Self::Hdmi3 => "HDMI3",
+            Self::Hdmi4 => "HDMI4",
+            Self::Tv => "TV",
         }
+    }
+
+    /// The remote key, for a TV without IP Control. Newer firmware may ignore it.
+    pub fn key(self) -> String {
+        format!("KEY_{}", self.source())
     }
 
     pub fn label(self) -> &'static str {
@@ -43,12 +57,16 @@ impl Input {
             Self::Hdmi2 => "HDMI 2",
             Self::Hdmi3 => "HDMI 3",
             Self::Hdmi4 => "HDMI 4",
+            Self::Tv => "TV",
         }
     }
 
-    /// HomeKit input source type: HDMI.
+    /// HomeKit input source type: HDMI, or tuner for the TV's own source.
     pub fn source_type(self) -> u8 {
-        3
+        match self {
+            Self::Tv => 2,
+            _ => 3,
+        }
     }
 }
 
@@ -375,5 +393,7 @@ mod tests {
         assert_eq!(Input::from_id(1), None);
         assert_eq!(Input::from_id(3), Some(Input::Hdmi2));
         assert_eq!(Input::Hdmi2.key(), "KEY_HDMI2");
+        assert_eq!(Input::from_source("HDMI4"), Some(Input::Hdmi4));
+        assert_eq!(Input::from_source("TV"), Some(Input::Tv));
     }
 }

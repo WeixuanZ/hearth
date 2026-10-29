@@ -1,5 +1,5 @@
-//! Short-lived connections to the TV. The socket is opened per command, because
-//! a Frame will drop a remote session that sits idle.
+//! Connections to the TV. The remote channel stays open between keys and is
+//! reopened when the Frame drops it. Art and device info are per request.
 
 use super::protocol::{self, ArtReply, DeviceInfo};
 use anyhow::{anyhow, Context, Result};
@@ -137,29 +137,78 @@ pub async fn pair(host: &str) -> Result<String> {
     anyhow::bail!("the TV did not hand back a token. Turn it on and press Allow")
 }
 
-/// Holds a key down for `hold`, or clicks it when `hold` is `None`. A Frame
-/// only powers fully off on a held power key; a click toggles art.
-pub async fn press(
-    host: &str,
-    token: &str,
-    key: &str,
-    hold: Option<Duration>,
-) -> Result<Option<String>> {
+type Socket = WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>;
+
+/// The remote channel, kept open between keys. Opening it costs a TLS
+/// handshake and the TV's greeting, most of a key's delay. A Frame drops an
+/// idle session, so a dead socket is reopened.
+#[derive(Default)]
+pub struct Remote(Option<Socket>);
+
+impl Remote {
+    /// Holds a key down for `hold`, or clicks it when `hold` is `None`. A
+    /// Frame only powers fully off on a held power key; a click toggles art.
+    /// Returns a new token if the TV handed one back.
+    pub async fn press(
+        &mut self,
+        host: &str,
+        token: &str,
+        key: &str,
+        hold: Option<Duration>,
+    ) -> Result<Option<String>> {
+        let mut found = None;
+        if let Some(socket) = self.0.as_mut() {
+            if !alive(socket).await {
+                self.0 = None;
+            }
+        }
+        for attempt in 0..2 {
+            if self.0.is_none() {
+                let (socket, token) = open_remote(host, token).await?;
+                found = found.or(token);
+                self.0 = Some(socket);
+            }
+            let socket = self.0.as_mut().expect("opened above");
+            match send_key(socket, key, hold).await {
+                Ok(()) => return Ok(found),
+                Err(error) if attempt == 0 => {
+                    log::debug!("remote channel dropped, reopening: {error:#}");
+                    self.0 = None;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("the second attempt returns")
+    }
+}
+
+/// Opens the remote channel and reads the TV's greeting, which carries a
+/// token only when the TV issues a new one.
+async fn open_remote(host: &str, token: &str) -> Result<(Socket, Option<String>)> {
     let mut socket = connect(host, protocol::REMOTE_CHANNEL, token).await?;
-    let mut found = None;
-    let start = tokio::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(3) {
-        let Some(text) = read_text(&mut socket, Duration::from_secs(2)).await? else {
-            break;
-        };
-        if let Some(token) = protocol::parse_token(&text) {
-            found = Some(token);
-            break;
+    while let Some(text) = read_text(&mut socket, Duration::from_secs(3)).await? {
+        if text.contains("\"ms.channel.connect\"") {
+            return Ok((socket, protocol::parse_token(&text)));
         }
     }
+    anyhow::bail!("the TV did not open the remote channel")
+}
+
+/// Drains what the TV sent since the last key. False if it hung up.
+async fn alive(socket: &mut Socket) -> bool {
+    loop {
+        match timeout(Duration::from_millis(5), socket.next()).await {
+            Err(_) => return true,
+            Ok(Some(Ok(Message::Close(_)) | Err(_)) | None) => return false,
+            Ok(Some(Ok(_))) => {}
+        }
+    }
+}
+
+async fn send_key(socket: &mut Socket, key: &str, hold: Option<Duration>) -> Result<()> {
     let send = |payload: String| Message::Text(payload.into());
     match hold {
-        None => socket.send(send(protocol::key_payload(key))).await,
+        None => socket.send(send(protocol::key_payload(key))).await?,
         Some(hold) => {
             // A 2024 Frame reads one Press as a short press. A physical remote
             // repeats Press while the button is down, so do the same.
@@ -167,20 +216,15 @@ pub async fn press(
             while tokio::time::Instant::now() < until {
                 socket
                     .send(send(protocol::key_command("Press", key)))
-                    .await
-                    .context("could not press the key")?;
+                    .await?;
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             socket
                 .send(send(protocol::key_command("Release", key)))
-                .await
+                .await?;
         }
     }
-    .context("could not send the key")?;
-    // Closing at once can drop the key before the TV reads it.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let _ = socket.close(None).await;
-    Ok(found)
+    Ok(())
 }
 
 pub async fn art(

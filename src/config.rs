@@ -43,7 +43,7 @@ pub struct DysonDevice {
     pub heating: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct FrameDevice {
     #[serde(default)]
     pub aid: u64,
@@ -57,6 +57,12 @@ pub struct FrameDevice {
     /// Returned when you press Allow on the TV. Empty until `hearth frame pair`.
     #[serde(default)]
     pub token: String,
+    /// IP Control's token, from a second Allow. Empty if IP Remote is off.
+    #[serde(default)]
+    pub ip_token: String,
+    /// HomeKit accessory id of the art switch, a tile beside the TV.
+    #[serde(default)]
+    pub art_aid: u64,
 }
 
 fn default_mqtt_port() -> u16 {
@@ -158,6 +164,11 @@ pub fn assign_aids(devices: &mut [Device]) -> bool {
                 used.push(device.aid() + offset);
             }
         }
+        if let Device::Frame(frame) = device {
+            if frame.art_aid >= 2 {
+                used.push(frame.art_aid);
+            }
+        }
     }
     let mut next = 2u64;
     for device in devices.iter_mut() {
@@ -173,6 +184,18 @@ pub fn assign_aids(devices: &mut [Device]) -> bool {
         }
         next += device.aid_span();
         changed = true;
+    }
+    // The art switch takes the lowest free id, so ids already in Home stay put.
+    for device in devices.iter_mut() {
+        if let Device::Frame(frame) = device {
+            if frame.art_aid < 2 {
+                frame.art_aid = (2..)
+                    .find(|aid| !used.contains(aid))
+                    .expect("ids are endless");
+                used.push(frame.art_aid);
+                changed = true;
+            }
+        }
     }
     changed
 }
@@ -467,16 +490,46 @@ mod tests {
                 heating: true,
             }),
             Device::Frame(FrameDevice {
-                aid: 0,
                 name: "The Frame".into(),
-                model: String::new(),
                 host: "192.168.1.40".into(),
-                mac: String::new(),
-                token: String::new(),
+                ..Default::default()
             }),
         ];
         assert!(assign_aids(&mut devices));
         assert_eq!(devices[1].aid(), 3);
+        let Device::Frame(frame) = &devices[1] else {
+            unreachable!()
+        };
+        assert_eq!(frame.art_aid, 4);
+        assert!(!assign_aids(&mut devices));
+    }
+
+    #[test]
+    fn an_art_switch_added_later_keeps_existing_ids() {
+        let mut devices = vec![
+            Device::Frame(FrameDevice {
+                aid: 2,
+                host: "10.0.0.2".into(),
+                ..Default::default()
+            }),
+            Device::Dyson(DysonDevice {
+                aid: 3,
+                name: "Purifier".into(),
+                serial: "ABC".into(),
+                model: "XY01".into(),
+                product_type: "000X".into(),
+                mqtt_password: "x".into(),
+                host: String::new(),
+                port: 1883,
+                heating: true,
+            }),
+        ];
+        assert!(assign_aids(&mut devices));
+        assert_eq!((devices[0].aid(), devices[1].aid()), (2, 3));
+        let Device::Frame(frame) = &devices[0] else {
+            unreachable!()
+        };
+        assert_eq!(frame.art_aid, 4);
     }
 
     #[test]
@@ -488,10 +541,8 @@ mod tests {
             devices: vec![Device::Frame(FrameDevice {
                 aid: 2,
                 name: "Living room".into(),
-                model: String::new(),
                 host: "10.0.0.2".into(),
-                mac: String::new(),
-                token: String::new(),
+                ..Default::default()
             })],
         };
         rename(&mut config, "living ROOM", " Television ").unwrap();
