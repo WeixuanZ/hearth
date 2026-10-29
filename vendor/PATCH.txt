@@ -1,0 +1,13 @@
+vendor/hap is ewilken/hap-rs v0.1.0-pre.15 (commit b13bf31).
+Changes from upstream:
+- Swap get_if_addrs for if-addrs, so the crate links the system ifaddrs
+  library once. See src/config.rs get_local_ip.
+- Every service sends its linked services to Home ("linked"), when it has
+  any. Upstream left them out, so Home could not group linked services.
+- Read the whole request body. Upstream parsed only its first chunk, so a
+  request split across frames, like Home's event subscriptions for a TV,
+  failed with 500 and Home reconnected without end.
+- The switch service carries Configured Name, which Home labels it by.
+- Bump the configuration number when the accessory layout changes, not
+  only when a new accessory id appears, so Home drops its cached copy.
+- Clear the Rust warnings the crate raises.
