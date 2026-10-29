@@ -389,11 +389,14 @@ pub(super) async fn apply_purifier(
         )
         .await?;
     }
+    // Home greys out a sensor that is not active, rather than show a reading
+    // the fan stopped taking.
+    let sensing = state.sensing();
     put(
         accessory,
         HapType::AirQualitySensor,
         HapType::StatusActive,
-        serde_json::json!(state.monitoring || state.power_on || state.pm25.is_some()),
+        serde_json::json!(sensing && (state.pm25.is_some() || state.pm10.is_some())),
     )
     .await?;
 
@@ -410,7 +413,7 @@ pub(super) async fn apply_purifier(
         accessory,
         HapType::HumiditySensor,
         HapType::StatusActive,
-        serde_json::json!(state.humidity.is_some()),
+        serde_json::json!(sensing && state.humidity.is_some()),
     )
     .await?;
 
@@ -429,14 +432,14 @@ pub(super) async fn apply_purifier(
             serde_json::json!(celsius),
         )
         .await?;
-        put(
-            accessory,
-            HapType::TemperatureSensor,
-            HapType::StatusActive,
-            serde_json::json!(true),
-        )
-        .await?;
     }
+    put(
+        accessory,
+        HapType::TemperatureSensor,
+        HapType::StatusActive,
+        serde_json::json!(sensing && state.temperature_c.is_some()),
+    )
+    .await?;
 
     let current = if !state.heat_on {
         0
@@ -534,6 +537,58 @@ async fn put_switch(accessory: &mut dyn HapAccessory, iid: u64, on: bool) -> Res
 mod tests {
     use super::*;
     use crate::hapset::assert_unique_iids;
+
+    #[tokio::test]
+    async fn sensors_are_inactive_unless_the_fan_is_sensing() {
+        let device = DysonDevice {
+            aid: 3,
+            name: "Purifier".into(),
+            serial: "ABC-DE-FGH1234A".into(),
+            model: "XY01".into(),
+            product_type: "000X".into(),
+            mqtt_password: "x".into(),
+            host: String::new(),
+            port: 1883,
+            heating: false,
+        };
+        let suppress = Arc::new(AtomicBool::new(false));
+        let (tx, _rx) = mpsc::channel(4);
+        let mut purifier = build_purifier(&device, &suppress, &tx).await.unwrap();
+        // Status Active (75) on air quality (8D), humidity (82), temperature (8A).
+        let active = |purifier: &PurifierAccessory| -> Vec<bool> {
+            let value = serde_json::to_value(purifier).unwrap();
+            ["8D", "82", "8A"]
+                .map(|kind| {
+                    let service = value["services"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|service| service["type"] == kind)
+                        .unwrap();
+                    service["characteristics"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|characteristic| characteristic["type"] == "75")
+                        .unwrap()["value"]
+                        == true
+                })
+                .to_vec()
+        };
+        let mut state = MachineState {
+            pm25: Some(4.0),
+            humidity: Some(40.0),
+            temperature_c: Some(21.0),
+            ..Default::default()
+        };
+        // Off, and not monitoring: the readings are old.
+        apply_purifier(&mut purifier, &state).await.unwrap();
+        assert_eq!(active(&purifier), [false, false, false]);
+        // Off, but monitoring: the fan still measures.
+        state.monitoring = true;
+        apply_purifier(&mut purifier, &state).await.unwrap();
+        assert_eq!(active(&purifier), [true, true, true]);
+    }
 
     #[tokio::test]
     async fn iids_are_unique() {

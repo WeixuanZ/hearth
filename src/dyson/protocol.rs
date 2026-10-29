@@ -84,6 +84,14 @@ pub struct MachineState {
     pub topic_prefix: Option<String>,
 }
 
+impl MachineState {
+    /// The sensors read while the fan runs, or while it is off with
+    /// continuous monitoring on. Otherwise their readings are stale.
+    pub fn sensing(&self) -> bool {
+        self.power_on || self.monitoring
+    }
+}
+
 /// Apple Home's air-quality scale: 0 unknown, 1 excellent … 5 poor.
 /// Takes the worst of the pollutants the HP09 actually measures.
 pub fn air_quality(state: &MachineState) -> u8 {
@@ -254,38 +262,34 @@ fn apply_machine_fields(state: &mut MachineState, map: &Map<String, Value>) {
     apply_environment_fields(state, map);
 }
 
+/// A sensor field: `None` when absent, so the last reading stands, and
+/// `Some(None)` when the fan says it is not measuring (`OFF`, `INIT`).
+fn reading(map: &Map<String, Value>, keys: &[&str]) -> Option<Option<f32>> {
+    let raw = keys.iter().find_map(|key| field_str(map, key))?;
+    Some(parse_f32(&raw))
+}
+
 fn apply_environment_fields(state: &mut MachineState, map: &Map<String, Value>) {
-    if let Some(temp) = field_str(map, "tact").and_then(|raw| parse_f32(&raw)) {
-        state.temperature_c = Some(kelvin_tenths_to_c(temp));
+    if let Some(temp) = reading(map, &["tact"]) {
+        state.temperature_c = temp.map(kelvin_tenths_to_c);
     }
-    if let Some(humidity) = field_str(map, "hact").and_then(|raw| parse_f32(&raw)) {
-        if (0.0..=100.0).contains(&humidity) {
-            state.humidity = Some(humidity);
-        }
+    if let Some(humidity) = reading(map, &["hact"]) {
+        state.humidity = humidity.filter(|humidity| (0.0..=100.0).contains(humidity));
     }
-    if let Some(pm) = field_str(map, "p25r")
-        .or_else(|| field_str(map, "pm25"))
-        .and_then(|raw| parse_f32(&raw))
-    {
-        state.pm25 = Some(pm);
+    if let Some(pm) = reading(map, &["p25r", "pm25"]) {
+        state.pm25 = pm;
     }
-    if let Some(pm) = field_str(map, "p10r")
-        .or_else(|| field_str(map, "pm10"))
-        .and_then(|raw| parse_f32(&raw))
-    {
-        state.pm10 = Some(pm);
+    if let Some(pm) = reading(map, &["p10r", "pm10"]) {
+        state.pm10 = pm;
     }
-    if let Some(voc) = field_str(map, "va10").and_then(|raw| parse_f32(&raw)) {
-        state.voc_index = Some(voc / 10.0);
+    if let Some(voc) = reading(map, &["va10"]) {
+        state.voc_index = voc.map(|voc| voc / 10.0);
     }
-    if let Some(no2) = field_str(map, "noxl").and_then(|raw| parse_f32(&raw)) {
-        state.no2_index = Some(no2 / 10.0);
+    if let Some(no2) = reading(map, &["noxl"]) {
+        state.no2_index = no2.map(|no2| no2 / 10.0);
     }
-    if let Some(hcho) = field_str(map, "hchr")
-        .or_else(|| field_str(map, "hcho"))
-        .and_then(|raw| parse_f32(&raw))
-    {
-        state.hcho_mg_m3 = Some(hcho / 1000.0);
+    if let Some(hcho) = reading(map, &["hchr", "hcho"]) {
+        state.hcho_mg_m3 = hcho.map(|hcho| hcho / 1000.0);
     }
 }
 
@@ -595,17 +599,20 @@ mod tests {
     }
 
     #[test]
-    fn ignores_sensor_sentinels() {
+    fn a_sensor_that_stops_measuring_clears_its_reading() {
         let mut state = MachineState {
             humidity: Some(40.0),
+            pm25: Some(4.0),
             ..MachineState::default()
         };
         apply_message(
             &mut state,
-            "527K/SN/status/current",
+            "000X/SN/status/current",
             r#"{"msg":"ENVIRONMENTAL-CURRENT-SENSOR-DATA","data":{"hact":"OFF","tact":"NONE"}}"#,
         );
-        assert_eq!(state.humidity, Some(40.0));
+        assert_eq!(state.humidity, None);
         assert!(state.temperature_c.is_none());
+        // A field the message leaves out keeps its last reading.
+        assert_eq!(state.pm25, Some(4.0));
     }
 }
