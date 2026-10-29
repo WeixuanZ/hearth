@@ -8,4 +8,6 @@ Changes from upstream:
   request split across frames, like Home's event subscriptions for a TV,
   failed with 500 and Home reconnected without end.
 - The switch service carries Configured Name, which Home labels it by.
+- Bump the configuration number when the accessory layout changes, not
+  only when a new accessory id appears, so Home drops its cached copy.
 - Clear the Rust warnings the crate raises.

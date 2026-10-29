@@ -38,6 +38,8 @@ struct Snapshot {
     updated: u64,
     name: String,
     pin: String,
+    /// Whether a Home holds a pairing. The menu bar offers to forget it.
+    paired: bool,
     devices: Vec<DeviceSnap>,
 }
 
@@ -50,6 +52,7 @@ pub fn begin(config: &Config) {
         updated: now(),
         name: config.name.clone(),
         pin: config.homekit_pin.clone(),
+        paired: config::paired(),
         devices,
     };
     let mut guard = STATE.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -84,6 +87,7 @@ pub fn flush() {
     };
     state.pid = std::process::id();
     state.updated = now();
+    state.paired = config::paired();
     let copy = state.clone();
     drop(guard);
     let _ = write(&copy);

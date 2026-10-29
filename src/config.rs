@@ -136,23 +136,32 @@ pub fn rename(config: &mut Config, from: &str, to: &str) -> Result<()> {
     Ok(())
 }
 
+/// The pairings Home left with the bridge, one file per controller.
+fn pairing_files() -> Vec<PathBuf> {
+    let Ok(dir) = homekit_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(dir.join("pairings")) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| Some(entry.ok()?.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .collect()
+}
+
+pub fn paired() -> bool {
+    !pairing_files().is_empty()
+}
+
 /// Forgets every Home that paired with the bridge, so it can be added again.
 /// Returns how many pairings there were.
 pub fn clear_pairings() -> Result<usize> {
-    let dir = homekit_dir()?.join("pairings");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return Ok(0);
-    };
-    let mut removed = 0;
-    for entry in entries {
-        let path = entry?.path();
-        if path.is_file() {
-            std::fs::remove_file(&path)
-                .with_context(|| format!("could not remove {}", path.display()))?;
-            removed += 1;
-        }
+    let files = pairing_files();
+    for path in &files {
+        fs::remove_file(path).with_context(|| format!("could not remove {}", path.display()))?;
     }
-    Ok(removed)
+    Ok(files.len())
 }
 
 pub fn assign_aids(devices: &mut [Device]) -> bool {

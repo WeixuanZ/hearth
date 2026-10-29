@@ -7,6 +7,7 @@ struct Snapshot: Codable {
     var updated: UInt64
     var name: String
     var pin: String
+    var paired: Bool?
     var devices: [DeviceSnap]
 }
 
@@ -103,6 +104,29 @@ final class BridgeModel: ObservableObject {
     func stop() {
         guard let pid = snapshot?.pid, pid > 0 else { return }
         kill(Int32(pid), SIGTERM)
+    }
+
+    /// Forgets Home's pairing and restarts the bridge, so it shows up in Add
+    /// Accessory again. For a bridge removed from Home while it was stopped.
+    func forgetHome() {
+        guard let url = hearthURL() else {
+            missingBinary = true
+            return
+        }
+        stop()
+        starting = true
+        // The bridge re-advertises only when it starts, so stop it first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            let unpair = Process()
+            unpair.executableURL = url
+            unpair.arguments = ["unpair"]
+            unpair.standardOutput = FileHandle.nullDevice
+            unpair.standardError = FileHandle.nullDevice
+            try? unpair.run()
+            unpair.waitUntilExit()
+            self?.starting = false
+            self?.start()
+        }
     }
 
     func copyPin() {

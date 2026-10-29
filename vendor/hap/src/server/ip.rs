@@ -211,6 +211,42 @@ impl IpServer {
 
         Ok(server)
     }
+
+    /// Bumps the configuration number when the accessory layout differs from
+    /// the last run's, so Home fetches it again. Adding an accessory id is not
+    /// the only change Home caches: services, characteristics and names count.
+    async fn note_layout(&self) -> Result<()> {
+        let json = self.accessory_database.lock().await.as_serialized_json().await?;
+        let mut layout: serde_json::Value = serde_json::from_slice(&json)?;
+        strip_readings(&mut layout);
+        let layout = serde_json::to_vec(&layout)?;
+
+        let mut storage = self.storage.lock().await;
+        if storage.load_bytes("accessory_layout").await.ok().as_deref() == Some(&layout[..]) {
+            return Ok(());
+        }
+        let mut config = self.config.lock().await;
+        config.configuration_number = config.configuration_number % 65535 + 1;
+        info!("accessory layout changed; configuration number is now {}", config.configuration_number);
+        storage.save_config(&config).await?;
+        storage.save_bytes("accessory_layout", &layout).await?;
+        Ok(())
+    }
+}
+
+/// Drops the readings from a layout, so a temperature change is not a new
+/// layout. Text stays: a name is part of what Home shows.
+fn strip_readings(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if map.get("format").and_then(|format| format.as_str()) != Some("string") {
+                map.remove("value");
+            }
+            map.values_mut().for_each(strip_readings);
+        },
+        serde_json::Value::Array(items) => items.iter_mut().for_each(strip_readings),
+        _ => {},
+    }
 }
 
 #[async_trait]
@@ -218,8 +254,10 @@ impl Server for IpServer {
     fn run_handle(&self) -> BoxFuture<'_,Result<()>> {
         let http_handle = self.http_server.run_handle();
         let mdns_responder = self.mdns_responder.clone();
+        let this = self.clone();
 
         let handle = async move {
+            this.note_layout().await?;
             let mdns_handle = mdns_responder.lock().await.run_handle();
 
             futures::try_join!(http_handle, mdns_handle.map(|_| Ok(())))?;

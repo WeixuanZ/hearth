@@ -77,13 +77,9 @@ hearth rename "Old name" "New name"
 
 then restart the bridge. Home picks the name up on its next refresh, or at once when the bridge is added again. Avoid naming a device after its room: Home hides a room's name at the start of an accessory's name.
 
-**Add it again.** Remove the bridge in Home while it is running, and it shows up to add again. If it was removed while the bridge was stopped, the bridge still thinks it is paired and stays hidden. Then:
+**Add it again.** Remove the bridge in Home while it is running, and it shows up to add again. If it was removed while the bridge was stopped, the bridge still thinks it is paired and stays hidden. The menu bar says "Paired with Home" then. Choose Forget Home there, tap again to confirm, and add it as above. Without the menu bar, stop the bridge, run `hearth unpair`, and start it.
 
-```sh
-hearth unpair
-```
-
-restart the bridge, and add it as above.
+**Changes reach Home on their own.** The bridge remembers the shape of its accessories. When a device, a switch or a name changes, it tells Home to fetch the new set on the next start.
 
 ## Keep it running
 

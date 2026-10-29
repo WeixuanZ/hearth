@@ -3,6 +3,9 @@ import SwiftUI
 
 struct Panel: View {
     @ObservedObject var model: BridgeModel
+    /// Forgetting Home is undone only by adding the bridge again, so it takes
+    /// a second tap.
+    @State private var confirmForget = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -60,8 +63,9 @@ struct Panel: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 12) {
             if model.running, let pin = model.snapshot?.pin, !pin.isEmpty {
+                let paired = model.snapshot?.paired == true
                 HStack(spacing: 8) {
-                    Text("Pairing")
+                    Text(paired ? "Paired with Home" : "Ready to add in Home")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 8)
@@ -76,6 +80,23 @@ struct Panel: View {
                     }
                     .buttonStyle(.borderless)
                     .help("Copy the pairing code")
+                }
+                if paired {
+                    Button(confirmForget ? "Tap again to forget Home" : "Forget Home…") {
+                        if confirmForget {
+                            confirmForget = false
+                            model.forgetHome()
+                        } else {
+                            confirmForget = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                                confirmForget = false
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 12))
+                    .foregroundStyle(confirmForget ? .red : .secondary)
+                    .help("If the bridge was removed from Home but does not show up to add again")
                 }
             }
             HStack(spacing: 8) {
