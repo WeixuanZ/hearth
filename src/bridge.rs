@@ -72,6 +72,8 @@ async fn open(config: &Config) -> Result<IpServer> {
     let hap_config = match storage.load_config().await {
         Ok(mut existing) => {
             existing.host = LISTEN_ON;
+            // Follow bridge_id, so `hearth unpair` can give Home a new accessory.
+            existing.device_id = MacAddress::new(device_id(&config.bridge_id));
             existing.name = config.name.clone();
             existing.category = AccessoryCategory::Bridge;
             storage

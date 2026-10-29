@@ -34,8 +34,15 @@ final class BridgeModel: ObservableObject {
     @Published var missingBinary = false
     @Published var copied = false
     @Published var starting = false
+    /// Between Forget Home and the restarted bridge saying it is unpaired.
+    @Published var forgetting = false
 
     private var timer: Timer?
+
+    /// Whether a Home holds the bridge. Unknown while it is not running.
+    var paired: Bool? {
+        running ? snapshot?.paired : nil
+    }
 
     init() {
         tick()
@@ -58,6 +65,9 @@ final class BridgeModel: ObservableObject {
         let alive = snap.pid > 0 && kill(Int32(snap.pid), 0) == 0
         let age = Date().timeIntervalSince1970 - TimeInterval(snap.updated)
         running = alive && age < 15
+        if forgetting && paired == false {
+            forgetting = false
+        }
     }
 
     func hearthURL() -> URL? {
@@ -85,7 +95,11 @@ final class BridgeModel: ObservableObject {
         let shell = Process()
         shell.executableURL = URL(fileURLWithPath: "/bin/sh")
         let path = url.path.replacingOccurrences(of: "'", with: "'\\''")
-        shell.arguments = ["-c", "nohup '\(path)' run >/dev/null 2>&1 &"]
+        // The log starts over with each run, so it cannot grow without end.
+        let log = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/hearth/hearth.log").path
+            .replacingOccurrences(of: "'", with: "'\\''")
+        shell.arguments = ["-c", "nohup '\(path)' run >'\(log)' 2>&1 &"]
         shell.standardOutput = FileHandle.nullDevice
         shell.standardError = FileHandle.nullDevice
         do {
@@ -115,6 +129,11 @@ final class BridgeModel: ObservableObject {
         }
         stop()
         starting = true
+        forgetting = true
+        // A bridge that never comes back should not leave the card spinning.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+            self?.forgetting = false
+        }
         // The bridge re-advertises only when it starts, so stop it first.
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             let unpair = Process()

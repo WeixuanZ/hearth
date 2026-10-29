@@ -143,9 +143,15 @@ async fn main() -> Result<()> {
         }
         Command::Unpair => {
             let removed = config::clear_pairings()?;
-            let config = config::load()?;
-            println!("Forgot {removed} pairing(s).");
+            // A new identity too. Home may still hold the old one, if it was
+            // removed while the bridge was off, and would refuse it as
+            // already in a home.
+            let mut config = config::load()?;
+            config.bridge_id = format!("hearth-{:016x}", rand::random::<u64>());
+            config::save(&config)?;
+            println!("Forgot {removed} pairing(s), and took a new HomeKit identity.");
             println!("Restart the bridge, then in Home: Add Accessory → More options… → Hearth.");
+            println!("If Home still shows an old Hearth, remove it there.");
             println!("Code: {}", config.homekit_pin);
         }
         Command::Dyson { command } => match command {

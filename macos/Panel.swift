@@ -3,13 +3,14 @@ import SwiftUI
 
 struct Panel: View {
     @ObservedObject var model: BridgeModel
-    /// Forgetting Home is undone only by adding the bridge again, so it takes
-    /// a second tap.
-    @State private var confirmForget = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            if model.running || model.forgetting {
+                HomeCard(model: model)
+                    .padding(.top, 14)
+            }
             if let devices = model.snapshot?.devices, model.running, !devices.isEmpty {
                 VStack(spacing: 8) {
                     ForEach(devices) { device in
@@ -62,43 +63,6 @@ struct Panel: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if model.running, let pin = model.snapshot?.pin, !pin.isEmpty {
-                let paired = model.snapshot?.paired == true
-                HStack(spacing: 8) {
-                    Text(paired ? "Paired with Home" : "Ready to add in Home")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 8)
-                    Text(pin)
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    Button {
-                        model.copyPin()
-                    } label: {
-                        Image(systemName: model.copied ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Copy the pairing code")
-                }
-                if paired {
-                    Button(confirmForget ? "Tap again to forget Home" : "Forget Home…") {
-                        if confirmForget {
-                            confirmForget = false
-                            model.forgetHome()
-                        } else {
-                            confirmForget = true
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                                confirmForget = false
-                            }
-                        }
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 12))
-                    .foregroundStyle(confirmForget ? .red : .secondary)
-                    .help("If the bridge was removed from Home but does not show up to add again")
-                }
-            }
             HStack(spacing: 8) {
                 Button(model.starting ? "Starting" : (model.running ? "Stop" : "Start")) {
                     if model.running {
@@ -119,6 +83,108 @@ struct Panel: View {
                 .foregroundStyle(.secondary)
                 .keyboardShortcut("q")
             }
+        }
+    }
+}
+
+/// Where the bridge stands with Apple Home: ready to add, added, or being
+/// forgotten. The code shows only when it is needed, to add the bridge.
+private struct HomeCard: View {
+    @ObservedObject var model: BridgeModel
+    @State private var confirming = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if model.forgetting {
+                row(symbol: "house", title: "Forgetting Home…") {
+                    ProgressView().controlSize(.small)
+                }
+            } else if confirming {
+                confirm
+            } else if model.paired == true {
+                row(symbol: "house.fill", title: "In Apple Home") {
+                    Menu {
+                        Button("Forget Home…") { confirming = true }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("More")
+                }
+            } else {
+                add
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.primary.opacity(0.045))
+        )
+    }
+
+    private var add: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            row(symbol: "house", title: "Add to Apple Home") { EmptyView() }
+            HStack(spacing: 8) {
+                Text(model.snapshot?.pin ?? "")
+                    .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                    .textSelection(.enabled)
+                Button {
+                    model.copyPin()
+                } label: {
+                    Image(systemName: model.copied ? "checkmark" : "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy the code")
+            }
+            .padding(.leading, 24)
+            Text("In Home: Add Accessory, More options, then \(model.snapshot?.name ?? "Hearth"). Enter this code.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 24)
+        }
+    }
+
+    private var confirm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            row(symbol: "exclamationmark.triangle", title: "Forget Apple Home?") { EmptyView() }
+            Text("For a bridge Home will not add again. It restarts as a new accessory. If Home still lists the old one, remove it there.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 24)
+            HStack(spacing: 8) {
+                Spacer()
+                Button("Cancel") { confirming = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Forget", role: .destructive) {
+                    confirming = false
+                    model.forgetHome()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+            }
+        }
+    }
+
+    private func row<Trailing: View>(
+        symbol: String,
+        title: String,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+            Spacer(minLength: 8)
+            trailing()
         }
     }
 }
