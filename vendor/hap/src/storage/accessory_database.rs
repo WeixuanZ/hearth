@@ -86,7 +86,7 @@ impl AccessoryDatabase {
             min_value: None,
             step_value: None,
             max_len: None,
-            status: Some(0),
+            status: Some(Status::ResourceDoesNotExist as i32),
         };
 
         'l: for accessory in self.accessories.iter() {
@@ -95,6 +95,7 @@ impl AccessoryDatabase {
                 for service in a.get_mut_services() {
                     for characteristic in service.get_mut_characteristics() {
                         if characteristic.get_id() == iid {
+                            result_object.status = Some(0);
                             let characteristic_perms = characteristic.get_perms();
                             if characteristic_perms.contains(&Perm::PairedRead) {
                                 result_object.value = Some(characteristic.get_value().await?);
@@ -137,7 +138,7 @@ impl AccessoryDatabase {
         let mut result_object = WriteResponseObject {
             aid: write_object.aid,
             iid: write_object.iid,
-            status: 0,
+            status: Status::ResourceDoesNotExist as i32,
         };
 
         'l: for accessory in self.accessories.iter_mut() {
@@ -146,6 +147,7 @@ impl AccessoryDatabase {
                 for service in a.get_mut_services() {
                     for characteristic in service.get_mut_characteristics() {
                         if characteristic.get_id() == write_object.iid {
+                            result_object.status = 0;
                             let characteristic_perms = characteristic.get_perms();
                             if let Some(ev) = write_object.ev {
                                 if characteristic_perms.contains(&Perm::Events) {

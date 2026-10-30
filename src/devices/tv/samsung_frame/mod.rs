@@ -275,8 +275,10 @@ impl Tv {
                     log::info!("the TV did not confirm the art brightness");
                 }
             }
-            Command::Volume(0) => self.click("KEY_VOLDOWN").await?,
-            Command::Volume(_) => self.click("KEY_VOLUP").await?,
+            // Volume Selector: 0 is up, 1 is down, as the HAP spec has it and
+            // the Control Center remote sends.
+            Command::Volume(0) => self.click("KEY_VOLUP").await?,
+            Command::Volume(_) => self.click("KEY_VOLDOWN").await?,
             Command::Mute => self.click("KEY_MUTE").await?,
             Command::Remote(key) => self.click(key).await?,
         }

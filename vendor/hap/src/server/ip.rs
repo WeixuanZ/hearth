@@ -173,6 +173,7 @@ impl IpServer {
                     },
                     _ => {},
                 }
+                true
             }
             .boxed()
         }));

@@ -1,3 +1,7 @@
+[workspace]
+# hap is vendored and patched; its tests run with ours.
+members = [".", "vendor/hap"]
+
 [package]
 name = "hearth"
 version = "0.2.0"

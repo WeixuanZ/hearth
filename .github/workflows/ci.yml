@@ -34,13 +34,13 @@ jobs:
           components: clippy, rustfmt
 
       - name: Format
-        run: cargo fmt --check
+        run: cargo fmt --check -p hearth
 
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --locked
+        run: cargo test --locked --workspace
 
   menu-bar:
     name: Menu bar (${{ matrix.arch }})

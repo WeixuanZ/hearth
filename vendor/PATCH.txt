@@ -12,3 +12,14 @@ Changes from upstream:
 - Bump the configuration number when the accessory layout changes, not
   only when a new accessory id appears, so Home drops its cached copy.
 - Clear the Rust warnings the crate raises.
+- Frame the encrypted stream properly. A read that holds part of a frame,
+  or several, no longer stalls the connection; a write the socket cannot
+  take at once is queued, not dropped; session keys are derived once.
+- Send each value change to every controller subscribed to it. Upstream
+  gated events on a flag the last controller to subscribe or unsubscribe
+  set for all of them, and sent unchanged values too.
+- Drop a connection's event listener when it closes, instead of keeping
+  every one ever made. Keep serving when one connection fails to accept.
+- Answer an unknown characteristic with "resource does not exist".
+- Do not panic in mDNS teardown when the responder task has gone first.
+- hap is a workspace member, so its tests run with hearth's.
