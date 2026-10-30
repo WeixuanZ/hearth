@@ -13,7 +13,7 @@ mod wire;
 
 use crate::{
     capabilities,
-    config::{self, Config, Device},
+    config::{self, Config},
     run::Serving,
     surfaces::control,
 };
@@ -374,10 +374,16 @@ fn should_found(me: &str, started: u64, now: u64, heard: &BTreeMap<String, Heard
 pub fn layout(config: &Config) -> String {
     let devices: Vec<_> = config
         .devices
-        .iter()
-        .map(|device| match device {
-            Device::Frame(tv) => (device.id(), tv.aid, tv.art_aid),
-            _ => (device.id(), device.aid(), 0),
+        .clone()
+        .iter_mut()
+        .map(|device| {
+            let aids: Vec<u64> = device
+                .settings_mut()
+                .aids()
+                .into_iter()
+                .map(|aid| *aid)
+                .collect();
+            (device.id(), aids)
         })
         .collect();
     format!(

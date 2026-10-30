@@ -81,16 +81,45 @@ pub struct FrameDevice {
     pub art_aid: u64,
 }
 
-impl DysonDevice {
+/// What every kind of device's settings provide. A new kind implements
+/// this, adds a variant to [`Device`], and is started in `devices::spawn`.
+pub trait Settings {
     /// Stable while the bridge runs: the menu bar, the CLI and Home name it by this.
-    pub fn id(&self) -> String {
+    fn id(&self) -> String;
+    fn name(&self) -> &str;
+    fn name_mut(&mut self) -> &mut String;
+    /// Every HomeKit accessory id it owns, its own first. 0 until assigned.
+    fn aids(&mut self) -> Vec<&mut u64>;
+}
+
+impl Settings for DysonDevice {
+    fn id(&self) -> String {
         format!("dyson:{}", self.serial)
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn name_mut(&mut self) -> &mut String {
+        &mut self.name
+    }
+    fn aids(&mut self) -> Vec<&mut u64> {
+        vec![&mut self.aid]
     }
 }
 
-impl FrameDevice {
-    pub fn id(&self) -> String {
+impl Settings for FrameDevice {
+    fn id(&self) -> String {
         format!("frame:{}", self.host)
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn name_mut(&mut self) -> &mut String {
+        &mut self.name
+    }
+    /// The TV, and art mode as a tile of its own.
+    fn aids(&mut self) -> Vec<&mut u64> {
+        vec![&mut self.aid, &mut self.art_aid]
     }
 }
 
@@ -103,47 +132,30 @@ fn default_true() -> bool {
 }
 
 impl Device {
-    pub fn aid(&self) -> u64 {
+    pub fn settings(&self) -> &dyn Settings {
         match self {
-            Self::Dyson(device) => device.aid,
-            Self::Frame(device) => device.aid,
+            Self::Dyson(device) => device,
+            Self::Frame(device) => device,
         }
     }
 
-    pub fn set_aid(&mut self, aid: u64) {
+    pub fn settings_mut(&mut self) -> &mut dyn Settings {
         match self {
-            Self::Dyson(device) => device.aid = aid,
-            Self::Frame(device) => device.aid = aid,
-        }
-    }
-
-    /// How many accessory ids this connector consumes, starting at `aid`.
-    pub fn aid_span(&self) -> u64 {
-        match self {
-            Self::Dyson(_) => 1,
-            Self::Frame(_) => 1,
+            Self::Dyson(device) => device,
+            Self::Frame(device) => device,
         }
     }
 
     pub fn id(&self) -> String {
-        match self {
-            Self::Dyson(device) => device.id(),
-            Self::Frame(device) => device.id(),
-        }
+        self.settings().id()
     }
 
     pub fn name(&self) -> &str {
-        match self {
-            Self::Dyson(device) => &device.name,
-            Self::Frame(device) => &device.name,
-        }
+        self.settings().name()
     }
 
     pub fn set_name(&mut self, name: String) {
-        match self {
-            Self::Dyson(device) => device.name = name,
-            Self::Frame(device) => device.name = name,
-        }
+        *self.settings_mut().name_mut() = name;
     }
 }
 
@@ -219,51 +231,32 @@ pub fn clear_pairings() -> Result<usize> {
     Ok(files.len())
 }
 
+/// Gives every device's accessories an id, keeping those already in use so
+/// Home keeps knowing them. Each device's own accessory comes first.
 pub fn assign_aids(devices: &mut [Device]) -> bool {
-    let mut changed = false;
+    let mut slots: Vec<Vec<&mut u64>> = devices
+        .iter_mut()
+        .map(|device| device.settings_mut().aids())
+        .collect();
+    // An id claimed twice, as when two computers' devices merge, stays with
+    // the first claim; the other gets a new one below.
     let mut used = Vec::new();
-    // An id claimed twice, as when two computers' devices merge, goes to the
-    // first claim; the other device gets a new one below.
-    for device in devices.iter_mut() {
-        let span: Vec<u64> = (0..device.aid_span())
-            .map(|offset| device.aid() + offset)
-            .collect();
-        if device.aid() >= 2 && span.iter().any(|aid| used.contains(aid)) {
-            device.set_aid(0);
-        } else if device.aid() >= 2 {
-            used.extend(span);
-        }
-        if let Device::Frame(frame) = device {
-            if used.contains(&frame.art_aid) {
-                frame.art_aid = 0;
-            } else if frame.art_aid >= 2 {
-                used.push(frame.art_aid);
-            }
+    for slot in slots.iter_mut().flatten() {
+        if **slot >= 2 && !used.contains(&**slot) {
+            used.push(**slot);
+        } else {
+            **slot = 0;
         }
     }
-    let mut next = 2u64;
-    for device in devices.iter_mut() {
-        if device.aid() >= 2 {
-            continue;
-        }
-        while (0..device.aid_span()).any(|offset| used.contains(&(next + offset))) {
-            next += 1;
-        }
-        device.set_aid(next);
-        for offset in 0..device.aid_span() {
-            used.push(next + offset);
-        }
-        next += device.aid_span();
-        changed = true;
-    }
-    // The art switch takes the lowest free id, so ids already in Home stay put.
-    for device in devices.iter_mut() {
-        if let Device::Frame(frame) = device {
-            if frame.art_aid < 2 {
-                frame.art_aid = (2..)
+    let depth = slots.iter().map(Vec::len).max().unwrap_or(0);
+    let mut changed = false;
+    for level in 0..depth {
+        for slot in slots.iter_mut().filter_map(|device| device.get_mut(level)) {
+            if **slot == 0 {
+                **slot = (2..)
                     .find(|aid| !used.contains(aid))
                     .expect("ids are endless");
-                used.push(frame.art_aid);
+                used.push(**slot);
                 changed = true;
             }
         }
@@ -584,7 +577,9 @@ pub fn upsert_dyson(config: &mut Config, device: DysonDevice) {
         existing.name = name;
         return;
     }
-    config.devices.push(Device::Dyson(device));
+    let mut device = Device::Dyson(device);
+    device.set_name(unique_name(config, device.name()));
+    config.devices.push(device);
     assign_aids(&mut config.devices);
 }
 
@@ -600,8 +595,31 @@ pub fn upsert_frame(config: &mut Config, device: FrameDevice) {
         existing.art_aid = art_aid;
         return;
     }
-    config.devices.push(Device::Frame(device));
+    let mut device = Device::Frame(device);
+    device.set_name(unique_name(config, device.name()));
+    config.devices.push(device);
     assign_aids(&mut config.devices);
+}
+
+/// `name`, or `name 2`, `name 3`… if a device already has it, so a second TV
+/// of the same model can be told apart.
+fn unique_name(config: &Config, name: &str) -> String {
+    let taken = |candidate: &str| {
+        config
+            .devices
+            .iter()
+            .any(|device| device.name().eq_ignore_ascii_case(candidate))
+    };
+    (1..)
+        .map(|n| {
+            if n == 1 {
+                name.to_owned()
+            } else {
+                format!("{name} {n}")
+            }
+        })
+        .find(|candidate| !taken(candidate))
+        .expect("names are endless")
 }
 
 pub fn format_pin(digits: &[u8; 8]) -> String {
@@ -657,6 +675,10 @@ impl OpenOptionsExt for fs::OpenOptions {
 mod tests {
     use super::*;
 
+    fn aid(device: &Device) -> u64 {
+        *device.clone().settings_mut().aids()[0]
+    }
+
     #[test]
     fn legacy_fan_keeps_its_accessory_ids() {
         let text = r#"
@@ -705,7 +727,7 @@ mod tests {
             }),
         ];
         assert!(assign_aids(&mut devices));
-        assert_eq!(devices[1].aid(), 3);
+        assert_eq!(aid(&devices[1]), 3);
         let Device::Frame(frame) = &devices[1] else {
             unreachable!()
         };
@@ -734,7 +756,7 @@ mod tests {
             }),
         ];
         assert!(assign_aids(&mut devices));
-        assert_eq!((devices[0].aid(), devices[1].aid()), (2, 3));
+        assert_eq!((aid(&devices[0]), aid(&devices[1])), (2, 3));
         let Device::Frame(frame) = &devices[0] else {
             unreachable!()
         };
@@ -826,6 +848,22 @@ mod tests {
     }
 
     #[test]
+    fn a_second_device_of_a_model_gets_its_own_name() {
+        let mut config = bridge("a", Vec::new());
+        for host in ["10.0.0.2", "10.0.0.3"] {
+            let tv = FrameDevice {
+                name: "The Frame".into(),
+                host: host.into(),
+                ..Default::default()
+            };
+            upsert_frame(&mut config, tv);
+        }
+        let names: Vec<_> = config.devices.iter().map(Device::name).collect();
+        assert_eq!(names, ["The Frame", "The Frame 2"]);
+        assert_ne!(aid(&config.devices[0]), aid(&config.devices[1]));
+    }
+
+    #[test]
     fn saving_dates_what_changed() {
         let old = bridge("a", vec![fan("AAA", "Fan"), fan("BBB", "Other")]);
         let mut new = old.clone();
@@ -860,7 +898,7 @@ mod tests {
             ["dyson:AAA"]
         );
         // Both fans came with aid 2; the second gets another.
-        let aids: Vec<_> = merged.config.devices.iter().map(Device::aid).collect();
+        let aids: Vec<_> = merged.config.devices.iter().map(aid).collect();
         assert_eq!(aids, [2, 3]);
         // Merging again changes nothing.
         assert_eq!(

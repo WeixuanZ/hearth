@@ -3,6 +3,7 @@
 
 use super::{Command, Tv};
 use crate::capabilities::{Capability, Item, Set, Snapshot};
+use crate::config::Settings as _;
 use crate::connectors::samsung::protocol::Input;
 use anyhow::{anyhow, Result};
 

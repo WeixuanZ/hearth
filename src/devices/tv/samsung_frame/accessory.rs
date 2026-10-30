@@ -5,6 +5,7 @@
 //! linked to it as an input. Brightness is the art-mode brightness. Volume
 //! buttons send the TV's own volume keys. Navigation is Control Center's remote.
 
+use crate::config::Settings as _;
 use crate::connectors::samsung::protocol::Input;
 use crate::{
     config::FrameDevice,

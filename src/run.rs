@@ -3,7 +3,7 @@
 
 use crate::{
     capabilities, cluster,
-    config::{Config, Device},
+    config::Config,
     devices,
     surfaces::{control, homekit},
 };
@@ -73,10 +73,7 @@ async fn serve(config: Config) -> Result<()> {
     capabilities::begin(&config);
     let server = homekit::open(&config).await?;
     for device in config.devices {
-        match device {
-            Device::Dyson(device) => devices::purifier::spawn(device, server.clone()).await?,
-            Device::Frame(device) => devices::tv::spawn(device, server.clone()).await?,
-        }
+        devices::spawn(device, server.clone()).await?;
     }
     log::info!(
         "serving Home as {}. To add it: Add Accessory, More options, then {}, code {}",
