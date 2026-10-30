@@ -3,11 +3,17 @@ import SwiftUI
 
 struct Panel: View {
     @ObservedObject var model: BridgeModel
+    @ObservedObject var updater: Updater
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            if model.running || model.forgetting {
+            if let group = model.status?.group, model.running, GroupCard.shows(group) {
+                GroupCard(model: model, group: group)
+                    .padding(.top, 14)
+            }
+            // Home's pairing is changed on the Mac that serves it.
+            if model.forgetting || (model.running && model.status?.group?.serving != false) {
                 HomeCard(model: model)
                     .padding(.top, 14)
             }
@@ -46,10 +52,20 @@ struct Panel: View {
                         ? Color(red: 0.18, green: 0.70, blue: 0.44)
                         : Color.primary.opacity(0.22))
                     .frame(width: 7, height: 7)
-                Text(model.running ? "Running" : "Stopped")
+                Text(state)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    private var state: String {
+        guard model.running else { return "Stopped" }
+        switch model.status?.group?.role {
+        case "standby": return "Standby"
+        case "joining": return "Joining"
+        case "looking": return "Starting"
+        default: return "Serving Home"
         }
     }
 
@@ -80,7 +96,11 @@ struct Panel: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .disabled(model.starting)
+                update
                 Spacer()
+                Text("v\(updater.version)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
                 Button("Quit") {
                     NSApplication.shared.terminate(nil)
                 }
@@ -89,6 +109,29 @@ struct Panel: View {
                 .foregroundStyle(.secondary)
                 .keyboardShortcut("q")
             }
+        }
+    }
+}
+
+extension Panel {
+    @ViewBuilder
+    fileprivate var update: some View {
+        switch updater.state {
+        case .available(let tag):
+            Button("Update to \(tag)") { updater.install(tag, model: model) }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+        case .installing:
+            ProgressView().controlSize(.small)
+            Text("Updating")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        case .failed(let message):
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+                .help(message)
+        case .current:
+            EmptyView()
         }
     }
 }

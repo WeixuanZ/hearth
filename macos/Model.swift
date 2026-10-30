@@ -27,6 +27,12 @@ final class BridgeModel: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+        // After an update, the new app starts the bridge the old one stopped.
+        if CommandLine.arguments.contains(Updater.restartFlag) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                if self?.running == false { self?.start() }
+            }
+        }
     }
 
     /// Reads the bridge's state off the main thread, so the panel never waits.
@@ -65,6 +71,13 @@ final class BridgeModel: ObservableObject {
             status?.devices[d].name = name
         }
         send(["op": "rename", "device": device.id, "name": name])
+    }
+
+    /// Acts on the group: approve, decline, confirm, separate or join.
+    func group(_ op: String, code: String? = nil) {
+        var body: [String: Any] = ["op": op]
+        body["code"] = code
+        send(body)
     }
 
     /// Asks the bridge, and shows a refusal for a moment.

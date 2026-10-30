@@ -8,6 +8,26 @@ struct Status: Decodable {
     var pin: String
     var paired: Bool
     var devices: [Device]
+    var group: GroupStatus?
+}
+
+/// The computers sharing the bridge, from this one's point of view.
+struct GroupStatus: Decodable {
+    /// This computer.
+    var name: String
+    /// serving, standby, joining, looking, or conflict.
+    var role: String
+    /// Who serves Home, or who this computer is asking to join.
+    var leader: String?
+    var members: [String]
+    /// A computer asking to join this one.
+    var asking: String?
+    /// The code this computer shows while it asks to join.
+    var code: String?
+    /// A computer in another group on the network.
+    var other: String?
+
+    var serving: Bool { role == "serving" || role == "conflict" }
 }
 
 struct Device: Decodable, Identifiable {
