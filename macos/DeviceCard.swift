@@ -1,5 +1,4 @@
 import AppKit
-import Charts
 import SwiftUI
 
 /// A device: a summary that opens, in place, into controls made from its
@@ -11,6 +10,8 @@ struct DeviceCard: View {
     /// The name being typed, while renaming.
     @State private var draft: String?
     @FocusState private var naming: Bool
+    /// The pointer is over the name, which shows the rename button.
+    @State private var namingHover = false
 
     init(model: BridgeModel, device: Device, open: Bool = false) {
         self.model = model
@@ -80,41 +81,43 @@ struct DeviceCard: View {
 
     private var summaryHeader: some View {
         HStack(alignment: .center, spacing: 8) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) { open.toggle() }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: symbol)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16)
-                    VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 5) {
                         Text(device.name)
                             .font(.system(size: 13, weight: .semibold))
                             .lineLimit(2)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text(device.headline)
-                            .font(.system(size: 11))
-                            .foregroundStyle(device.online ? .secondary : .tertiary)
+                        Button(action: beginRename) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Rename")
+                        .opacity(namingHover ? 1 : 0)
+                        .allowsHitTesting(namingHover)
                     }
-                    Spacer(minLength: 8)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(open ? 90 : 0))
+                    .onHover { namingHover = $0 }
+                    Text(device.headline)
+                        .font(.system(size: 11))
+                        .foregroundStyle(device.online ? .secondary : .tertiary)
                 }
-                .contentShape(Rectangle())
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(open ? 90 : 0))
             }
-            .buttonStyle(.plain)
-            if open {
-                Button(action: beginRename) {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Rename")
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.18)) { open.toggle() }
             }
+            .accessibilityAddTraits(.isButton)
             if let power = all("power").first {
                 Toggle("Power", isOn: model.binding(device, power))
                     .toggleStyle(.switch)
@@ -434,102 +437,80 @@ private final class KeyboardRemote {
     }
 }
 
+/// Readings, each opening its history beside the menu while the pointer
+/// rests on it, the way a tooltip does.
 private struct Readings: View {
     let device: Device
     let readings: [Capability]
     /// Three in a row, or a wrapping grid when the card is open.
     var grid: Bool
-    @State private var hovered: String?
-    @State private var cache: [String: HistorySeries] = [:]
-    @State private var fetched: [String: Date] = [:]
-    @State private var loading: String?
-    @State private var failure: String?
-    @State private var interval = 60
-    @State private var heartbeat = 900
+    /// The reading whose history is showing.
+    @State private var shown: String?
+    /// Where the pointer is: over a reading, or over the history beside it.
+    @State private var over: String?
+    @State private var overCard = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if grid {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 76), alignment: .leading)],
-                    alignment: .leading,
-                    spacing: 8
-                ) {
-                    ForEach(readings) { reading in
-                        cell(reading)
-                    }
-                }
-            } else {
-                HStack(alignment: .top, spacing: 16) {
-                    ForEach(readings) { reading in
-                        cell(reading)
-                    }
-                }
+        if grid {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 76), alignment: .leading)],
+                alignment: .leading,
+                spacing: 8
+            ) {
+                ForEach(readings) { cell($0) }
             }
-            if let hovered, let reading = readings.first(where: { $0.id == hovered }) {
-                ReadingHistory(
-                    reading: reading,
-                    series: cache[hovered],
-                    interval: interval,
-                    heartbeat: heartbeat,
-                    loading: loading == hovered && cache[hovered] == nil,
-                    failure: cache[hovered] == nil ? failure : nil
-                )
+        } else {
+            HStack(alignment: .top, spacing: 16) {
+                ForEach(readings) { cell($0) }
             }
-        }
-        .onHover { inside in
-            // Cleared here, not on the number, so the pointer can move onto the chart.
-            if !inside { hovered = nil }
         }
     }
 
     private func cell(_ reading: Capability) -> some View {
         ReadingView(reading: reading)
-            .padding(.vertical, 1)
+            .padding(.vertical, 2)
+            .padding(.horizontal, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(Color.primary.opacity(shown == reading.id ? 0.08 : 0))
+            )
+            .padding(.horizontal, -4)
             .contentShape(Rectangle())
             .onHover { inside in
                 if inside {
-                    hovered = reading.id
-                    load(reading.id)
+                    over = reading.id
+                    // A short rest, so passing over a reading does not open it.
+                    after(0.35) { if over == reading.id { shown = reading.id } }
+                } else {
+                    if over == reading.id { over = nil }
+                    closeSoon()
                 }
+            }
+            .popover(
+                isPresented: Binding(
+                    get: { shown == reading.id },
+                    set: { if !$0, shown == reading.id { shown = nil } }
+                ),
+                arrowEdge: .leading
+            ) {
+                HistoryCard(device: device.id, reading: reading)
+                    .onHover { inside in
+                        overCard = inside
+                        if !inside { closeSoon() }
+                    }
             }
     }
 
-    /// The last day is enough to glance at, and small enough to ask for on hover.
-    private func load(_ id: String) {
-        if let at = fetched[id], cache[id] != nil, Date().timeIntervalSince(at) < 60 {
-            return
+    /// Closes the history once the pointer has left both the reading and the
+    /// history, allowing it time to cross the gap between them.
+    private func closeSoon() {
+        after(0.3) {
+            if over == nil, !overCard { shown = nil }
         }
-        if loading == id { return }
-        loading = id
-        failure = nil
-        let deviceId = device.id
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                let data = try ControlSocket.request([
-                    "op": "history",
-                    "device": deviceId,
-                    "capability": id,
-                    "hours": 24,
-                ])
-                let reply = try JSONDecoder().decode(HistoryReply.self, from: data)
-                let series = reply.series.first ?? HistorySeries(
-                    capability: id, name: id, unit: "", samples: [])
-                DispatchQueue.main.async {
-                    cache[id] = series
-                    fetched[id] = Date()
-                    interval = reply.interval
-                    heartbeat = reply.heartbeat
-                    if loading == id { loading = nil }
-                }
-            } catch {
-                let message = (error as? ControlSocket.Failure)?.message ?? "Couldn't load history"
-                DispatchQueue.main.async {
-                    failure = message
-                    if loading == id { loading = nil }
-                }
-            }
-        }
+    }
+
+    private func after(_ seconds: Double, _ action: @escaping () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: action)
     }
 }
 
@@ -550,126 +531,10 @@ private struct ReadingView: View {
     }
 }
 
-private struct PlotPoint: Identifiable {
-    let id: Int
-    let time: Date
-    let value: Double
-    /// Breaks the line across a gap, so an hour switched off is not a slope.
-    let segment: Int
-}
-
-private struct ReadingHistory: View {
-    let reading: Capability
-    let series: HistorySeries?
-    let interval: Int
-    let heartbeat: Int
-    let loading: Bool
-    let failure: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let series, !series.samples.isEmpty {
-                chart(series)
-                    .frame(height: 88)
-            }
-            Text(caption)
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-                .lineLimit(2)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func chart(_ series: HistorySeries) -> some View {
-        let points = plots(series)
-        let values = series.samples.map(\.v)
-        let low = values.min() ?? 0
-        let high = values.max() ?? 0
-        let pad = max((high - low) * 0.2, 0.5)
-        return Chart(points) { point in
-            LineMark(
-                x: .value("Time", point.time),
-                y: .value(reading.name, point.value),
-                series: .value("Run", point.segment)
-            )
-            .interpolationMethod(.linear)
-            .foregroundStyle(Color.primary.opacity(0.85))
-            if points.count < 2 {
-                PointMark(
-                    x: .value("Time", point.time),
-                    y: .value(reading.name, point.value)
-                )
-                .foregroundStyle(Color.primary.opacity(0.85))
-            }
-        }
-        .chartYScale(domain: (low - pad)...(high + pad))
-        .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 3)) { value in
-                AxisGridLine()
-                AxisValueLabel {
-                    if let date = value.as(Date.self) {
-                        Text(date, format: .dateTime.hour())
-                            .font(.system(size: 9))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-        }
-        .chartYAxis {
-            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
-                AxisGridLine()
-                AxisValueLabel {
-                    if let number = value.as(Double.self) {
-                        Text(format(number, nil))
-                            .font(.system(size: 9))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-        }
-        .chartLegend(.hidden)
-    }
-
-    private func plots(_ series: HistorySeries) -> [PlotPoint] {
-        var points: [PlotPoint] = []
-        var segment = 0
-        var previous: Double?
-        let breakAfter = Double(heartbeat + interval)
-        for (index, sample) in series.samples.enumerated() {
-            if let previous, sample.t - previous > breakAfter {
-                segment += 1
-            }
-            previous = sample.t
-            points.append(PlotPoint(
-                id: index,
-                time: Date(timeIntervalSince1970: sample.t),
-                value: sample.v,
-                segment: segment
-            ))
-        }
-        return points
-    }
-
-    private var caption: String {
-        if let failure, series == nil {
-            return failure
-        }
-        guard let series else {
-            return loading ? "Loading the last 24 hours…" : "No readings in the last 24 hours"
-        }
-        guard let low = series.samples.map(\.v).min(), let high = series.samples.map(\.v).max() else {
-            return "No readings in the last 24 hours"
-        }
-        if abs(high - low) < 0.0005 {
-            return "\(format(low, reading.unit)) · 24 hours"
-        }
-        return "\(format(low, reading.unit))–\(format(high, reading.unit)) · 24 hours"
-    }
-}
-
-/// A number with its unit: whole numbers without a point.
-private func format(_ number: Double, _ unit: String?) -> String {
+/// A number with its unit: whole numbers without a point, and no space
+/// before % or °.
+func format(_ number: Double, _ unit: String?) -> String {
     let text = number.rounded() == number ? String(Int(number)) : String(format: "%.1f", number)
     guard let unit, !unit.isEmpty else { return text }
-    return unit == "%" ? "\(text)%" : "\(text) \(unit)"
+    return ["%", "°"].contains(unit) ? "\(text)\(unit)" : "\(text) \(unit)"
 }
