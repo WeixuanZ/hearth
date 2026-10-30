@@ -1,35 +1,37 @@
-<p align="center"><img src="docs/icon.png" alt="" width="160"></p>
+<p align="center"><img src="docs/icon.png" alt="" width="180"></p>
 
-# hearth
+<h1 align="center">hearth</h1>
 
-A local, extensible bridge that puts devices without HomeKit into Apple Home, and gives them a menu bar, a CLI and an API for scripts and agents.
+<p align="center">A local, extensible bridge from devices without HomeKit to Apple Home,<br>shared by every computer in the house, with a menu bar, a CLI and an API for scripts and agents.</p>
 
 hearth is generic. Every device describes itself as a few **capabilities**: power, switches, choices, levels, readings and keys. Apple Home, the menu bar, the CLI and the control socket all work from those, so they work for any device, and adding a new one means teaching hearth a protocol, not building new UI. Devices are reached directly on your network, never through the maker's cloud once set up.
 
-It runs on a computer on the same network as the devices. Several computers can share one bridge: whichever is awake serves Home, so a laptop that sleeps hands over to another. An Apple TV or HomePod still acts as the Home hub for control away from home.
+**One bridge, several computers.** Homebridge is one process on one computer: install it again and Home sees a second bridge with a second code. hearth is the same bridge on every computer that has joined. One of them serves Apple Home; if it sleeps or is closed, another takes over within seconds as the same bridge, and Home does not notice. Any of them controls every device. An Apple TV or HomePod is still the Home hub for control away from home.
 
 ## Supported devices
 
-Two connectors so far, each with one device:
-
-| Connector | Device | Reached over | Capabilities |
+| Kind | Device | Reached over | Capabilities |
 |---|---|---|---|
-| Dyson | Purifier Hot+Cool Formaldehyde (HP09) | The fan's own MQTT, after one MyDyson login | power, auto, speed, oscillation, sweep, night mode, jet focus, continuous monitoring, heat, heat target, temperature, humidity, PM2.5, PM10, formaldehyde, filter life |
-| Samsung | The Frame, 2024 (LS03D) | The TV's websocket and IP Control, not SmartThings | power, art mode, input (TV, HDMI 1–4), art brightness, remote keys and volume |
+| Purifier | Dyson Purifier Hot+Cool Formaldehyde (HP09), and other Dyson purifiers | The fan's own MQTT, after one MyDyson login | power, auto, speed, oscillation, sweep, night mode, jet focus, continuous monitoring, heat, heat target, temperature, humidity, PM2.5, PM10, formaldehyde, filter life |
+| TV | Samsung The Frame, 2024 (LS03D) | The TV's websocket and IP Control, not SmartThings | power, art mode, input (TV, HDMI 1–4), art brightness, remote keys and volume |
 
-In Apple Home these become a purifier, and a television with an Art mode tile. More connectors can be added without touching the rest; see [Adding a device](#adding-a-device).
+As many of each as you have. In Apple Home they become purifiers, and televisions each with an Art mode tile. New kinds and models plug in without touching the rest; see [Adding a device](#adding-a-device).
 
 ## Install
+
+**Mac.** Download `Hearth-<version>-macos-arm64.zip` (Apple silicon) or `-x86_64.zip` (Intel) from the latest release, move `Hearth.app` to Applications, and open it. It lives in the menu bar and keeps itself up to date. Or build it: `cargo build --release && macos/build.sh && open macos/Hearth.app`.
+
+**Command line**, on Linux or a Mac:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/WeixuanZ/hearth/main/install.sh | sh
 ```
 
-downloads the latest release for this machine (Linux, or macOS on Apple silicon or Intel), checks it against `SHA256SUMS`, and puts `hearth` in `~/.local/bin`. Or build from a checkout with `cargo install --path .`.
+downloads the latest release for this machine (Linux x86_64 or aarch64, macOS Apple silicon or Intel), checks it against `SHA256SUMS`, and puts `hearth` in `~/.local/bin`. Or `cargo install --path .` from a checkout.
 
 ## Set up
 
-**A Dyson fan.** `login` asks for your MyDyson password and the code Dyson emails, then keeps only the fan's local password. It is the one time hearth talks to Dyson.
+**A Dyson purifier.** `login` asks for your MyDyson password and the code Dyson emails, then keeps only the fan's local password. It is the one time hearth talks to Dyson.
 
 ```sh
 hearth dyson login --email you@example.com --country GB
@@ -41,17 +43,13 @@ hearth dyson login --email you@example.com --country GB
 hearth frame pair
 ```
 
-**Apple Home.** Start the bridge, then in the Home app choose Add Accessory → More options → Hearth, and enter the code from `hearth pin` or the menu bar.
-
-```sh
-hearth run
-```
+**Apple Home.** Start the bridge (the menu bar's Start, or `hearth run`), then in the Home app choose Add Accessory → More options → Hearth, and enter the code the menu bar or `hearth pin` shows.
 
 ## Use it
 
-**Menu bar** (Mac). Shows the bridge, the pairing code while it is not in Home, and each device. Click a device to open its controls, drawn from its capabilities: toggles, choices, sliders, a remote, and readings. Build it with `macos/build.sh`, then `open macos/Hearth.app`.
+**Menu bar.** The bridge, which computer serves Home, the pairing code while Home does not have it yet, and each device. Click a device to open its controls, drawn from its capabilities: toggles, choices, sliders, a remote, and readings.
 
-**CLI.** Talks to the running bridge, so it shares the devices' connections and answers in milliseconds.
+**CLI.** Talks to the running bridge, so it shares the devices' connections and answers in milliseconds, from any computer in the group.
 
 ```sh
 hearth devices                    # every device, each capability, what it accepts
@@ -62,110 +60,234 @@ hearth set tv input hdmi2
 hearth set tv remote select
 hearth set purifier speed 4
 hearth set purifier sweep 90
+hearth rename tv "Living room TV"
+hearth remove "The Frame 2"
+hearth group                      # which computer serves Home
 ```
 
-A device is its id, name, kind (`tv`, `purifier`), connector (`frame`, `dyson`), or a part of its name. A value is `on`/`off`, a number, or an option id from `hearth devices`.
+A device is its id, name, kind (`tv`, `purifier`), connector (`frame`, `dyson`), or a part of its name; with two TVs, `tv` asks which. A value is `on`/`off`, a number, or an option id from `hearth devices`.
 
 **Scripts and agents.** Add `--json` to any command. `hearth devices --json` lists every capability with its kind, value, accepted options or range, and whether it is active, which is enough to drive any device without knowing its brand. Errors go to stderr with exit status 1. Programs can also talk to the [control socket](#control-socket) directly.
 
-**Several of a kind.** Add as many TVs and purifiers as you have; a second of a model gets a name of its own, like `The Frame 2`. `hearth set tv …` asks which one when there are two.
+**Names.** A device has one name. Rename it from the pencil on its card, with `hearth rename`, or in the Home app, and it changes everywhere. A second device of a model gets a name of its own, like `The Frame 2`.
 
-**Remove a device** with `hearth remove "The Frame 2"`. Every computer in the group drops it too.
+**Start over with Home.** If Home will not add the bridge, or says it already belongs to a home, choose Forget Home in the menu bar on the computer serving Home (or stop the bridge and run `hearth unpair`). The bridge comes back as a new accessory. Remove any old Hearth from Home.
 
-**Rename a device** from the pencil on its card in the menu bar, with `hearth rename tv "Living room TV"`, or in the Home app. A device has one name: renaming it anywhere renames it in the menu bar, the CLI and Home.
+## Share one bridge between computers
 
-**Start over with Home.** If Home will not add the bridge, or says it already belongs to a home, choose Forget Home in the menu bar (or stop the bridge and run `hearth unpair`). The bridge comes back as a new accessory. Remove any old Hearth from Home.
+Run hearth on each computer. The first starts a group. The next one asks to join and shows a six-digit code; type that code on a computer already in the group (the menu bar asks for it, or `hearth group approve <code>`), then confirm on the new one (**I typed it**, or `hearth group confirm`). Until both happen nothing is shared: no devices, no pairing, no keys. The code proves the two computers reached each other with nobody in between.
 
-## Share one bridge between Macs
+From then on the group shares the config, the devices and the Home pairing. A computer that serves Home keeps serving while it is awake; when it goes quiet, another takes over as the same bridge. Devices added, renamed or removed on any computer reach all of them; the newer change wins, so clocks should be roughly right. **Stay separate** (`hearth group separate`) keeps a computer on its own, and **Join it** (`hearth group join`) moves it to another group on the network.
 
-Run hearth on each Mac. The first starts a group; the next one asks to join, shows a six-digit code, and waits. On a Mac already in the group, the menu bar (or `hearth group approve <code>`) asks for that code. Type it there, then press **I typed it** on the new Mac (`hearth group confirm`). The code proves the two Macs are talking to each other and nobody in between.
-
-From then on the group shares the config, the devices and the Home pairing. One Mac serves Home and keeps serving while it is awake. If it sleeps or quits, another takes over within seconds as the same bridge, so Home does not notice. The menu bar and the CLI on any Mac control every device. `hearth group` shows who serves; **Stay separate** (`hearth group separate`) keeps a Mac on its own.
+The computers find each other by UDP broadcast on port 47620 and talk over TCP, so a firewall must let hearth accept connections (with the macOS firewall on, it asks once). Broadcasts stop at the router, do not cross VLANs, and Wi-Fi that isolates clients hides the computers from each other. Two computers that are each already paired with Home as different bridges are left alone; Forget Home on one of them to join them.
 
 ## Updates
 
-The menu bar checks GitHub for a newer release and offers **Update to vX.Y.Z**. It downloads the app for this Mac, checks it against the release's `SHA256SUMS`, replaces itself, and restarts the bridge if it was running.
+The menu bar checks GitHub for a newer release and offers **Update to vX.Y.Z**. It downloads the app for this Mac, checks it against the release's `SHA256SUMS`, swaps it in, and restarts the bridge if it was running.
 
 ## Keep it running
 
-Either the menu bar's Start, which logs to `~/.config/hearth/hearth.log`, or a launch agent that starts hearth at login (edit the paths first):
+**Mac.** The menu bar's Start, which logs to `~/.config/hearth/hearth.log`, or a launch agent (edit the paths in `contrib/com.weixuan.hearth.plist`, then `launchctl load` it). Not both. A computer that sleeps hands Home to another in the group; with only one, keep it awake.
 
-```sh
-cp contrib/com.weixuan.hearth.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.weixuan.hearth.plist
+**Linux.** A user service:
+
+```ini
+# ~/.config/systemd/user/hearth.service
+[Unit]
+Description=hearth
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/hearth run
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
 ```
 
-Not both. Keep the machine from sleeping, or Home shows the devices as not responding.
+```sh
+systemctl --user enable --now hearth.service
+sudo loginctl enable-linger "$USER"   # keep it up while logged out
+```
 
 ## Good to know
 
-- **Dyson heat.** Heat turns the fan on, since it heats only while it blows. The fan stops heating by itself when jet focus is turned off.
-- **Dyson oscillation.** Home has no angle, so the purifier has a switch for each sweep the Dyson app offers.
+- **Dyson heat and power.** Heat, or a heat target, turns the fan on, since it heats only while it blows; turning the fan off ends heat, so it does not come back by itself. The fan also stops heating when jet focus is turned off.
+- **Dyson oscillation.** Home has no angle, so the purifier has a switch for each sweep the Dyson app offers. The menu bar and CLI pick the sweep directly.
 - **Dyson sensors.** The fan measures while it runs, or while it is off with continuous monitoring on. Otherwise its sensors show as inactive.
 - **Dyson address.** Set `host` on the fan in the config if it does not announce itself on the network.
-- **Dyson heat and power.** Heat, or a heat target, turns the fan on; turning the fan off ends heat, so it does not come back by itself.
-- **Frame art mode** is on only while the TV is: asking for art mode turns the TV on, and turning it off ends art mode. Art mode is a tile of its own, because Home shows a TV only as power and an input picker. An input with nothing plugged in is refused. Without IP Control, inputs fall back to remote keys, which newer firmware ignores.
+- **Frame art mode** is on only while the TV is: asking for art mode turns the TV on, and turning it off ends art mode. It is a tile of its own, because Home shows a TV only as power and an input picker. An input with nothing plugged in is refused. Without IP Control, inputs fall back to remote keys, which newer firmware ignores.
+- **Frame remote.** Arrows, select, back and volume are in Control Center's remote, which keeps one connection to the TV open, so keys land at once.
 
 ## Development
 
 ### Architecture
 
-```text
-   group: which computer serves · surfaces: Apple Home · control socket (menu bar, scripts) · CLI
-                                        │
-                          capabilities: snapshots and requests
-                                        │
-              devices: one task per device, its state, its HomeKit accessories
-                                        │
-                 connectors: each maker's protocol, discovery and setup
-```
+```mermaid
+flowchart TB
+  subgraph surfaces [Surfaces: never know a brand]
+    homekit[Apple Home<br/>surfaces/homekit]
+    socket[Control socket<br/>surfaces/control]
+    cli[CLI]
+    bar[Menu bar app]
+  end
+  registry[Capabilities registry<br/>snapshots and requests]
+  subgraph devices [Devices: one task each]
+    purifier[purifier/dyson]
+    tv[tv/samsung_frame]
+  end
+  subgraph connectors [Connectors: each maker's protocol]
+    dyson[dyson: MQTT, MyDyson login]
+    samsung[samsung: websockets, IP Control]
+  end
+  group[Group<br/>which computer serves]
 
-```text
-src/
-  capabilities.rs        the vocabulary, device snapshots, and the registry
-  connectors/dyson/      MyDyson login, MQTT, the fan's messages
-  connectors/samsung/    pairing, the remote and art channels, IP Control
-  devices/<kind>/<model> one task per device, its HomeKit accessories and capabilities:
-                         purifier/dyson, tv/samsung_frame
-  cluster/               the group: hellos, joining, sharing state, who serves
-  surfaces/homekit/      the HomeKit bridge and accessory helpers
-  surfaces/control.rs    the control socket
-  surfaces/cli.rs        what the CLI prints
-  config.rs              ~/.config/hearth/config.toml
-  run.rs                 hearth run: the socket and the group always; devices and Home when serving
-macos/                   the menu bar app (SwiftUI)
-vendor/hap/              the HomeKit protocol, patched
+  cli --> socket
+  bar --> socket
+  socket --> registry
+  homekit --> devices
+  registry --> devices
+  devices --> registry
+  purifier --> dyson
+  tv --> samsung
+  group -. starts and stops .-> homekit
+  group -. starts and stops .-> devices
+  socket -. on standby, forwards to the serving computer .-> group
 ```
 
 - **Connectors** know how to talk to a maker: login, pairing, discovery and message formats. They know nothing about Home or the menu bar.
-- **Devices** know what a product does. Each runs as one task that owns its state and its connection, turns requests into the connector's commands, and turns its state into a capability snapshot and HomeKit accessories.
-- **Capabilities** are the shared vocabulary. A capability has an id, a name, a kind (`power`, `switch`, `choice`, `level`, `reading` or `keys`) with its options or range, a value, and whether it is active.
-- **The group** decides which computer serves. Serving runs on a Tokio runtime of its own, so a computer that steps down ends every device connection at once. The others forward requests to it, sealed with the group key.
-- **Surfaces** never know a brand. HomeKit, the socket and the CLI send requests to the same device task, so they always agree, and a device answers once it has acted so a refusal reaches whoever asked. The menu bar draws controls from capability kinds alone.
+- **Devices** know what a product does. Each runs as one task that owns its state and its connection, turns requests into the connector's commands, and turns its state into a capability snapshot and HomeKit accessories. Rules between controls, like heat needing the fan on, live here, so every surface gets them.
+- **Capabilities** are the shared vocabulary. A capability has an id, a name, a kind (`power`, `switch`, `choice`, `level`, `reading` or `keys`) with its options or range, a value, and whether it is active. The registry holds every device's latest snapshot and the channel to its task.
+- **Surfaces** never know a brand. HomeKit, the socket and the CLI send requests to the same device task, so they always agree. The menu bar draws controls from capability kinds alone.
+- **The group** decides which computer serves. Serving runs on a Tokio runtime of its own, so a computer that steps down ends every device connection at once.
+
+```text
+src/
+  capabilities.rs         the vocabulary, device snapshots, and the registry
+  config.rs               config.toml: Settings for each kind, dates, merging two copies
+  connectors/dyson/       MyDyson login, MQTT, the fan's messages
+  connectors/samsung/     pairing, the remote and art channels, IP Control
+  devices/<kind>/<model>/ a device's task, HomeKit accessories and capabilities
+  cluster/                the group: hellos, joining, sharing state, who serves
+  surfaces/homekit/       the HomeKit bridge and accessory helpers
+  surfaces/control.rs     the control socket
+  surfaces/cli.rs         what the CLI prints
+  run.rs                  hearth run: the socket and the group always; devices and Home when serving
+macos/                    the menu bar app (SwiftUI)
+vendor/hap/               the HomeKit protocol, patched
+```
+
+### A request's path
+
+Every surface reaches a device the same way. A device answers once it has acted, so a refusal reaches whoever asked, and its new snapshot reaches everyone.
+
+```mermaid
+sequenceDiagram
+  participant B as Menu bar or CLI
+  participant S as Control socket
+  participant R as Registry
+  participant T as Device task
+  participant D as The device
+  participant H as Apple Home
+  B->>S: {"op":"set","device":"tv","capability":"art","value":true}
+  S->>R: set(tv, art, true)
+  R->>T: request, with a reply channel
+  Note over T: art needs the TV on: power on first
+  T->>D: power on, then art mode on
+  D-->>T: done
+  T-->>R: Ok
+  R-->>S: Ok
+  S-->>B: {"ok":true}
+  T->>R: publish new snapshot
+  T->>H: update characteristics (events to subscribed controllers)
+```
+
+### The group
+
+```mermaid
+flowchart LR
+  subgraph group [Computers in the group]
+    serving[Serving Home<br/>runs devices and HomeKit]
+    standby1[Standby]
+    standby2[Standby]
+  end
+  newcomer[New computer]
+  home[Apple Home]
+  devices[Devices]
+
+  serving <-->|signed hellos, UDP 47620| standby1
+  serving <-->|signed hellos| standby2
+  standby1 -->|sealed: config, pairing, requests| serving
+  newcomer -.->|asks to join: code typed by a person| serving
+  serving --> home
+  serving --> devices
+  standby1 -. takes over if the server goes quiet .-> home
+```
+
+Each computer broadcasts a hello every second: its id, name, TCP port, group, bridge identity, whether Home has paired, its config's newest date, a hash of its HomeKit files, and whether it serves. Within a group, hellos are signed with HMAC-SHA256 and carry a timestamp, so one cannot be forged or replayed. A stranger can read a hello but learns no secret.
+
+A member that hears news, a newer config or the server's newer pairing, asks for it over TCP. Each connection starts with a random nonce from the answering side; requests and replies are sealed with ChaCha20-Poly1305 under a key derived from the group key and bound to that nonce, so a recorded request cannot be played again. Configs merge per device: each device is the newer of two copies, or gone if removed after that, and the HomeKit identity follows the computer Home has paired with. On standby, the control socket forwards device requests to the server the same way, so every computer controls every device.
+
+Joining:
+
+```mermaid
+sequenceDiagram
+  participant N as New computer
+  participant M as Member
+  actor P as Person
+  N->>M: TCP connect
+  M-->>N: nonce
+  N->>M: Join: id, name, X25519 public key
+  M-->>N: Joining: its X25519 public key
+  Note over N,M: both derive the shared secret, and the same six-digit code from it
+  N->>P: shows the code
+  P->>M: types the code (approve)
+  M-->>N: Granted: group key sealed with the shared secret
+  P->>N: confirms they typed it there
+  Note over N: saves the key, then fetches the config and pairing
+```
+
+Anyone in between would have agreed a different secret with each side, so the codes would differ and the member would refuse. Confirming on the new computer stops a stranger from posing as a member: only a person knows the code was typed on the real one.
+
+Who serves:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Looking: start, listen 1.5 s
+  Looking --> Serving: nobody serves, lowest id
+  Looking --> Standby: another member serves
+  Standby --> Serving: the server's hellos stop for 4 s, and this is the lowest id left
+  Serving --> Standby: another server with a lower id (both started at once)
+  Serving --> [*]: stop
+```
+
+A computer that serves keeps serving, so a laptop that wakes up does not take Home back. Taking over is quick because every member already holds the pairing: the new server advertises the same bridge, and Home reconnects to it.
 
 ### Control socket
 
 `~/.config/hearth/control.sock`, mode 0600, never on the network. One JSON request per line, one reply per line, served from memory in about ten milliseconds:
 
 ```text
-{"op":"status"}                                                   → the bridge and every device
+{"op":"status"}                                                   → the bridge, every device, and the group
 {"op":"get","device":"tv"}                                        → one device
 {"op":"set","device":"tv","capability":"input","value":"hdmi2"}  → {"ok":true} or {"error":"…"}
 {"op":"rename","device":"tv","name":"Living room TV"}              → {"ok":true}, and Home follows
 {"op":"approve","code":"482 193"}   {"op":"decline"}   {"op":"confirm"}   {"op":"separate"}   {"op":"join"}
 ```
 
-The status has a `group`: this computer's `role` (`serving`, `standby`, `joining`, `looking`), who serves, the members, and any request to join. On standby, device requests go on to the computer serving Home.
+The status has a `group`: this computer's `role` (`serving`, `standby`, `joining`, `looking`), who serves, the members, and any request to join.
 
 ### Adding a device
 
 1. **Connector.** Under `src/connectors/<maker>/`: the protocol, and a `hearth <maker> …` setup command if the device needs pairing.
 2. **Settings.** In `src/config.rs`: a struct for what the device needs, implementing `Settings` (its id, its name, the HomeKit accessory ids it owns), and a variant of `Device`. Ids, merging between computers and renames then work for it.
-3. **Device.** Under `src/devices/<kind>/<model>/`: a task that keeps the device's state and connection (see `devices::tv::samsung_frame::spawn`), started from `devices::spawn`. Rules between its controls, like heat needing the fan on, live in the task, so every surface gets them.
+3. **Device.** Under `src/devices/<kind>/<model>/`: a task that keeps the device's state and connection (see `devices::tv::samsung_frame::spawn`), started from `devices::spawn`.
 4. **Capabilities.** In `capabilities.rs` next to it: a `snapshot` from state, and a function from a request to the device's command. Publish with `capabilities::publish`; take requests from `capabilities::listen`.
 5. **HomeKit.** In `accessory.rs`: the accessories, with fixed iids per service (tests check they are unique), and the same commands as the capabilities. Give the main service `device_name`, and call `follow_name` once the accessory is added, so renames reach Home and come back from it. Other services take `configured_name`, for names Home can change.
 
-The menu bar, the CLI and the socket need no changes.
+The menu bar, the CLI, the socket and the group need no changes.
 
 ### HomeKit notes
 
@@ -174,19 +296,23 @@ The menu bar, the CLI and the socket need no changes.
 - After pairing, Home names an accessory from the Configured Name of its main service, not from its accessory information, so that is where a rename goes.
 - `bridge_id` in the config is hashed into the HomeKit identity. Changing it makes Home see a new accessory, which is how `hearth unpair` starts over.
 
+### On disk
+
+Under `~/.config/hearth/`: `config.toml` (the bridge and devices, shared by the group), `homekit/` (the bridge's keys and Home's pairings, shared), `group.json` (the group key, 0600, never sent after joining), `node` (this computer's id), `control.sock`, and `hearth.log`.
+
 ### Build, test and release
 
 ```sh
-cargo test
+cargo test --workspace
 cargo clippy --all-targets
 macos/build.sh
 ```
 
-Every push and pull request is checked on Linux and macOS: formatting, Clippy, tests, and the menu bar build. A tag that matches the version in `Cargo.toml`, like `v0.2.0`, builds and publishes Linux (x86_64, aarch64), macOS Apple silicon and macOS Intel binaries, the menu bar app, and `SHA256SUMS`. The app takes its version from `Cargo.toml`, which is what its updater compares.
+Every push and pull request is checked on Linux and macOS: formatting, Clippy, the tests of hearth and its vendored HomeKit library, and the menu bar build for both Mac architectures. A tag that matches the version in `Cargo.toml`, like `v0.2.0`, builds and publishes Linux (x86_64, aarch64), macOS Apple silicon and macOS Intel binaries, the menu bar app, and `SHA256SUMS`. The app takes its version from `Cargo.toml`, which is what its updater compares.
 
 ### Libraries
 
-`vendor/hap` is [ewilken/hap-rs](https://github.com/ewilken/hap-rs) `v0.1.0-pre.15` (MIT/Apache-2.0), patched as listed in `vendor/PATCH.txt`.
+`vendor/hap` is [ewilken/hap-rs](https://github.com/ewilken/hap-rs) `v0.1.0-pre.15` (MIT/Apache-2.0), patched as listed in `vendor/PATCH.txt`: among others, a correct encrypted-stream framer, change events for every subscribed controller, and no leaked listeners.
 
 ## License
 
