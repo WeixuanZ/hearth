@@ -163,6 +163,7 @@ struct DeviceCard: View {
         switch device.category {
         case "purifier": return "fanblades"
         case "tv": return "tv"
+        case "dishwasher": return "dishwasher"
         default: return "circle.dashed"
         }
     }

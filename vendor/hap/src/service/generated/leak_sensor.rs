@@ -8,6 +8,7 @@ use crate::{
         HapCharacteristic,
 		leak_detected::LeakDetectedCharacteristic,
 		name::NameCharacteristic,
+		configured_name::ConfiguredNameCharacteristic,
 		status_active::StatusActiveCharacteristic,
 		status_fault::StatusFaultCharacteristic,
 		status_low_battery::StatusLowBatteryCharacteristic,
@@ -43,6 +44,8 @@ pub struct LeakSensorService {
 	pub status_low_battery: Option<StatusLowBatteryCharacteristic>,
 	/// Status Tampered characteristic (optional).
 	pub status_tampered: Option<StatusTamperedCharacteristic>,
+	/// Configured Name characteristic (optional). Home follows a change to it.
+	pub configured_name: Option<ConfiguredNameCharacteristic>,
 }
 
 impl LeakSensorService {
@@ -57,6 +60,7 @@ impl LeakSensorService {
 			status_fault: Some(StatusFaultCharacteristic::new(id + 1 + 2 + 1, accessory_id)),
 			status_low_battery: Some(StatusLowBatteryCharacteristic::new(id + 1 + 3 + 1, accessory_id)),
 			status_tampered: Some(StatusTamperedCharacteristic::new(id + 1 + 4 + 1, accessory_id)),
+			configured_name: Some(ConfiguredNameCharacteristic::new(id + 1 + 5 + 1, accessory_id)),
 			..Default::default()
         }
     }
@@ -141,6 +145,9 @@ impl HapService for LeakSensorService {
 		if let Some(c) = &self.status_tampered {
 		    characteristics.push(c);
 		}
+		if let Some(c) = &self.configured_name {
+		    characteristics.push(c);
+		}
 		characteristics
     }
 
@@ -162,6 +169,9 @@ impl HapService for LeakSensorService {
 		    characteristics.push(c);
 		}
 		if let Some(c) = &mut self.status_tampered {
+		    characteristics.push(c);
+		}
+		if let Some(c) = &mut self.configured_name {
 		    characteristics.push(c);
 		}
 		characteristics

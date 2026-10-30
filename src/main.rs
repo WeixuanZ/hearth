@@ -9,7 +9,7 @@ mod surfaces;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use connectors::{dyson, samsung};
+use connectors::{bosch, dyson, samsung};
 use std::io::{self, BufRead, Write};
 use surfaces::cli;
 
@@ -22,16 +22,17 @@ Examples:
   hearth set tv remote select
   hearth set purifier speed 4
   hearth set purifier sweep 90
+  hearth set dishwasher programme 30
   hearth get purifier temperature --json
   hearth history purifier temperature
   hearth history purifier --hours 168 --json
   hearth rename tv \"Living room TV\"  Renames it in Home too
   hearth group                       Which computer serves Home
 
-A device is its id, name, connector (dyson, frame), kind (purifier, tv), or a
-part of its name. A value is on or off, a number, or an option id listed by
-`hearth devices`. devices, get, set and history talk to the running bridge.
-history also reads the saved files when the bridge is stopped.";
+A device is its id, name, connector (dyson, frame, bosch), kind (purifier, tv,
+dishwasher), or a part of its name. A value is on or off, a number, or an
+option id listed by `hearth devices`. devices, get, set and history talk to the
+running bridge. history also reads the saved files when the bridge is stopped.";
 
 #[derive(Parser)]
 #[command(
@@ -113,6 +114,11 @@ enum Command {
         #[command(subcommand)]
         command: FrameCommand,
     },
+    /// Add a Bosch dishwasher.
+    Bosch {
+        #[command(subcommand)]
+        command: BoschCommand,
+    },
 }
 
 #[derive(Subcommand)]
@@ -154,6 +160,30 @@ enum FrameCommand {
         /// Name in Apple Home.
         #[arg(long, default_value = "The Frame")]
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum BoschCommand {
+    /// Sign in to Home Connect once and save the dishwasher's local key.
+    Login {
+        /// Address, if the name Home Connect gives does not resolve.
+        #[arg(long)]
+        host: Option<String>,
+        /// Appliance id, if the account has more than one.
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Finish a sign-in. Paste the hcauth address from the browser.
+    Submit {
+        /// The hcauth address, or the code from it.
+        redirect: Option<String>,
+        /// Address, if the name Home Connect gives does not resolve.
+        #[arg(long)]
+        host: Option<String>,
+        /// Appliance id, if the account has more than one.
+        #[arg(long)]
+        id: Option<String>,
     },
 }
 
@@ -225,6 +255,12 @@ async fn main() -> Result<()> {
         Command::Frame {
             command: FrameCommand::Pair { host, name },
         } => samsung::pair(host, name).await?,
+        Command::Bosch { command } => match command {
+            BoschCommand::Login { host, id } => bosch::login(host, id).await?,
+            BoschCommand::Submit { redirect, host, id } => {
+                bosch::submit(redirect, host, id).await?
+            }
+        },
     }
     Ok(())
 }

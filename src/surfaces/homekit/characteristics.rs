@@ -62,12 +62,34 @@ pub async fn device_name(
 /// Brings a rename from the menu bar or the CLI to Home, on the Configured
 /// Name that `device_name` set up on `service`.
 pub fn follow_name(id: &str, accessory: Arc<Mutex<Box<dyn HapAccessory>>>, service: HapType) {
+    follow(id, accessory, service, str::to_owned);
+}
+
+/// As `follow_name`, for an accessory of the device's own, named after it,
+/// like "{name} door".
+pub fn follow_label(
+    id: &str,
+    accessory: Arc<Mutex<Box<dyn HapAccessory>>>,
+    service: HapType,
+    suffix: &'static str,
+) {
+    follow(id, accessory, service, move |name| {
+        format!("{name} {suffix}")
+    });
+}
+
+fn follow(
+    id: &str,
+    accessory: Arc<Mutex<Box<dyn HapAccessory>>>,
+    service: HapType,
+    label: impl Fn(&str) -> String + Send + 'static,
+) {
     let Some(mut names) = capabilities::name(id) else {
         return;
     };
     tokio::spawn(async move {
         while names.changed().await.is_ok() {
-            let name = names.borrow_and_update().clone();
+            let name = label(&names.borrow_and_update());
             let mut accessory = accessory.lock().await;
             let characteristic = accessory
                 .get_mut_service(service)

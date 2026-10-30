@@ -7,8 +7,8 @@ Changes from upstream:
 - Read the whole request body. Upstream parsed only its first chunk, so a
   request split across frames, like Home's event subscriptions for a TV,
   failed with 500 and Home reconnected without end.
-- The switch and air purifier services carry Configured Name, which Home
-  labels them by, and follows when it changes.
+- The switch, air purifier, contact, leak and motion sensor services carry
+  Configured Name, which Home labels them by, and follows when it changes.
 - Bump the configuration number when the accessory layout changes, not
   only when a new accessory id appears, so Home drops its cached copy.
 - Clear the Rust warnings the crate raises.
