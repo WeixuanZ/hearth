@@ -1,4 +1,5 @@
 mod capabilities;
+mod cluster;
 mod config;
 mod connectors;
 mod devices;
@@ -22,6 +23,7 @@ Examples:
   hearth set purifier sweep 90
   hearth get purifier temperature --json
   hearth rename tv \"Living room TV\"  Renames it in Home too
+  hearth group                       Which computer serves Home
 
 A device is its id, name, connector (dyson, frame), kind (purifier, tv), or a
 part of its name. A value is on or off, a number, or an option id listed by
@@ -62,7 +64,8 @@ enum Command {
         /// on, off, a number, or an option id.
         value: String,
     },
-    /// Run the bridge: serve Apple Home, the menu bar and this CLI.
+    /// Run the bridge: serve Apple Home, the menu bar and this CLI, with the
+    /// other computers in the group.
     Run,
     /// Print the Apple Home pairing code.
     Pin,
@@ -72,6 +75,16 @@ enum Command {
         device: String,
         /// The new name.
         name: String,
+    },
+    /// Remove a device, from Home and from every computer in the group.
+    Remove {
+        /// Its id or name.
+        device: String,
+    },
+    /// Show the computers sharing this bridge, or act on a request to join.
+    Group {
+        #[command(subcommand)]
+        command: Option<GroupCommand>,
     },
     /// Forget Apple Home, and take a new HomeKit identity. For a bridge
     /// Home will not add again.
@@ -101,6 +114,20 @@ enum DysonCommand {
         #[arg(long)]
         serial: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum GroupCommand {
+    /// Let in the computer asking to join: type the code it shows.
+    Approve { code: String },
+    /// Turn away the computer asking to join.
+    Decline,
+    /// Say you typed this computer's code on the other one, to finish joining.
+    Confirm,
+    /// Stop asking to join, and keep a group of this computer's own.
+    Separate,
+    /// Leave this group for the other one on the network.
+    Join,
 }
 
 #[derive(Subcommand)]
@@ -134,22 +161,34 @@ async fn main() -> Result<()> {
             capability,
             value,
         } => cli::set(&device, &capability, &value, cli.json).await?,
-        Command::Run => {
-            let config = config::load()?;
-            if config.devices.is_empty() {
-                anyhow::bail!("no devices yet. Run `hearth dyson login` or `hearth frame pair`");
-            }
-            run::serve(config).await?;
-        }
+        Command::Run => run::run().await?,
         Command::Pin => println!("{}", config::load()?.homekit_pin),
         Command::Rename { device, name } => cli::rename(&device, &name, cli.json).await?,
+        Command::Remove { device } => {
+            let mut config = config::load()?;
+            let name = config::remove(&mut config, &device)?;
+            config::save(&config)?;
+            println!("Removed {name}.");
+        }
+        Command::Group { command } => {
+            let op = command.map(|command| match command {
+                GroupCommand::Approve { code } => {
+                    serde_json::json!({ "op": "approve", "code": code })
+                }
+                GroupCommand::Decline => serde_json::json!({ "op": "decline" }),
+                GroupCommand::Confirm => serde_json::json!({ "op": "confirm" }),
+                GroupCommand::Separate => serde_json::json!({ "op": "separate" }),
+                GroupCommand::Join => serde_json::json!({ "op": "join" }),
+            });
+            cli::group(op, cli.json).await?
+        }
         Command::Unpair => {
             let removed = config::clear_pairings()?;
             // A new identity too. Home may still hold the old one, if it was
             // removed while the bridge was off, and would refuse it as
             // already in a home.
             let mut config = config::load()?;
-            config.bridge_id = format!("hearth-{:016x}", rand::random::<u64>());
+            config.bridge_id = config::new_bridge_id();
             config::save(&config)?;
             println!("Forgot {removed} pairing(s), and took a new HomeKit identity.");
             println!("Restart the bridge, then in Home: Add Accessory → More options… → Hearth.");

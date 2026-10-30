@@ -14,10 +14,22 @@
 //!   → {"ok":true}, and Home shows the new name
 //! ```
 //!
+//! On a computer that is not serving Home, device requests go on to the one
+//! that is (see `cluster`), and the status is its devices. The status also
+//! has a `group`, and these ops act on it:
+//!
+//! ```text
+//! {"op":"approve","code":"123 456"}  let in the computer asking to join
+//! {"op":"decline"}                   turn it away
+//! {"op":"confirm"}                   this computer's code was typed there
+//! {"op":"separate"}                  stop asking; keep a group of our own
+//! {"op":"join"}                      leave ours for the other group heard
+//! ```
+//!
 //! The socket is mode 0600 and never on the network, so only this user can
 //! control the devices. State is served from memory, so a reply is immediate.
 
-use crate::{capabilities, config};
+use crate::{capabilities, cluster, config};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -43,6 +55,13 @@ enum Request {
         device: String,
         name: String,
     },
+    Approve {
+        code: String,
+    },
+    Decline,
+    Confirm,
+    Separate,
+    Join,
 }
 
 pub fn path() -> Result<PathBuf> {
@@ -52,6 +71,7 @@ pub fn path() -> Result<PathBuf> {
 /// Serves the socket for as long as the bridge runs.
 pub async fn serve() -> Result<()> {
     let path = path()?;
+    fs::create_dir_all(config::config_dir()?)?;
     let _ = fs::remove_file(&path);
     let listener =
         UnixListener::bind(&path).with_context(|| format!("could not open {}", path.display()))?;
@@ -90,8 +110,43 @@ async fn connection(stream: UnixStream) -> Result<()> {
 }
 
 async fn answer(line: &str) -> Value {
-    match serde_json::from_str::<Request>(line) {
-        Ok(Request::Status) => capabilities::status(),
+    let Ok(value) = serde_json::from_str::<Value>(line) else {
+        return json!({ "error": "bad request: not JSON" });
+    };
+    let request = match Request::deserialize(&value) {
+        Ok(request) => request,
+        Err(error) => return json!({ "error": format!("bad request: {error}") }),
+    };
+    match request {
+        Request::Status => {
+            let mut status = match cluster::forward(&value).await {
+                Some(Ok(status)) => status,
+                _ => here(value).await,
+            };
+            if status.get("devices").is_none() {
+                status = idle();
+            }
+            status["pid"] = json!(std::process::id());
+            status["group"] = cluster::status();
+            status
+        }
+        Request::Approve { code } => done(cluster::approve(&code)),
+        Request::Decline => done(cluster::decline()),
+        Request::Confirm => done(cluster::confirm()),
+        Request::Separate => done(cluster::separate()),
+        Request::Join => done(cluster::join_other()),
+        _ => match cluster::forward(&value).await {
+            Some(reply) => reply.unwrap_or_else(|error| json!({ "error": format!("{error:#}") })),
+            None => here(value).await,
+        },
+    }
+}
+
+/// Answers a device request from this computer's own devices. For the
+/// computer serving Home; requests from other members end here.
+pub async fn here(value: Value) -> Value {
+    match Request::deserialize(&value) {
+        Ok(Request::Status) => capabilities::status().unwrap_or_else(idle),
         Ok(Request::Get { device }) => capabilities::get(&device)
             .unwrap_or_else(|error| json!({ "error": format!("{error:#}") })),
         Ok(Request::Set {
@@ -100,8 +155,20 @@ async fn answer(line: &str) -> Value {
             value,
         }) => done(capabilities::set(&device, &capability, value).await),
         Ok(Request::Rename { device, name }) => done(capabilities::rename(&device, &name)),
+        Ok(_) => json!({ "error": "not a device request" }),
         Err(error) => json!({ "error": format!("bad request: {error}") }),
     }
+}
+
+/// The status while no computer serves Home yet.
+fn idle() -> Value {
+    let config = config::load_or_new().unwrap_or_default();
+    json!({
+        "name": config.name,
+        "pin": config.homekit_pin,
+        "paired": config::paired(),
+        "devices": [],
+    })
 }
 
 fn done(result: Result<()>) -> Value {
