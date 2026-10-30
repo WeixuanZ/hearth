@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// A device: a summary that opens, in place, into controls made from its
@@ -282,12 +283,23 @@ private struct RemotePad: View {
     /// One key's size. Arrows (3 wide) and the rest (4 wide) fit the card.
     private static let size = CGSize(width: 26, height: 24)
     private static let gap: CGFloat = 3
+    /// The key last pressed on the keyboard, lit for a moment.
+    @State private var lit: String?
+
+    /// This pad's place in `KeyboardRemote`.
+    private var owner: String { "\(device.id)/\(keys.id)" }
 
     var body: some View {
         let all = keys.keys ?? []
         let has = Set(all.map(\.id))
         VStack(alignment: .leading, spacing: 6) {
-            Text(keys.name).font(.system(size: 12))
+            HStack {
+                Text(keys.name).font(.system(size: 12))
+                Spacer(minLength: 8)
+                Label("Use your keyboard", systemImage: "keyboard")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
             HStack(alignment: .center, spacing: 12) {
                 if Self.arrows.allSatisfy(has.contains) {
                     Grid(horizontalSpacing: Self.gap, verticalSpacing: Self.gap) {
@@ -308,6 +320,23 @@ private struct RemotePad: View {
                 .fixedSize()
             }
         }
+        .onAppear { KeyboardRemote.shared.claim(owner, press: typed) }
+        .onDisappear { KeyboardRemote.shared.release(owner) }
+    }
+
+    /// Presses a key typed on the keyboard, if the pad has it and can use it
+    /// now. Reads the device afresh, since this outlives the view's copy.
+    private func typed(_ id: String) -> Bool {
+        guard let device = model.status?.devices.first(where: { $0.id == device.id }),
+              let keys = device.capabilities.first(where: { $0.id == keys.id }),
+              device.online, keys.active, keys.keys?.contains(where: { $0.id == id }) == true
+        else { return false }
+        model.set(device, keys, .text(id))
+        lit = id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            if lit == id { lit = nil }
+        }
+        return true
     }
 
     private var blank: some View {
@@ -318,6 +347,7 @@ private struct RemotePad: View {
         let name = keys.keys?.first { $0.id == id }?.name ?? id
         return Button {
             model.set(device, keys, .text(id))
+            KeyboardRemote.shared.claim(owner, press: typed)
         } label: {
             Group {
                 if let symbol = Self.symbols[id] {
@@ -329,21 +359,89 @@ private struct RemotePad: View {
             }
             .frame(width: Self.size.width, height: Self.size.height)
         }
-        .buttonStyle(KeyStyle())
+        .buttonStyle(KeyStyle(lit: lit == id))
         .help(name)
     }
 }
 
-/// A remote key: a quiet rounded square that darkens while pressed.
+/// A remote key: a quiet rounded square that darkens while pressed, by
+/// mouse or keyboard.
 private struct KeyStyle: ButtonStyle {
+    var lit = false
+
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(.primary)
             .background(
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.primary.opacity(configuration.isPressed ? 0.18 : 0.07))
+                    .fill(Color.primary.opacity(configuration.isPressed || lit ? 0.18 : 0.07))
             )
             .contentShape(Rectangle())
+    }
+}
+
+/// Sends keys typed in the panel to the open remote pad last opened or used.
+/// Typing in a text field, and shortcuts with Command, Control or Option,
+/// pass through untouched.
+private final class KeyboardRemote {
+    static let shared = KeyboardRemote()
+
+    /// Open pads, the most recent last. Each presses a key id, or says no.
+    private var pads: [(owner: String, press: (String) -> Bool)] = []
+    private var monitor: Any?
+
+    func claim(_ owner: String, press: @escaping (String) -> Bool) {
+        pads.removeAll { $0.owner == owner }
+        pads.append((owner, press))
+        if monitor == nil {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                self?.handle(event) == true ? nil : event
+            }
+        }
+    }
+
+    func release(_ owner: String) {
+        pads.removeAll { $0.owner == owner }
+        if pads.isEmpty, let monitor {
+            NSEvent.removeMonitor(monitor)
+            self.monitor = nil
+        }
+    }
+
+    private func handle(_ event: NSEvent) -> Bool {
+        guard let pad = pads.last,
+              event.modifierFlags.isDisjoint(with: [.command, .control, .option]),
+              !(event.window?.firstResponder is NSText),
+              let id = Self.key(event)
+        else { return false }
+        // Escape still cancels first where something cancels on it.
+        if id == "back", event.keyCode == 53, event.window?.performKeyEquivalent(with: event) == true {
+            return true
+        }
+        return pad.press(id)
+    }
+
+    /// The remote key a keyboard key stands for.
+    private static func key(_ event: NSEvent) -> String? {
+        switch event.specialKey {
+        case .upArrow: return "up"
+        case .downArrow: return "down"
+        case .leftArrow: return "left"
+        case .rightArrow: return "right"
+        case .carriageReturn, .enter: return "select"
+        case .delete: return "back"
+        default: break
+        }
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "\u{1b}": return "back"
+        case " ": return "play"
+        case "h": return "home"
+        case "i": return "info"
+        case "m": return "mute"
+        case "+", "=": return "volume_up"
+        case "-", "_": return "volume_down"
+        default: return nil
+        }
     }
 }
 
