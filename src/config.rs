@@ -38,6 +38,7 @@ pub struct Config {
 pub enum Device {
     Dyson(DysonDevice),
     Frame(FrameDevice),
+    Bosch(BoschDevice),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -123,6 +124,69 @@ impl Settings for FrameDevice {
     }
 }
 
+/// One value a Bosch feature can take. The key is the number on the wire.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BoschFeature {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, String>,
+}
+
+/// A dishwasher reached on the local network.
+/// The account password is not stored. `key` is the machine's own key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BoschDevice {
+    #[serde(default)]
+    pub aid: u64,
+    /// Door, AquaStop and the end of a cycle. Separate accessories, so Home can notify.
+    #[serde(default)]
+    pub door_aid: u64,
+    #[serde(default)]
+    pub leak_aid: u64,
+    #[serde(default)]
+    pub cycle_aid: u64,
+    pub name: String,
+    #[serde(default = "default_brand")]
+    pub brand: String,
+    /// VIB, such as SPV2HKX42G.
+    #[serde(default)]
+    pub model: String,
+    pub ha_id: String,
+    /// mDNS name, or an address passed with `--host`.
+    #[serde(default)]
+    pub host: String,
+    pub key: String,
+    /// Empty means TLS-PSK on 443. Set means the older AES session on port 80.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub iv: String,
+    #[serde(default)]
+    pub features: BTreeMap<String, BoschFeature>,
+}
+
+fn default_brand() -> String {
+    "Bosch".into()
+}
+
+impl Settings for BoschDevice {
+    fn id(&self) -> String {
+        format!("bosch:{}", self.ha_id)
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn name_mut(&mut self) -> &mut String {
+        &mut self.name
+    }
+    fn aids(&mut self) -> Vec<&mut u64> {
+        vec![
+            &mut self.aid,
+            &mut self.door_aid,
+            &mut self.leak_aid,
+            &mut self.cycle_aid,
+        ]
+    }
+}
+
 fn default_mqtt_port() -> u16 {
     1883
 }
@@ -136,6 +200,7 @@ impl Device {
         match self {
             Self::Dyson(device) => device,
             Self::Frame(device) => device,
+            Self::Bosch(device) => device,
         }
     }
 
@@ -143,6 +208,7 @@ impl Device {
         match self {
             Self::Dyson(device) => device,
             Self::Frame(device) => device,
+            Self::Bosch(device) => device,
         }
     }
 
@@ -314,7 +380,7 @@ pub fn load() -> Result<Config> {
         return Ok(config);
     }
     Err(anyhow!(
-        "no config yet. Run `hearth dyson login` or `hearth frame pair` first ({})",
+        "no config yet. Run `hearth dyson login`, `hearth frame pair`, or `hearth bosch login` first ({})",
         path.display()
     ))
 }
@@ -601,6 +667,33 @@ pub fn upsert_frame(config: &mut Config, device: FrameDevice) {
     assign_aids(&mut config.devices);
 }
 
+pub fn upsert_bosch(config: &mut Config, device: BoschDevice) {
+    if let Some(Device::Bosch(existing)) = config
+        .devices
+        .iter_mut()
+        .find(|item| matches!(item, Device::Bosch(machine) if machine.ha_id == device.ha_id))
+    {
+        let (aid, door_aid, leak_aid, cycle_aid, name) = (
+            existing.aid,
+            existing.door_aid,
+            existing.leak_aid,
+            existing.cycle_aid,
+            std::mem::take(&mut existing.name),
+        );
+        *existing = device;
+        existing.aid = aid;
+        existing.door_aid = door_aid;
+        existing.leak_aid = leak_aid;
+        existing.cycle_aid = cycle_aid;
+        existing.name = name;
+        return;
+    }
+    let mut device = Device::Bosch(device);
+    device.set_name(unique_name(config, device.name()));
+    config.devices.push(device);
+    assign_aids(&mut config.devices);
+}
+
 /// `name`, or `name 2`, `name 3`… if a device already has it, so a second TV
 /// of the same model can be told apart.
 fn unique_name(config: &Config, name: &str) -> String {
@@ -702,7 +795,7 @@ mod tests {
                 assert_eq!(fan.name, "Living room");
                 assert!(fan.heating);
             }
-            Device::Frame(_) => panic!("legacy config is a fan"),
+            Device::Frame(_) | Device::Bosch(_) => panic!("legacy config is a fan"),
         }
     }
 
@@ -927,5 +1020,101 @@ mod tests {
         let homes = merge(&local, &remote, true, true);
         assert!(homes.conflict);
         assert_eq!(homes.config, local);
+    }
+
+    fn washer() -> BoschDevice {
+        BoschDevice {
+            aid: 0,
+            door_aid: 0,
+            leak_aid: 0,
+            cycle_aid: 0,
+            name: "Bosch Dishwasher".into(),
+            brand: "Bosch".into(),
+            model: "SPV2HKX42G".into(),
+            ha_id: "BOSCH-HA".into(),
+            host: "BOSCH-Dishwasher-BOSCH-HA".into(),
+            key: "secret".into(),
+            iv: String::new(),
+            features: BTreeMap::from([(
+                "200".into(),
+                BoschFeature {
+                    name: "BSH.Common.Setting.PowerState".into(),
+                    values: BTreeMap::from([("0".into(), "Off".into()), ("1".into(), "On".into())]),
+                },
+            )]),
+        }
+    }
+
+    #[test]
+    fn a_dishwasher_keeps_its_sensor_ids_and_its_name() {
+        let mut devices = vec![
+            Device::Dyson(DysonDevice {
+                aid: 2,
+                name: "Purifier".into(),
+                serial: "ABC".into(),
+                model: "HP09".into(),
+                product_type: "527K".into(),
+                mqtt_password: "x".into(),
+                host: String::new(),
+                port: 1883,
+                heating: true,
+            }),
+            Device::Bosch(washer()),
+        ];
+        assert!(assign_aids(&mut devices));
+        let Device::Bosch(machine) = &devices[1] else {
+            unreachable!()
+        };
+        assert_eq!(
+            (
+                machine.aid,
+                machine.door_aid,
+                machine.leak_aid,
+                machine.cycle_aid
+            ),
+            (3, 4, 5, 6)
+        );
+        devices.push(Device::Frame(FrameDevice {
+            name: "The Frame".into(),
+            host: "10.0.0.8".into(),
+            ..Default::default()
+        }));
+        assert!(assign_aids(&mut devices));
+        let Device::Frame(frame) = &devices[2] else {
+            unreachable!()
+        };
+        assert_eq!(frame.aid, 7);
+
+        let mut config = Config {
+            name: "Hearth".into(),
+            homekit_pin: "361-29-487".into(),
+            bridge_id: "bridge".into(),
+            ..Default::default()
+        };
+        upsert_bosch(&mut config, washer());
+        config.devices[0].set_name("Kitchen".into());
+        let text = toml::to_string(&config).unwrap();
+        assert!(!text.contains("iv ="));
+        let loaded = config_from_toml(&text).unwrap();
+        let Device::Bosch(saved) = &loaded.devices[0] else {
+            unreachable!()
+        };
+        assert_eq!(saved.name, "Kitchen");
+        assert_eq!(saved.key, "secret");
+        assert!(saved.iv.is_empty());
+        assert_eq!(
+            saved.features["200"].values.get("1").map(String::as_str),
+            Some("On")
+        );
+        let mut again = washer();
+        again.key = "rotated".into();
+        again.name = "Bosch Dishwasher".into();
+        let mut config = loaded;
+        upsert_bosch(&mut config, again);
+        let Device::Bosch(saved) = &config.devices[0] else {
+            unreachable!()
+        };
+        assert_eq!(saved.name, "Kitchen");
+        assert_eq!(saved.key, "rotated");
     }
 }

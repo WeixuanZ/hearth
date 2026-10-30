@@ -14,8 +14,9 @@ hearth is generic. Every device describes itself as a few **capabilities**: powe
 |---|---|---|---|
 | Purifier | Dyson Purifier Hot+Cool Formaldehyde (HP09), and other Dyson purifiers | The fan's own MQTT, after one MyDyson login | power, auto, speed, oscillation, sweep, night mode, jet focus, continuous monitoring, heat, heat target, temperature, humidity, PM2.5, PM10, formaldehyde, filter life |
 | TV | Samsung The Frame, 2024 (LS03D) | The TV's websocket and IP Control, not SmartThings | power, art mode, input (TV, HDMI 1–4), art brightness, remote keys and volume |
+| Dishwasher | Bosch dishwashers on Home Connect, including the slimline SPV2HKX42G | The dishwasher's own websocket, after one Home Connect sign-in | power, programme, the machine's options, remaining time, progress, energy and water |
 
-As many of each as you have. In Apple Home they become purifiers, and televisions each with an Art mode tile. New kinds and models plug in without touching the rest; see [Adding a device](#adding-a-device).
+As many of each as you have. In Apple Home they become purifiers, televisions each with an Art mode tile, and a dishwasher as switches with a door, a leak and a cycle sensor beside it. New kinds and models plug in without touching the rest; see [Adding a device](#adding-a-device).
 
 ## Install
 
@@ -43,6 +44,15 @@ hearth dyson login --email you@example.com --country GB
 hearth frame pair
 ```
 
+**A Bosch dishwasher.** It has to be on the home Wi-Fi, and already paired in the Home Connect app. `login` opens Home Connect's own sign-in. Paste the `hcauth` address the browser is sent to. The account password is not saved. The dishwasher's local key is.
+
+```sh
+hearth bosch login
+hearth bosch submit "hcauth://auth/prod?code=…&state=…"
+```
+
+If the account has more than one dishwasher, pass `--id`. If the name Home Connect gives does not resolve, pass `--host`. Starting a programme needs Remote Start on the dishwasher. Reading it does not.
+
 **Apple Home.** Start the bridge (the menu bar's Start, or `hearth run`), then in the Home app choose Add Accessory → More options → Hearth, and enter the code the menu bar or `hearth pin` shows.
 
 ## Use it
@@ -65,7 +75,7 @@ hearth remove "The Frame 2"
 hearth group                      # which computer serves Home
 ```
 
-A device is its id, name, kind (`tv`, `purifier`), connector (`frame`, `dyson`), or a part of its name; with two TVs, `tv` asks which. A value is `on`/`off`, a number, or an option id from `hearth devices`.
+A device is its id, name, kind (`tv`, `purifier`, `dishwasher`), connector (`frame`, `dyson`, `bosch`), or a part of its name; with two TVs, `tv` asks which. A value is `on`/`off`, a number, or an option id from `hearth devices`.
 
 **Scripts and agents.** Add `--json` to any command. `hearth devices --json` lists every capability with its kind, value, accepted options or range, and whether it is active, which is enough to drive any device without knowing its brand. Errors go to stderr with exit status 1. Programs can also talk to the [control socket](#control-socket) directly.
 
@@ -120,6 +130,7 @@ sudo loginctl enable-linger "$USER"   # keep it up while logged out
 - **Dyson address.** Set `host` on the fan in the config if it does not announce itself on the network.
 - **Frame art mode** is on only while the TV is: asking for art mode turns the TV on, and turning it off ends art mode. It is a tile of its own, because Home shows a TV only as power and an input picker. An input with nothing plugged in is refused. Without IP Control, inputs fall back to remote keys, which newer firmware ignores.
 - **Frame remote.** Arrows, select, back and volume are in Control Center's remote, which keeps one connection to the TV open, so keys land at once.
+- **Dishwasher.** Home has no dishwasher, and it only pushes a notification for a few kinds of sensor. The door is a contact sensor ("was opened" or "was closed"). AquaStop is a leak sensor. The end of a cycle is a motion sensor: the alert says "detected motion", which means the programme finished, and only after a cycle has been seen running, so starting the bridge does not notify. Salt and rinse aid are noted on the device, not pushed. Remaining time, progress, energy and water are readings. Programmes are one choice, in the machine's own order, up to 16, and in Home each is a switch. Power and a programme start only work while the dishwasher is allowing remote start.
 
 ## Development
 
@@ -137,10 +148,12 @@ flowchart TB
   subgraph devices [Devices: one task each]
     purifier[purifier/dyson]
     tv[tv/samsung_frame]
+    dishwasher[dishwasher/bosch]
   end
   subgraph connectors [Connectors: each maker's protocol]
     dyson[dyson: MQTT, MyDyson login]
     samsung[samsung: websockets, IP Control]
+    bosch[bosch: Home Connect websocket]
   end
   group[Group<br/>which computer serves]
 
@@ -152,6 +165,7 @@ flowchart TB
   devices --> registry
   purifier --> dyson
   tv --> samsung
+  dishwasher --> bosch
   group -. starts and stops .-> homekit
   group -. starts and stops .-> devices
   socket -. on standby, forwards to the serving computer .-> group
@@ -169,6 +183,7 @@ src/
   config.rs               config.toml: Settings for each kind, dates, merging two copies
   connectors/dyson/       MyDyson login, MQTT, the fan's messages
   connectors/samsung/     pairing, the remote and art channels, IP Control
+  connectors/bosch/       Home Connect sign-in, the local websocket
   devices/<kind>/<model>/ a device's task, HomeKit accessories and capabilities
   cluster/                the group: hellos, joining, sharing state, who serves
   surfaces/homekit/       the HomeKit bridge and accessory helpers
