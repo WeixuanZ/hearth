@@ -125,9 +125,6 @@ async fn finish(pending: &Pending, redirect: &str) -> Result<()> {
         features,
     };
     let mut saved = config::load_or_new()?;
-    if saved.bridge_id.is_empty() {
-        saved.bridge_id = device.ha_id.clone();
-    }
     let model = device.model.clone();
     let name = device.name.clone();
     config::upsert_bosch(&mut saved, device);
@@ -299,20 +296,23 @@ fn candidates(found: Vec<Found>, id: Option<&str>) -> Result<Vec<Found>> {
             .map(|item| vec![item])
             .ok_or_else(|| anyhow!("no paired appliance has id {id}"));
     }
-    let dishwashers: Vec<_> = found
-        .iter()
-        .filter(|item| is_dishwasher(item))
-        .cloned()
-        .collect();
-    let pool = if dishwashers.is_empty() {
-        found
-    } else {
-        dishwashers
-    };
-    if pool.is_empty() {
-        anyhow::bail!("the Home Connect account has no paired appliance");
+    // Only a dishwasher: anything else would be driven as one.
+    let (dishwashers, others): (Vec<_>, Vec<_>) = found.into_iter().partition(is_dishwasher);
+    if dishwashers.is_empty() {
+        let others: Vec<String> = others
+            .iter()
+            .map(|item| format!("{} ({})", item.ha_id, item.kind))
+            .collect();
+        anyhow::bail!(
+            "the Home Connect account has no dishwasher{}",
+            if others.is_empty() {
+                String::new()
+            } else {
+                format!(", only {}", others.join(", "))
+            }
+        );
     }
-    Ok(pool)
+    Ok(dishwashers)
 }
 
 fn choose(found: Vec<Found>, id: Option<&str>) -> Result<Found> {
@@ -612,5 +612,17 @@ mod tests {
         assert_eq!(candidates(found.clone(), None).unwrap().len(), 2);
         let chosen = candidates(found, Some("b")).unwrap();
         assert_eq!(chosen[0].model, "SMS46IW01G");
+    }
+
+    #[test]
+    fn an_account_without_a_dishwasher_is_refused() {
+        let oven = Found {
+            ha_id: "OVEN-1".into(),
+            brand: "BOSCH".into(),
+            kind: "Oven".into(),
+            model: "XY01".into(),
+        };
+        let error = candidates(vec![oven], None).err().unwrap().to_string();
+        assert!(error.contains("no dishwasher") && error.contains("OVEN-1"));
     }
 }
