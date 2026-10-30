@@ -2,12 +2,15 @@
 //!
 //! The bridge (name, pairing code, stable id) is separate from the devices.
 //! Each device is one connector. A new connector is a new `kind`.
+//!
+//! `save` dates whatever changed since the file on disk, so computers that
+//! share a bridge can `merge` their copies and keep the newer of each part.
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, io::Write, path::PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Config {
     pub name: String,
     pub homekit_pin: String,
@@ -19,6 +22,15 @@ pub struct Config {
     /// accessory, so the bridge saves it here to show it after a restart.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub names: BTreeMap<String, String>,
+    /// When the bridge's own settings above last changed, in Unix seconds.
+    #[serde(default)]
+    pub updated: u64,
+    /// When each device last changed, by id.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub changed: BTreeMap<String, u64>,
+    /// When each removed device went, by id, so other computers drop it too.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub removed: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -69,16 +81,45 @@ pub struct FrameDevice {
     pub art_aid: u64,
 }
 
-impl DysonDevice {
+/// What every kind of device's settings provide. A new kind implements
+/// this, adds a variant to [`Device`], and is started in `devices::spawn`.
+pub trait Settings {
     /// Stable while the bridge runs: the menu bar, the CLI and Home name it by this.
-    pub fn id(&self) -> String {
+    fn id(&self) -> String;
+    fn name(&self) -> &str;
+    fn name_mut(&mut self) -> &mut String;
+    /// Every HomeKit accessory id it owns, its own first. 0 until assigned.
+    fn aids(&mut self) -> Vec<&mut u64>;
+}
+
+impl Settings for DysonDevice {
+    fn id(&self) -> String {
         format!("dyson:{}", self.serial)
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn name_mut(&mut self) -> &mut String {
+        &mut self.name
+    }
+    fn aids(&mut self) -> Vec<&mut u64> {
+        vec![&mut self.aid]
     }
 }
 
-impl FrameDevice {
-    pub fn id(&self) -> String {
+impl Settings for FrameDevice {
+    fn id(&self) -> String {
         format!("frame:{}", self.host)
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn name_mut(&mut self) -> &mut String {
+        &mut self.name
+    }
+    /// The TV, and art mode as a tile of its own.
+    fn aids(&mut self) -> Vec<&mut u64> {
+        vec![&mut self.aid, &mut self.art_aid]
     }
 }
 
@@ -91,47 +132,30 @@ fn default_true() -> bool {
 }
 
 impl Device {
-    pub fn aid(&self) -> u64 {
+    pub fn settings(&self) -> &dyn Settings {
         match self {
-            Self::Dyson(device) => device.aid,
-            Self::Frame(device) => device.aid,
+            Self::Dyson(device) => device,
+            Self::Frame(device) => device,
         }
     }
 
-    pub fn set_aid(&mut self, aid: u64) {
+    pub fn settings_mut(&mut self) -> &mut dyn Settings {
         match self {
-            Self::Dyson(device) => device.aid = aid,
-            Self::Frame(device) => device.aid = aid,
-        }
-    }
-
-    /// How many accessory ids this connector consumes, starting at `aid`.
-    pub fn aid_span(&self) -> u64 {
-        match self {
-            Self::Dyson(_) => 1,
-            Self::Frame(_) => 1,
+            Self::Dyson(device) => device,
+            Self::Frame(device) => device,
         }
     }
 
     pub fn id(&self) -> String {
-        match self {
-            Self::Dyson(device) => device.id(),
-            Self::Frame(device) => device.id(),
-        }
+        self.settings().id()
     }
 
     pub fn name(&self) -> &str {
-        match self {
-            Self::Dyson(device) => &device.name,
-            Self::Frame(device) => &device.name,
-        }
+        self.settings().name()
     }
 
     pub fn set_name(&mut self, name: String) {
-        match self {
-            Self::Dyson(device) => device.name = name,
-            Self::Frame(device) => device.name = name,
-        }
+        *self.settings_mut().name_mut() = name;
     }
 }
 
@@ -159,6 +183,16 @@ pub fn rename(config: &mut Config, from: &str, to: &str) -> Result<()> {
         })?;
     device.set_name(to.to_owned());
     Ok(())
+}
+
+/// Removes the device whose id is `query`, or that is called `query`.
+pub fn remove(config: &mut Config, query: &str) -> Result<String> {
+    let index = config
+        .devices
+        .iter()
+        .position(|device| device.id() == query || device.name().eq_ignore_ascii_case(query.trim()))
+        .ok_or_else(|| anyhow!("no device is called {query}"))?;
+    Ok(config.devices.remove(index).name().to_owned())
 }
 
 /// The pairings Home left with the bridge, one file per controller.
@@ -197,44 +231,32 @@ pub fn clear_pairings() -> Result<usize> {
     Ok(files.len())
 }
 
+/// Gives every device's accessories an id, keeping those already in use so
+/// Home keeps knowing them. Each device's own accessory comes first.
 pub fn assign_aids(devices: &mut [Device]) -> bool {
-    let mut changed = false;
+    let mut slots: Vec<Vec<&mut u64>> = devices
+        .iter_mut()
+        .map(|device| device.settings_mut().aids())
+        .collect();
+    // An id claimed twice, as when two computers' devices merge, stays with
+    // the first claim; the other gets a new one below.
     let mut used = Vec::new();
-    for device in devices.iter() {
-        if device.aid() >= 2 {
-            for offset in 0..device.aid_span() {
-                used.push(device.aid() + offset);
-            }
-        }
-        if let Device::Frame(frame) = device {
-            if frame.art_aid >= 2 {
-                used.push(frame.art_aid);
-            }
+    for slot in slots.iter_mut().flatten() {
+        if **slot >= 2 && !used.contains(&**slot) {
+            used.push(**slot);
+        } else {
+            **slot = 0;
         }
     }
-    let mut next = 2u64;
-    for device in devices.iter_mut() {
-        if device.aid() >= 2 {
-            continue;
-        }
-        while (0..device.aid_span()).any(|offset| used.contains(&(next + offset))) {
-            next += 1;
-        }
-        device.set_aid(next);
-        for offset in 0..device.aid_span() {
-            used.push(next + offset);
-        }
-        next += device.aid_span();
-        changed = true;
-    }
-    // The art switch takes the lowest free id, so ids already in Home stay put.
-    for device in devices.iter_mut() {
-        if let Device::Frame(frame) = device {
-            if frame.art_aid < 2 {
-                frame.art_aid = (2..)
+    let depth = slots.iter().map(Vec::len).max().unwrap_or(0);
+    let mut changed = false;
+    for level in 0..depth {
+        for slot in slots.iter_mut().filter_map(|device| device.get_mut(level)) {
+            if **slot == 0 {
+                **slot = (2..)
                     .find(|aid| !used.contains(aid))
                     .expect("ids are endless");
-                used.push(frame.art_aid);
+                used.push(**slot);
                 changed = true;
             }
         }
@@ -300,14 +322,18 @@ pub fn load() -> Result<Config> {
 pub fn load_or_new() -> Result<Config> {
     match load() {
         Ok(config) => Ok(config),
+        // Its own identity, or every new bridge would be the same accessory.
         Err(_) => Ok(Config {
             name: "Hearth".into(),
             homekit_pin: format_pin(&random_pin()),
-            bridge_id: String::new(),
-            devices: Vec::new(),
-            names: BTreeMap::new(),
+            bridge_id: new_bridge_id(),
+            ..Default::default()
         }),
     }
+}
+
+pub fn new_bridge_id() -> String {
+    format!("hearth-{:016x}", rand::random::<u64>())
 }
 
 pub fn config_from_toml(text: &str) -> Result<Config> {
@@ -367,11 +393,22 @@ fn from_legacy(value: &toml::Value) -> Config {
                 .and_then(|item| item.as_bool())
                 .unwrap_or(true),
         })],
-        names: BTreeMap::new(),
+        ..Default::default()
     }
 }
 
+/// Writes the config, dating what changed since the file on disk.
 pub fn save(config: &Config) -> Result<PathBuf> {
+    let old = fs::read_to_string(config_path()?)
+        .ok()
+        .and_then(|text| config_from_toml(&text).ok());
+    let mut config = config.clone();
+    stamp(&mut config, old.as_ref(), now());
+    write(&config)
+}
+
+/// Writes the config as it is, dates and all. For a merge.
+pub fn write(config: &Config) -> Result<PathBuf> {
     let dir = config_dir()?;
     fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
@@ -384,6 +421,124 @@ pub fn save(config: &Config) -> Result<PathBuf> {
         .open(&path)?;
     file.write_all(text.as_bytes())?;
     Ok(path)
+}
+
+fn stamp(config: &mut Config, old: Option<&Config>, now: u64) {
+    let before = |id: &str| old?.devices.iter().find(|device| device.id() == id);
+    for device in &config.devices {
+        let id = device.id();
+        if before(&id) != Some(device) {
+            config.removed.remove(&id);
+            config.changed.insert(id, now);
+        }
+    }
+    for device in old.map_or(&[][..], |old| &old.devices) {
+        let id = device.id();
+        if !config.devices.iter().any(|kept| kept.id() == id) {
+            config.changed.remove(&id);
+            config.removed.insert(id, now);
+        }
+    }
+    let identity = |config: &Config| {
+        (
+            config.name.clone(),
+            config.homekit_pin.clone(),
+            config.bridge_id.clone(),
+            config.names.clone(),
+        )
+    };
+    if old.map(identity) != Some(identity(config)) {
+        config.updated = now;
+    }
+}
+
+pub fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
+}
+
+/// The newest date in the config. A computer with a newer one has news.
+pub fn revision(config: &Config) -> u64 {
+    config
+        .changed
+        .values()
+        .chain(config.removed.values())
+        .copied()
+        .fold(config.updated, u64::max)
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Merged {
+    pub config: Config,
+    /// Each computer is paired with a Home as a different bridge, so
+    /// nothing was merged.
+    pub conflict: bool,
+}
+
+/// Combines two computers' configs. Each device is the newer of the two
+/// copies, or gone if it was removed after that. The bridge's identity
+/// follows the computer that is paired with Home; when neither is, both
+/// pick the same one, so Home sees one bridge.
+pub fn merge(local: &Config, remote: &Config, local_paired: bool, remote_paired: bool) -> Merged {
+    let differ = local.bridge_id != remote.bridge_id;
+    if differ && local_paired && remote_paired {
+        return Merged {
+            config: local.clone(),
+            conflict: true,
+        };
+    }
+    let theirs = if differ {
+        remote_paired || (!local_paired && remote.bridge_id < local.bridge_id)
+    } else {
+        remote.updated > local.updated
+    };
+    let mut config = if theirs {
+        remote.clone()
+    } else {
+        local.clone()
+    };
+
+    let date = |config: &Config, id: &str| config.changed.get(id).copied().unwrap_or(0);
+    let mut devices: BTreeMap<String, (u64, &Device)> = BTreeMap::new();
+    for (side, device) in local
+        .devices
+        .iter()
+        .map(|device| (local, device))
+        .chain(remote.devices.iter().map(|device| (remote, device)))
+    {
+        let id = device.id();
+        let changed = date(side, &id);
+        if devices.get(&id).is_none_or(|(kept, _)| changed > *kept) {
+            devices.insert(id, (changed, device));
+        }
+    }
+    config.removed = local.removed.clone();
+    for (id, &when) in &remote.removed {
+        let kept = config.removed.entry(id.clone()).or_default();
+        *kept = (*kept).max(when);
+    }
+    config.devices.clear();
+    config.changed.clear();
+    for (id, (changed, device)) in devices {
+        if config
+            .removed
+            .get(&id)
+            .is_some_and(|&removed| removed >= changed)
+        {
+            continue;
+        }
+        config.removed.remove(&id);
+        config.changed.insert(id, changed);
+        config.devices.push(device.clone());
+    }
+    // What both have seen, so neither fetches the other again for it.
+    config.updated = local.updated.max(remote.updated);
+    assign_aids(&mut config.devices);
+    Merged {
+        config,
+        conflict: false,
+    }
 }
 
 fn copy_legacy_homekit() -> Result<()> {
@@ -422,7 +577,9 @@ pub fn upsert_dyson(config: &mut Config, device: DysonDevice) {
         existing.name = name;
         return;
     }
-    config.devices.push(Device::Dyson(device));
+    let mut device = Device::Dyson(device);
+    device.set_name(unique_name(config, device.name()));
+    config.devices.push(device);
     assign_aids(&mut config.devices);
 }
 
@@ -432,13 +589,37 @@ pub fn upsert_frame(config: &mut Config, device: FrameDevice) {
         .iter_mut()
         .find(|item| matches!(item, Device::Frame(tv) if tv.host == device.host))
     {
-        let aid = existing.aid;
+        let (aid, art_aid) = (existing.aid, existing.art_aid);
         *existing = device;
         existing.aid = aid;
+        existing.art_aid = art_aid;
         return;
     }
-    config.devices.push(Device::Frame(device));
+    let mut device = Device::Frame(device);
+    device.set_name(unique_name(config, device.name()));
+    config.devices.push(device);
     assign_aids(&mut config.devices);
+}
+
+/// `name`, or `name 2`, `name 3`… if a device already has it, so a second TV
+/// of the same model can be told apart.
+fn unique_name(config: &Config, name: &str) -> String {
+    let taken = |candidate: &str| {
+        config
+            .devices
+            .iter()
+            .any(|device| device.name().eq_ignore_ascii_case(candidate))
+    };
+    (1..)
+        .map(|n| {
+            if n == 1 {
+                name.to_owned()
+            } else {
+                format!("{name} {n}")
+            }
+        })
+        .find(|candidate| !taken(candidate))
+        .expect("names are endless")
 }
 
 pub fn format_pin(digits: &[u8; 8]) -> String {
@@ -494,6 +675,10 @@ impl OpenOptionsExt for fs::OpenOptions {
 mod tests {
     use super::*;
 
+    fn aid(device: &Device) -> u64 {
+        *device.clone().settings_mut().aids()[0]
+    }
+
     #[test]
     fn legacy_fan_keeps_its_accessory_ids() {
         let text = r#"
@@ -542,7 +727,7 @@ mod tests {
             }),
         ];
         assert!(assign_aids(&mut devices));
-        assert_eq!(devices[1].aid(), 3);
+        assert_eq!(aid(&devices[1]), 3);
         let Device::Frame(frame) = &devices[1] else {
             unreachable!()
         };
@@ -571,7 +756,7 @@ mod tests {
             }),
         ];
         assert!(assign_aids(&mut devices));
-        assert_eq!((devices[0].aid(), devices[1].aid()), (2, 3));
+        assert_eq!((aid(&devices[0]), aid(&devices[1])), (2, 3));
         let Device::Frame(frame) = &devices[0] else {
             unreachable!()
         };
@@ -595,8 +780,7 @@ mod tests {
             name: "Hearth".into(),
             homekit_pin: "000-00-000".into(),
             bridge_id: "ABC".into(),
-            devices: Vec::new(),
-            names: BTreeMap::new(),
+            ..Default::default()
         };
         upsert_dyson(&mut config, fan("Study fan", "old"));
         upsert_dyson(
@@ -630,12 +814,118 @@ mod tests {
                 host: "10.0.0.2".into(),
                 ..Default::default()
             })],
-            names: BTreeMap::new(),
+            ..Default::default()
         };
         rename(&mut config, "living ROOM", " Television ").unwrap();
         assert_eq!(config.devices[0].name(), "Television");
         assert!(rename(&mut config, "Nothing", "Other").is_err());
         assert!(rename(&mut config, "Television", "TV!").is_err());
         assert!(rename(&mut config, "Television", "  ").is_err());
+    }
+
+    fn fan(serial: &str, name: &str) -> Device {
+        Device::Dyson(DysonDevice {
+            aid: 2,
+            name: name.into(),
+            serial: serial.into(),
+            model: "XY01".into(),
+            product_type: "000X".into(),
+            mqtt_password: "x".into(),
+            host: String::new(),
+            port: 1883,
+            heating: true,
+        })
+    }
+
+    fn bridge(id: &str, devices: Vec<Device>) -> Config {
+        Config {
+            name: "Hearth".into(),
+            homekit_pin: "111-22-333".into(),
+            bridge_id: id.into(),
+            devices,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_second_device_of_a_model_gets_its_own_name() {
+        let mut config = bridge("a", Vec::new());
+        for host in ["10.0.0.2", "10.0.0.3"] {
+            let tv = FrameDevice {
+                name: "The Frame".into(),
+                host: host.into(),
+                ..Default::default()
+            };
+            upsert_frame(&mut config, tv);
+        }
+        let names: Vec<_> = config.devices.iter().map(Device::name).collect();
+        assert_eq!(names, ["The Frame", "The Frame 2"]);
+        assert_ne!(aid(&config.devices[0]), aid(&config.devices[1]));
+    }
+
+    #[test]
+    fn saving_dates_what_changed() {
+        let old = bridge("a", vec![fan("AAA", "Fan"), fan("BBB", "Other")]);
+        let mut new = old.clone();
+        new.devices = vec![fan("AAA", "Study fan")];
+        stamp(&mut new, Some(&old), 50);
+        assert_eq!(new.changed.get("dyson:AAA"), Some(&50));
+        assert_eq!(new.removed.get("dyson:BBB"), Some(&50));
+        assert_eq!(new.updated, 0);
+
+        let mut same = new.clone();
+        stamp(&mut same, Some(&new), 60);
+        assert_eq!(same, new);
+        same.name = "Home".into();
+        stamp(&mut same, Some(&new), 70);
+        assert_eq!(same.updated, 70);
+    }
+
+    #[test]
+    fn a_merge_keeps_the_newer_device_and_a_later_removal() {
+        let mut local = bridge("a", vec![fan("AAA", "Fan"), fan("CCC", "Kept")]);
+        local.changed = BTreeMap::from([("dyson:AAA".into(), 10), ("dyson:CCC".into(), 40)]);
+        let mut remote = bridge("a", vec![fan("BBB", "Other")]);
+        remote.changed = BTreeMap::from([("dyson:BBB".into(), 20)]);
+        remote.removed = BTreeMap::from([("dyson:AAA".into(), 30), ("dyson:CCC".into(), 30)]);
+
+        let merged = merge(&local, &remote, true, false);
+        assert!(!merged.conflict);
+        let names: Vec<_> = merged.config.devices.iter().map(Device::name).collect();
+        assert_eq!(names, ["Other", "Kept"]);
+        assert_eq!(
+            merged.config.removed.keys().collect::<Vec<_>>(),
+            ["dyson:AAA"]
+        );
+        // Both fans came with aid 2; the second gets another.
+        let aids: Vec<_> = merged.config.devices.iter().map(aid).collect();
+        assert_eq!(aids, [2, 3]);
+        // Merging again changes nothing.
+        assert_eq!(
+            merge(&merged.config, &remote, true, false).config,
+            merged.config
+        );
+    }
+
+    #[test]
+    fn the_identity_follows_home_or_else_the_lower_id() {
+        let local = bridge("hearth-b", vec![fan("AAA", "Fan")]);
+        let remote = bridge("hearth-a", vec![fan("BBB", "Other")]);
+        let both = |local_paired, remote_paired| {
+            merge(&local, &remote, local_paired, remote_paired)
+                .config
+                .bridge_id
+        };
+        assert_eq!(both(false, false), "hearth-a");
+        assert_eq!(both(true, false), "hearth-b");
+        assert_eq!(both(false, true), "hearth-a");
+        assert_eq!(
+            merge(&remote, &local, false, false).config.bridge_id,
+            "hearth-a"
+        );
+
+        let homes = merge(&local, &remote, true, true);
+        assert!(homes.conflict);
+        assert_eq!(homes.config, local);
     }
 }

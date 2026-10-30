@@ -117,7 +117,7 @@ impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> fmt::Debug for C
     }
 }
 
-impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> Characteristic<T>
+impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync + PartialEq> Characteristic<T>
 where
     for<'de> T: Deserialize<'de>,
 {
@@ -238,6 +238,7 @@ where
         // }
 
         let old_val = self.value.clone();
+        let changed = old_val != val;
         if let Some(ref mut on_update) = self.on_update {
             on_update(&old_val, &val).map_err(|e| Error::ValueOnUpdate(e))?;
         }
@@ -247,7 +248,10 @@ where
                 .map_err(|e| Error::ValueOnUpdate(e))?;
         }
 
-        if self.event_notifications == Some(true) {
+        // Subscriptions are per connection, and the server sends each its own.
+        // So every change goes out, whatever one controller last asked for,
+        // and only a change: an unchanged value tells Home nothing.
+        if changed {
             if let Some(ref event_emitter) = self.event_emitter {
                 event_emitter
                     .lock()
@@ -652,7 +656,7 @@ pub trait AsyncCharacteristicCallbacks<T: fmt::Debug + Default + Clone + Seriali
 }
 
 #[async_trait]
-impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> HapCharacteristic for Characteristic<T>
+impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync + PartialEq> HapCharacteristic for Characteristic<T>
 where
     for<'de> T: Deserialize<'de>,
 {
@@ -797,7 +801,7 @@ where
     fn set_pid(&mut self, pid: Option<u64>) { Characteristic::set_pid(self, pid) }
 }
 
-impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> HapCharacteristicSetup for Characteristic<T>
+impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync + PartialEq> HapCharacteristicSetup for Characteristic<T>
 where
     for<'de> T: Deserialize<'de>,
 {
@@ -806,7 +810,7 @@ where
     }
 }
 
-impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> CharacteristicCallbacks<T> for Characteristic<T>
+impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync + PartialEq> CharacteristicCallbacks<T> for Characteristic<T>
 where
     for<'de> T: Deserialize<'de>,
 {
@@ -815,7 +819,7 @@ where
     fn on_update(&mut self, f: Option<impl OnUpdateFn<T>>) { Characteristic::on_update(self, f) }
 }
 
-impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync> AsyncCharacteristicCallbacks<T> for Characteristic<T>
+impl<T: fmt::Debug + Default + Clone + Serialize + Send + Sync + PartialEq> AsyncCharacteristicCallbacks<T> for Characteristic<T>
 where
     for<'de> T: Deserialize<'de>,
 {

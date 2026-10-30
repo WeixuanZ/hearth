@@ -1,5 +1,4 @@
 use aead::{generic_array::GenericArray, AeadInPlace, NewAead};
-use byteorder::{ByteOrder, LittleEndian};
 use bytes::{Buf, BytesMut};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce, Tag};
 use futures::{
@@ -17,7 +16,7 @@ use std::{
     io::{self, ErrorKind},
     pin::Pin,
     sync::{Arc, Mutex, RwLock},
-    task::{Context, Poll, Waker},
+    task::{ready, Context, Poll, Waker},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -163,6 +162,87 @@ pub struct Session {
     pub shared_secret: [u8; 32],
 }
 
+/// The most plaintext one frame carries.
+const FRAME: usize = 1024;
+/// A frame's length prefix and authentication tag.
+const LENGTH: usize = 2;
+const TAG: usize = 16;
+
+/// A session's keys, derived once, and the frame counters that are their nonces.
+struct Keys {
+    read: [u8; 32],
+    write: [u8; 32],
+    read_count: u64,
+    write_count: u64,
+}
+
+impl std::fmt::Debug for Keys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Keys").finish_non_exhaustive()
+    }
+}
+
+impl Keys {
+    fn new(shared_secret: &[u8; 32]) -> Result<Self> {
+        Ok(Keys {
+            read: compute_key(shared_secret, b"Control-Write-Encryption-Key")?,
+            write: compute_key(shared_secret, b"Control-Read-Encryption-Key")?,
+            read_count: 0,
+            write_count: 0,
+        })
+    }
+
+    /// Decrypts one whole frame: length, ciphertext, tag.
+    fn open(&mut self, frame: &[u8]) -> io::Result<Vec<u8>> {
+        let (length, rest) = frame.split_at(LENGTH);
+        let (data, tag) = rest.split_at(rest.len() - TAG);
+        let mut plain = data.to_vec();
+        ChaCha20Poly1305::new(GenericArray::from_slice(&self.read))
+            .decrypt_in_place_detached(&nonce(self.read_count), length, &mut plain, Tag::from_slice(tag))
+            .map_err(|_| io::Error::new(ErrorKind::InvalidData, "a frame failed its check"))?;
+        self.read_count += 1;
+        Ok(plain)
+    }
+
+    /// Appends `plain` to `out` as encrypted frames.
+    fn seal(&mut self, plain: &[u8], out: &mut BytesMut) -> io::Result<()> {
+        for chunk in plain.chunks(FRAME) {
+            let length = (chunk.len() as u16).to_le_bytes();
+            let mut data = chunk.to_vec();
+            let tag = ChaCha20Poly1305::new(GenericArray::from_slice(&self.write))
+                .encrypt_in_place_detached(&nonce(self.write_count), &length, &mut data)
+                .map_err(|_| io::Error::new(ErrorKind::Other, "couldn't encrypt a frame"))?;
+            self.write_count += 1;
+            out.extend_from_slice(&length);
+            out.extend_from_slice(&data);
+            out.extend_from_slice(&tag);
+        }
+        Ok(())
+    }
+}
+
+fn nonce(count: u64) -> Nonce {
+    let mut nonce = [0; 12];
+    nonce[4..].copy_from_slice(&count.to_le_bytes());
+    *Nonce::from_slice(&nonce)
+}
+
+/// Takes the next whole frame off `received`, however the bytes arrived:
+/// part of a frame, or several at once.
+fn next_frame(received: &mut BytesMut) -> io::Result<Option<BytesMut>> {
+    if received.len() < LENGTH {
+        return Ok(None);
+    }
+    let length = u16::from_le_bytes([received[0], received[1]]) as usize;
+    if length > FRAME {
+        return Err(io::Error::new(ErrorKind::InvalidData, "a frame longer than allowed"));
+    }
+    let whole = LENGTH + length + TAG;
+    Ok((received.len() >= whole).then(|| received.split_to(whole)))
+}
+
+/// A controller's TCP connection: plaintext until pair-verify hands over a
+/// session, encrypted frames after. Bridges the socket and hyper's channels.
 #[derive(Debug)]
 pub struct EncryptedStream {
     stream: TcpStream,
@@ -172,16 +252,13 @@ pub struct EncryptedStream {
     outgoing_waker: Arc<Mutex<Option<Waker>>>,
     session_receiver: oneshot::Receiver<Session>,
     pub controller_id: Arc<RwLock<Option<Uuid>>>,
-    shared_secret: Option<[u8; 32]>,
-    decrypt_count: u64,
-    encrypt_count: u64,
-    encrypted_buf: BytesMut,
-    decrypted_buf: BytesMut,
-    encrypted_readbuf_inner: [u8; 1042],
-    packet_len: usize,
-    decrypted_ready: bool,
-    missing_data_for_decrypted_buf: bool,
-    missing_data_for_encrypted_buf: bool,
+    keys: Option<Keys>,
+    /// Bytes from the socket that are not yet a whole frame.
+    received: BytesMut,
+    /// Decrypted bytes not yet read.
+    plain: BytesMut,
+    /// Bytes the socket has not yet taken.
+    unsent: BytesMut,
 }
 
 impl EncryptedStream {
@@ -200,8 +277,6 @@ impl EncryptedStream {
         let (outgoing_sender, outgoing_receiver) = mpsc::unbounded();
         let incoming_waker = Arc::new(Mutex::new(None));
         let outgoing_waker = Arc::new(Mutex::new(None));
-        let encrypted_buf = BytesMut::with_capacity(1042);
-        let decrypted_buf = BytesMut::with_capacity(1024);
 
         (
             EncryptedStream {
@@ -212,16 +287,10 @@ impl EncryptedStream {
                 outgoing_waker: outgoing_waker.clone(),
                 session_receiver: receiver,
                 controller_id: Arc::new(RwLock::new(None)),
-                shared_secret: None,
-                decrypt_count: 0,
-                encrypt_count: 0,
-                encrypted_buf,
-                decrypted_buf,
-                encrypted_readbuf_inner: [0; 1042],
-                packet_len: 0,
-                decrypted_ready: false,
-                missing_data_for_decrypted_buf: false,
-                missing_data_for_encrypted_buf: false,
+                keys: None,
+                received: BytesMut::with_capacity(2 * (LENGTH + FRAME + TAG)),
+                plain: BytesMut::with_capacity(FRAME),
+                unsent: BytesMut::new(),
             },
             incoming_receiver,
             outgoing_sender,
@@ -231,108 +300,49 @@ impl EncryptedStream {
         )
     }
 
-    fn read_decrypted(&mut self, buf: &mut ReadBuf) -> Poll<std::result::Result<(), io::Error>> {
-        debug!("reading from decrypted buffer");
-
-        if self.decrypted_ready {
-            let r_len = min(buf.capacity(), self.packet_len - 16);
-
-            buf.put_slice(&self.decrypted_buf[..r_len]);
-
-            self.decrypted_buf.advance(r_len);
-
-            if r_len == self.packet_len - 16 {
-                self.decrypted_buf.clear();
-                self.decrypted_ready = false;
+    /// Takes the session once pair-verify has made one. Only on reading, so
+    /// pair-verify's own last reply still goes out in plaintext.
+    fn start_session(&mut self) -> io::Result<()> {
+        if self.keys.is_none() {
+            if let Ok(Some(session)) = self.session_receiver.try_recv() {
+                *self.controller_id.write().expect("setting controller_id") = Some(session.controller_id);
+                self.keys = Some(
+                    Keys::new(&session.shared_secret)
+                        .map_err(|_| io::Error::new(ErrorKind::Other, "couldn't derive the session keys"))?,
+                );
             }
-
-            return Poll::Ready(Ok(()));
         }
-
-        Poll::Pending
+        Ok(())
     }
 
-    fn read_encrypted(&mut self, buf: &mut ReadBuf) -> Poll<std::result::Result<(), io::Error>> {
-        debug!("reading from encrypted buffer");
-
-        if self.missing_data_for_decrypted_buf {
-            let decrypted = decrypt_chunk(
-                &self.shared_secret.expect("missing shared secret"),
-                &self.encrypted_buf[..2],
-                &self.encrypted_buf[2..(self.packet_len - 14)],
-                &self.encrypted_buf[(self.packet_len - 14)..(self.packet_len + 2)],
-                &mut self.decrypt_count,
-            )
-            .map_err(|_| io::Error::new(io::ErrorKind::Other, "decryption failed"))?;
-
-            self.decrypted_buf.extend_from_slice(&decrypted);
-
-            self.encrypted_buf.advance(self.packet_len + 2);
-
-            self.missing_data_for_decrypted_buf = false;
-            self.decrypted_ready = true;
-
-            return self.read_decrypted(buf);
+    /// Queues `data` for the socket, as frames once there is a session.
+    fn queue(&mut self, data: &[u8]) -> io::Result<()> {
+        match self.keys.as_mut() {
+            Some(keys) => keys.seal(data, &mut self.unsent),
+            None => {
+                self.unsent.extend_from_slice(data);
+                Ok(())
+            },
         }
-
-        Poll::Pending
     }
 
-    fn read_stream(&mut self, cx: &mut Context, buf: &mut ReadBuf) -> Poll<std::result::Result<(), io::Error>> {
-        debug!("reading from TCP stream");
-
-        if self.missing_data_for_encrypted_buf {
-            let mut r_buf = ReadBuf::new(&mut self.encrypted_readbuf_inner);
-            let r = AsyncRead::poll_read(Pin::new(&mut self.stream), cx, &mut r_buf)?;
-
-            match r {
-                Poll::Pending => Poll::Pending,
-                Poll::Ready(()) => {
-                    self.encrypted_buf.extend_from_slice(r_buf.filled());
-
-                    if self.encrypted_buf.len() == self.packet_len + 2 {
-                        self.missing_data_for_encrypted_buf = false;
-                        self.missing_data_for_decrypted_buf = true;
-
-                        return self.read_encrypted(buf);
-                    }
-
-                    Poll::Pending
-                },
+    /// Gives the socket what it will take of the queue.
+    fn poll_send(&mut self, cx: &mut Context) -> Poll<io::Result<()>> {
+        while !self.unsent.is_empty() {
+            let sent = ready!(Pin::new(&mut self.stream).poll_write(cx, &self.unsent))?;
+            if sent == 0 {
+                return Poll::Ready(Err(ErrorKind::WriteZero.into()));
             }
-        } else {
-            let mut r_buf = ReadBuf::new(&mut self.encrypted_readbuf_inner);
-            let r = AsyncRead::poll_read(Pin::new(&mut self.stream), cx, &mut r_buf)?;
-
-            match r {
-                Poll::Pending => Poll::Pending,
-                Poll::Ready(()) => {
-                    self.encrypted_buf.extend_from_slice(r_buf.filled());
-
-                    if self.encrypted_buf.len() >= 2 {
-                        self.packet_len = LittleEndian::read_u16(&self.encrypted_buf[..2]) as usize + 16;
-
-                        if self.encrypted_buf.len() == self.packet_len + 2 {
-                            self.missing_data_for_encrypted_buf = false;
-                            self.missing_data_for_decrypted_buf = true;
-
-                            self.read_encrypted(buf)
-                        } else {
-                            self.missing_data_for_encrypted_buf = true;
-
-                            Poll::Pending
-                        }
-                    } else {
-                        Poll::Pending
-                    }
-                },
-            }
+            self.unsent.advance(sent);
         }
+        Poll::Ready(Ok(()))
     }
 
     fn poll_outgoing(self: Pin<&mut Self>, cx: &mut Context) -> Poll<std::result::Result<(), io::Error>> {
         let encrypted_stream = Pin::into_inner(self);
         loop {
+            // Finish what is queued before taking more; the socket wakes us.
+            ready!(encrypted_stream.poll_send(cx))?;
             match Stream::poll_next(Pin::new(&mut encrypted_stream.outgoing_receiver), cx) {
                 Poll::Pending => {
                     *encrypted_stream.outgoing_waker.lock().expect("setting outgoing_waker") = Some(cx.waker().clone());
@@ -340,21 +350,10 @@ impl EncryptedStream {
                 },
                 Poll::Ready(Some(data)) => {
                     debug!("writing {} Bytes to outgoing TCP stream", data.len());
-
-                    match AsyncWrite::poll_write(Pin::new(encrypted_stream), cx, &data) {
-                        Poll::Pending => {},
-                        Poll::Ready(Err(e)) => {
-                            error!("error writing to outgoing stream: {}", e);
-                            return Poll::Ready(Err(e));
-                        },
-                        Poll::Ready(Ok(w_len)) => {
-                            debug!("wrote {} Bytes to outgoing TCP stream", w_len);
-                        },
-                    };
+                    encrypted_stream.queue(&data)?;
                 },
                 Poll::Ready(None) => {
                     debug!("outgoing TCP stream ended");
-
                     return Poll::Ready(Ok(()));
                 },
             }
@@ -373,28 +372,15 @@ impl EncryptedStream {
                     *encrypted_stream.incoming_waker.lock().expect("setting incoming_waker") = Some(cx.waker().clone());
                     return Poll::Pending;
                 },
-                Poll::Ready(Err(e)) => match e.kind() {
-                    ErrorKind::WouldBlock => {
-                        *encrypted_stream.incoming_waker.lock().expect("setting incoming_waker") =
-                            Some(cx.waker().clone());
-                        return Poll::Pending;
-                    },
-                    _ => {
-                        return Poll::Ready(Err(e));
-                    },
-                },
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Ready(Ok(())) => {
-                    let data_filled = data.filled();
-
-                    if data_filled.len() == 0 {
+                    if data.filled().is_empty() {
                         return Poll::Ready(Ok(()));
                     }
-
                     encrypted_stream
                         .incoming_sender
-                        .unbounded_send(data_filled.to_vec())
-                        .map_err(|_| io::Error::new(io::ErrorKind::Other, "couldn't send incoming data"))?;
-
+                        .unbounded_send(data.filled().to_vec())
+                        .map_err(|_| io::Error::new(ErrorKind::Other, "couldn't send incoming data"))?;
                     data.clear();
                 },
             }
@@ -405,10 +391,12 @@ impl EncryptedStream {
 impl Future for EncryptedStream {
     type Output = std::result::Result<(), io::Error>;
 
-    #[allow(unused_must_use)]
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let encrypted_stream = Pin::into_inner(self);
-        EncryptedStream::poll_outgoing(Pin::new(encrypted_stream), cx)?;
+        if let Poll::Ready(Err(e)) = EncryptedStream::poll_outgoing(Pin::new(encrypted_stream), cx) {
+            error!("error writing to outgoing stream: {}", e);
+            return Poll::Ready(Err(e));
+        }
         EncryptedStream::poll_incoming(Pin::new(encrypted_stream), cx)
     }
 }
@@ -420,124 +408,117 @@ impl AsyncRead for EncryptedStream {
         buf: &mut ReadBuf,
     ) -> Poll<std::result::Result<(), io::Error>> {
         let encrypted_stream = Pin::into_inner(self);
-
-        if encrypted_stream.shared_secret.is_none() {
-            match encrypted_stream.session_receiver.try_recv() {
-                Ok(Some(session)) => {
-                    *encrypted_stream.controller_id.write().expect("setting controller_id") =
-                        Some(session.controller_id);
-                    encrypted_stream.shared_secret = Some(session.shared_secret);
-                },
-                _ => {
-                    return AsyncRead::poll_read(Pin::new(&mut encrypted_stream.stream), cx, buf);
-                },
+        encrypted_stream.start_session()?;
+        let Some(keys) = encrypted_stream.keys.as_mut() else {
+            return AsyncRead::poll_read(Pin::new(&mut encrypted_stream.stream), cx, buf);
+        };
+        loop {
+            if !encrypted_stream.plain.is_empty() {
+                let length = min(buf.remaining(), encrypted_stream.plain.len());
+                buf.put_slice(&encrypted_stream.plain.split_to(length));
+                return Poll::Ready(Ok(()));
             }
-        }
-
-        match encrypted_stream.read_decrypted(buf) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => match encrypted_stream.read_encrypted(buf) {
-                Poll::Ready(Ok(_size)) => Poll::Ready(Ok(())),
-                Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-                Poll::Pending => encrypted_stream.read_stream(cx, buf),
-            },
+            if let Some(frame) = next_frame(&mut encrypted_stream.received)? {
+                let plain = keys.open(&frame)?;
+                encrypted_stream.plain.extend_from_slice(&plain);
+                continue;
+            }
+            let mut chunk = [0; 4096];
+            let mut read = ReadBuf::new(&mut chunk);
+            ready!(AsyncRead::poll_read(Pin::new(&mut encrypted_stream.stream), cx, &mut read))?;
+            if read.filled().is_empty() {
+                // The controller hung up, maybe mid-frame.
+                return Poll::Ready(Ok(()));
+            }
+            encrypted_stream.received.extend_from_slice(read.filled());
         }
     }
 }
 
 impl AsyncWrite for EncryptedStream {
-    #[allow(unused_must_use)]
+    /// Queues everything and sends what the socket takes now; the rest goes
+    /// out with the next write or flush.
     fn poll_write(self: Pin<&mut Self>, cx: &mut Context, buf: &[u8]) -> Poll<std::result::Result<usize, Error>> {
         let encrypted_stream = Pin::into_inner(self);
-
-        if let Some(shared_secret) = encrypted_stream.shared_secret {
-            let mut write_buf = BytesMut::from(buf);
-
-            while write_buf.len() > 1024 {
-                let (aad, chunk, auth_tag) =
-                    encrypt_chunk(&shared_secret, &write_buf[..1024], &mut encrypted_stream.encrypt_count)
-                        .map_err(|_| io::Error::new(io::ErrorKind::Other, "encryption failed"))?;
-
-                let data = [&aad[..], &chunk[..], &auth_tag[..]].concat();
-                AsyncWrite::poll_write(Pin::new(&mut encrypted_stream.stream), cx, &data)?;
-
-                write_buf.advance(1024);
-            }
-
-            let (aad, chunk, auth_tag) = encrypt_chunk(&shared_secret, &write_buf, &mut encrypted_stream.encrypt_count)
-                .map_err(|_| io::Error::new(io::ErrorKind::Other, "encryption failed"))?;
-
-            let data = [&aad[..], &chunk[..], &auth_tag[..]].concat();
-            AsyncWrite::poll_write(Pin::new(&mut encrypted_stream.stream), cx, &data)?;
-
-            Poll::Ready(Ok(buf.len()))
-        } else {
-            AsyncWrite::poll_write(Pin::new(&mut encrypted_stream.stream), cx, buf)
+        encrypted_stream.queue(buf)?;
+        if let Poll::Ready(Err(e)) = encrypted_stream.poll_send(cx) {
+            return Poll::Ready(Err(e));
         }
+        Poll::Ready(Ok(buf.len()))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<std::result::Result<(), Error>> {
         let encrypted_stream = Pin::into_inner(self);
+        ready!(encrypted_stream.poll_send(cx))?;
         AsyncWrite::poll_flush(Pin::new(&mut encrypted_stream.stream), cx)
     }
 
-    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<std::result::Result<(), Error>> {
-        Poll::Ready(Ok(()))
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context) -> Poll<std::result::Result<(), Error>> {
+        let encrypted_stream = Pin::into_inner(self);
+        ready!(encrypted_stream.poll_send(cx))?;
+        AsyncWrite::poll_shutdown(Pin::new(&mut encrypted_stream.stream), cx)
     }
-}
-
-fn decrypt_chunk(
-    shared_secret: &[u8; 32],
-    aad: &[u8],
-    data: &[u8],
-    auth_tag: &[u8],
-    count: &mut u64,
-) -> Result<Vec<u8>> {
-    let read_key = compute_read_key(shared_secret)?;
-    let aead = ChaCha20Poly1305::new(GenericArray::from_slice(&read_key));
-
-    let mut nonce = vec![0; 4];
-    let mut suffix = vec![0; 8];
-    LittleEndian::write_u64(&mut suffix, *count);
-    nonce.extend(suffix);
-    *count += 1;
-
-    let mut buffer = Vec::new();
-    buffer.extend_from_slice(data);
-    aead.decrypt_in_place_detached(Nonce::from_slice(&nonce), aad, &mut buffer, Tag::from_slice(&auth_tag))?;
-
-    Ok(buffer)
-}
-
-fn encrypt_chunk(shared_secret: &[u8; 32], data: &[u8], count: &mut u64) -> Result<([u8; 2], Vec<u8>, [u8; 16])> {
-    let write_key = compute_write_key(shared_secret)?;
-    let aead = ChaCha20Poly1305::new(GenericArray::from_slice(&write_key));
-
-    let mut nonce = vec![0; 4];
-    let mut suffix = vec![0; 8];
-    LittleEndian::write_u64(&mut suffix, *count);
-    nonce.extend(suffix);
-    *count += 1;
-
-    let mut aad = [0; 2];
-    LittleEndian::write_u16(&mut aad, data.len() as u16);
-
-    let mut buffer = Vec::new();
-    buffer.extend_from_slice(data);
-    let auth_tag = aead.encrypt_in_place_detached(Nonce::from_slice(&nonce), &aad, &mut buffer)?;
-
-    Ok((aad, buffer, auth_tag.into()))
-}
-
-fn compute_read_key(shared_secret: &[u8; 32]) -> Result<[u8; 32]> {
-    compute_key(shared_secret, b"Control-Write-Encryption-Key")
-}
-
-fn compute_write_key(shared_secret: &[u8; 32]) -> Result<[u8; 32]> {
-    compute_key(shared_secret, b"Control-Read-Encryption-Key")
 }
 
 fn compute_key(shared_secret: &[u8; 32], info: &[u8]) -> Result<[u8; 32]> {
     super::hkdf_extract_and_expand(b"Control-Salt", shared_secret, info)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_open_however_the_bytes_arrive() {
+        let key = [7; 32];
+        let mut sender = Keys {
+            read: key,
+            write: key,
+            read_count: 0,
+            write_count: 0,
+        };
+        let mut receiver = Keys {
+            read: key,
+            write: key,
+            read_count: 0,
+            write_count: 0,
+        };
+        let message: Vec<u8> = (0..2500u32).map(|i| i as u8).collect();
+        let mut wire = BytesMut::new();
+        sender.seal(&message, &mut wire).unwrap();
+        sender.seal(b"second", &mut wire).unwrap();
+        assert_eq!(wire.len(), 4 * (LENGTH + TAG) + 2500 + 6);
+
+        // Three bytes at a time: frames still come out whole, and in order.
+        let mut received = BytesMut::new();
+        let mut opened = Vec::new();
+        for piece in wire.chunks(3) {
+            received.extend_from_slice(piece);
+            while let Some(frame) = next_frame(&mut received).unwrap() {
+                opened.extend(receiver.open(&frame).unwrap());
+            }
+        }
+        assert_eq!(opened, [message, b"second".to_vec()].concat());
+
+        // All at once: every frame comes out of one read.
+        let mut receiver = Keys {
+            read: key,
+            write: key,
+            read_count: 0,
+            write_count: 0,
+        };
+        let mut received = wire.clone();
+        let mut frames = 0;
+        while let Some(frame) = next_frame(&mut received).unwrap() {
+            receiver.open(&frame).unwrap();
+            frames += 1;
+        }
+        assert_eq!((frames, received.len()), (4, 0));
+
+        // A changed byte, or a frame out of order, fails its check.
+        let mut tampered = wire.clone();
+        tampered[5] ^= 1;
+        let frame = next_frame(&mut tampered).unwrap().unwrap();
+        assert!(Keys { read: key, write: key, read_count: 0, write_count: 0 }.open(&frame).is_err());
+    }
 }

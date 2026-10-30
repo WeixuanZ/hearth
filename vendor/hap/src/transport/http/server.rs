@@ -191,9 +191,18 @@ impl Server {
             mdns_responder.lock().await.update_records().await;
 
             loop {
-                let (stream, _socket_addr) = listener.accept().await?;
+                // One connection's failure must not stop the server for the others.
+                let (stream, peer) = match listener.accept().await {
+                    Ok(accepted) => accepted,
+                    Err(e) => {
+                        error!("couldn't accept a connection: {}", e);
+                        // Out of file descriptors, say: let some close.
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        continue;
+                    },
+                };
 
-                debug!("incoming TCP stream from {}", stream.peer_addr()?);
+                debug!("incoming TCP stream from {}", peer);
 
                 let (
                     encrypted_stream,
@@ -217,33 +226,29 @@ impl Server {
                     session_sender,
                 );
 
+                // Sends this connection the changes it subscribed to, and
+                // leaves once the connection has closed.
                 event_emitter.lock().await.add_listener(Box::new(move |event| {
                     let event_subscriptions_ = event_subscriptions.clone();
                     let stream_outgoing_ = stream_outgoing.clone();
                     async move {
-                        match *event {
-                            Event::CharacteristicValueChanged { aid, iid, ref value } => {
-                                let mut dropped_subscriptions = vec![];
-                                for (i, &(s_aid, s_iid)) in event_subscriptions_.lock().await.iter().enumerate() {
-                                    if s_aid == aid && s_iid == iid {
-                                        let event = EventObject {
-                                            aid,
-                                            iid,
-                                            value: value.clone(),
-                                        };
-                                        let event_res =
-                                            event_response(vec![event]).expect("couldn't create event response");
-                                        if stream_outgoing_.unbounded_send(event_res).is_err() {
-                                            dropped_subscriptions.push(i);
-                                        }
-                                    }
-                                }
-                                let mut ev = event_subscriptions_.lock().await;
-                                for s in dropped_subscriptions {
-                                    ev.remove(s);
-                                }
+                        let Event::CharacteristicValueChanged { aid, iid, ref value } = *event else {
+                            return !stream_outgoing_.is_closed();
+                        };
+                        if !event_subscriptions_.lock().await.contains(&(aid, iid)) {
+                            return !stream_outgoing_.is_closed();
+                        }
+                        let event = EventObject {
+                            aid,
+                            iid,
+                            value: value.clone(),
+                        };
+                        match event_response(vec![event]) {
+                            Ok(response) => stream_outgoing_.unbounded_send(response).is_ok(),
+                            Err(e) => {
+                                error!("couldn't create an event response: {:?}", e);
+                                !stream_outgoing_.is_closed()
                             },
-                            _ => {},
                         }
                     }
                     .boxed()

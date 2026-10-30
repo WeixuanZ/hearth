@@ -6,6 +6,7 @@
 //! while the fan is off), and one per oscillation sweep. The switches are
 //! linked to the fan, so Home shows them inside it rather than as tiles.
 
+use crate::config::Settings as _;
 use crate::connectors::dyson::protocol::{
     air_quality, percent_to_speed, speed_to_percent, sweep, Intent, MachineState, SWEEPS,
 };

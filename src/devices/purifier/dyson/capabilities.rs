@@ -1,6 +1,7 @@
 //! The purifier as capabilities, for the menu bar and the CLI. HomeKit shows
 //! the same state through `accessory`, and both send the same intents.
 
+use crate::config::Settings as _;
 use crate::connectors::dyson::protocol::{sweep, Intent, MachineState, SWEEPS};
 use crate::{
     capabilities::{Capability, Item, Set, Snapshot},

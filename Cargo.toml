@@ -1,3 +1,7 @@
+[workspace]
+# hap is vendored and patched; its tests run with ours.
+members = [".", "vendor/hap"]
+
 [package]
 name = "hearth"
 version = "0.2.0"
@@ -15,12 +19,15 @@ aes = "0.8"
 anyhow = "1"
 base64 = "0.22"
 cbc = { version = "0.1", features = ["alloc"] }
+chacha20poly1305 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive"] }
 cipher = "0.4"
 env_logger = "0.11"
 futures-util = "0.3"
 hap = { path = "vendor/hap" }
+hkdf = "0.12"
+hmac = "0.12"
 log = "0.4"
 mdns-sd = "0.13"
 rand = "0.8"
@@ -30,10 +37,13 @@ rustls = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+socket2 = { version = "0.5", features = ["all"] }
+subtle = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time", "signal"] }
 tokio-rustls = "0.26"
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "handshake"] }
 toml = "0.8"
+x25519-dalek = "2"
 
 [lints.rust]
 warnings = "deny"

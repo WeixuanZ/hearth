@@ -43,7 +43,7 @@ sha2 = "0.9"
 signature = "1.1"
 srp = "0.5"
 thiserror = "1.0"
-tokio = "1.8"
+tokio = { version = "1.8", features = ["net", "rt", "time"] }
 url = "2.1"
 uuid = { version = "0.8", features = ["v4", "serde"] }
 x25519-dalek = "0.6"
@@ -61,3 +61,8 @@ tokio = { version = "1.8", features = ["rt-multi-thread", "time", "macros"] }
 
 [lints.rust]
 warnings = "deny"
+
+# Upstream and mostly generated code, so not held to clippy; compiler
+# warnings still fail the build. hearth reviews the paths it runs by hand.
+[lints.clippy]
+all = { level = "allow", priority = -1 }

@@ -10,8 +10,12 @@ app="$root/macos/Hearth.app"
 arch="${ARCH:-$(uname -m)}"
 
 rm -rf "$app"
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp Info.plist "$app/Contents/Info.plist"
+cp icon.icns "$app/Contents/Resources/AppIcon.icns"
+# The app's version is hearth's, so the updater can compare it with releases.
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -n 1)
+plutil -replace CFBundleShortVersionString -string "$version" "$app/Contents/Info.plist"
 
 swiftc -O -parse-as-library \
   -target "${arch}-apple-macosx13.0" \

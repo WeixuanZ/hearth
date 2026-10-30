@@ -11,21 +11,25 @@ pub enum Event {
     CharacteristicValueChanged { aid: u64, iid: u64, value: Value },
 }
 
+/// Hears every event. Answers whether it still wants them; one that says no,
+/// like a closed connection's, is dropped.
+pub type Listener = Box<dyn (Fn(&Event) -> BoxFuture<bool>) + Send + Sync>;
+
 #[derive(Default)]
 pub struct EventEmitter {
-    listeners: Vec<Box<dyn (Fn(&Event) -> BoxFuture<()>) + Send + Sync>>,
+    listeners: Vec<Listener>,
 }
 
 impl EventEmitter {
-    pub fn new() -> EventEmitter { EventEmitter { listeners: vec![] } }
+    pub fn new() -> EventEmitter { EventEmitter::default() }
 
-    pub fn add_listener(&mut self, listener: Box<dyn (Fn(&Event) -> BoxFuture<()>) + Send + Sync>) {
-        self.listeners.push(listener);
-    }
+    pub fn add_listener(&mut self, listener: Listener) { self.listeners.push(listener); }
 
-    pub async fn emit(&self, event: &Event) {
+    pub async fn emit(&mut self, event: &Event) {
         debug!("emitting event: {:?}", event);
 
-        join_all(self.listeners.iter().map(|listener| listener(&event))).await;
+        let keep = join_all(self.listeners.iter().map(|listener| listener(event))).await;
+        let mut keep = keep.into_iter();
+        self.listeners.retain(|_| keep.next().unwrap_or(true));
     }
 }

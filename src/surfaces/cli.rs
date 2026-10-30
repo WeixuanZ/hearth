@@ -94,6 +94,57 @@ pub async fn rename(device: &str, name: &str, as_json: bool) -> Result<()> {
     }
 }
 
+/// Sends a group op, if any, then shows the group.
+pub async fn group(op: Option<Value>, as_json: bool) -> Result<()> {
+    if let Some(op) = op {
+        control::request(op).await?;
+    }
+    let status = control::request(json!({ "op": "status" })).await?;
+    let group = &status["group"];
+    if as_json {
+        return print_json(group);
+    }
+    let text = |key: &str| group[key].as_str().unwrap_or_default().to_owned();
+    let style = Style::detect();
+    let doing = match text("role").as_str() {
+        "serving" => "serves Home".to_owned(),
+        "conflict" => "serves Home, and another member serves a different Home".to_owned(),
+        "standby" => format!("is on standby; {} serves Home", text("leader")),
+        "joining" => format!("is asking {} to let it join", text("leader")),
+        _ => "is looking for a group".to_owned(),
+    };
+    println!("{} {doing}.", style.bold(&text("name")));
+    let members: Vec<&str> = group["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if !members.is_empty() {
+        println!("With {}.", members.join(", "));
+    }
+    if !text("code").is_empty() {
+        println!(
+            "Type {} on {}, then run `hearth group confirm` here.",
+            style.bold(&text("code")),
+            text("leader")
+        );
+    }
+    if !text("asking").is_empty() {
+        println!(
+            "{} asks to join. Run `hearth group approve <the code it shows>`, or `hearth group decline`.",
+            text("asking")
+        );
+    }
+    if !text("other").is_empty() {
+        println!(
+            "{} is in another group. `hearth group join` leaves this one for it.",
+            text("other")
+        );
+    }
+    Ok(())
+}
+
 fn print_json(value: &Value) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())

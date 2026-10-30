@@ -215,6 +215,11 @@ pub fn begin(config: &Config) {
     });
 }
 
+/// Stops the registry, when this computer stops serving Home.
+pub fn end() {
+    *REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
+}
+
 /// Adds a device, or replaces its snapshot. The name stays the registry's.
 pub fn publish(mut snapshot: Snapshot) {
     with(|registry| {
@@ -280,18 +285,16 @@ pub fn listen(id: &str, commands: mpsc::Sender<Set>) {
     });
 }
 
-/// Everything the menu bar shows, as JSON.
-pub fn status() -> Value {
+/// The bridge and its devices, as JSON. None while it is not serving.
+pub fn status() -> Option<Value> {
     with(|registry| {
         json!({
-            "pid": std::process::id(),
             "name": registry.name,
             "pin": registry.pin,
             "paired": config::paired(),
             "devices": registry.devices.iter().map(|entry| &entry.snapshot).collect::<Vec<_>>(),
         })
     })
-    .unwrap_or(Value::Null)
 }
 
 /// One device's snapshot, as JSON.

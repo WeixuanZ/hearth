@@ -302,6 +302,11 @@ pub fn apply_message(state: &mut MachineState, topic: &str, payload: &str) -> bo
 pub fn intent_fields(state: &MachineState, intent: &Intent) -> Vec<(&'static str, String)> {
     match intent {
         Intent::Power(true) => vec![("fpwr", "ON".into())],
+        // Heat ends with the fan, so turning the fan on later does not
+        // bring heat back unasked.
+        Intent::Power(false) if state.heat_on => {
+            vec![("fpwr", "OFF".into()), ("hmod", "OFF".into())]
+        }
         Intent::Power(false) => vec![("fpwr", "OFF".into())],
         Intent::Auto(true) => vec![("fpwr", "ON".into()), ("auto", "ON".into())],
         Intent::Auto(false) => vec![("auto", "OFF".into())],
@@ -421,6 +426,24 @@ pub fn command_topic(product_type: &str, serial: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heat_turns_the_fan_on_and_the_fan_off_ends_heat() {
+        let heating = MachineState {
+            heat_on: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            intent_fields(&heating, &Intent::Power(false)),
+            [("fpwr", "OFF".to_owned()), ("hmod", "OFF".to_owned())]
+        );
+        assert_eq!(
+            intent_fields(&MachineState::default(), &Intent::Power(false)),
+            [("fpwr", "OFF".to_owned())]
+        );
+        assert!(intent_fields(&MachineState::default(), &Intent::Heat(true))
+            .contains(&("fpwr", "ON".to_owned())));
+    }
 
     #[test]
     fn parses_current_state_and_change_pairs() {
