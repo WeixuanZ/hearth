@@ -96,6 +96,25 @@ enum JSONValue: Decodable, Equatable {
     }
 }
 
+/// A reading over time, from `{"op":"history"}`. `t` is Unix seconds.
+struct HistorySample: Decodable {
+    var t: Double
+    var v: Double
+}
+
+struct HistorySeries: Decodable {
+    var capability: String
+    var name: String
+    var unit: String
+    var samples: [HistorySample]
+}
+
+struct HistoryReply: Decodable {
+    var interval: Int
+    var heartbeat: Int
+    var series: [HistorySeries]
+}
+
 /// `~/.config/hearth/control.sock`: one JSON line out, one back. Calls block,
 /// so make them off the main thread.
 enum ControlSocket {

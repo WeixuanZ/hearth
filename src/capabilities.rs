@@ -222,6 +222,23 @@ pub fn end() {
 
 /// Adds a device, or replaces its snapshot. The name stays the registry's.
 pub fn publish(mut snapshot: Snapshot) {
+    let readings: Vec<(&str, f64)> = snapshot
+        .capabilities
+        .iter()
+        .filter_map(|capability| {
+            let Kind::Reading { .. } = capability.kind else {
+                return None;
+            };
+            if !capability.active {
+                return None;
+            }
+            capability
+                .value
+                .as_f64()
+                .map(|value| (capability.id, value))
+        })
+        .collect();
+    crate::series::observe(&snapshot.id, &readings);
     with(|registry| {
         match registry
             .devices

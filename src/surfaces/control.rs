@@ -12,6 +12,10 @@
 //!   → {"ok":true}  or  {"error":"…"}
 //! {"op":"rename","device":"tv","name":"Living room TV"}
 //!   → {"ok":true}, and Home shows the new name
+//! {"op":"history","device":"purifier","capability":"temperature","hours":24}
+//!   → readings for that long, one point a minute at most
+//! {"op":"history_forget","device":"dyson:…"}
+//!   → drops that device's history, here and on the computer serving Home
 //! ```
 //!
 //! On a computer that is not serving Home, device requests go on to the one
@@ -29,7 +33,7 @@
 //! The socket is mode 0600 and never on the network, so only this user can
 //! control the devices. State is served from memory, so a reply is immediate.
 
-use crate::{capabilities, cluster, config};
+use crate::{capabilities, cluster, config, series};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -54,6 +58,16 @@ enum Request {
     Rename {
         device: String,
         name: String,
+    },
+    History {
+        device: String,
+        #[serde(default)]
+        capability: Option<String>,
+        #[serde(default)]
+        hours: Option<u64>,
+    },
+    HistoryForget {
+        device: String,
     },
     Approve {
         code: String,
@@ -126,9 +140,20 @@ async fn answer(line: &str) -> Value {
             if status.get("devices").is_none() {
                 status = idle();
             }
+            observe_status(&status);
             status["pid"] = json!(std::process::id());
             status["group"] = cluster::status();
             status
+        }
+        Request::HistoryForget { device } => {
+            // Every computer that has seen the device has a copy.
+            series::forget(&device);
+            match cluster::forward(&value).await {
+                Some(reply) => {
+                    reply.unwrap_or_else(|error| json!({ "error": format!("{error:#}") }))
+                }
+                None => json!({ "ok": true }),
+            }
         }
         Request::Approve { code } => done(cluster::approve(&code)),
         Request::Decline => done(cluster::decline()),
@@ -155,6 +180,15 @@ pub async fn here(value: Value) -> Value {
             value,
         }) => done(capabilities::set(&device, &capability, value).await),
         Ok(Request::Rename { device, name }) => done(capabilities::rename(&device, &name)),
+        Ok(Request::History {
+            device,
+            capability,
+            hours,
+        }) => history(&device, capability.as_deref(), hours.unwrap_or(24)),
+        Ok(Request::HistoryForget { device }) => {
+            series::forget(&device);
+            json!({ "ok": true })
+        }
         Ok(_) => json!({ "error": "not a device request" }),
         Err(error) => json!({ "error": format!("bad request: {error}") }),
     }
@@ -176,6 +210,124 @@ fn done(result: Result<()>) -> Value {
         Ok(()) => json!({ "ok": true }),
         Err(error) => json!({ "error": format!("{error:#}") }),
     }
+}
+
+/// Keeps readings seen in a status, so a computer that is not serving Home
+/// still has them if it takes over.
+fn observe_status(status: &Value) {
+    let Some(devices) = status.get("devices").and_then(Value::as_array) else {
+        return;
+    };
+    for device in devices {
+        let Some(id) = device.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(capabilities) = device.get("capabilities").and_then(Value::as_array) else {
+            continue;
+        };
+        let readings: Vec<(&str, f64)> = capabilities
+            .iter()
+            .filter_map(|capability| {
+                if capability.get("kind").and_then(Value::as_str) != Some("reading") {
+                    return None;
+                }
+                if capability.get("active") != Some(&Value::Bool(true)) {
+                    return None;
+                }
+                let id = capability.get("id").and_then(Value::as_str)?;
+                let value = capability.get("value").and_then(Value::as_f64)?;
+                Some((id, value))
+            })
+            .collect();
+        series::observe(id, &readings);
+    }
+}
+
+fn history(device: &str, capability: Option<&str>, hours: u64) -> Value {
+    match history_document(device, capability, hours) {
+        Ok(value) => value,
+        Err(error) => json!({ "error": format!("{error:#}") }),
+    }
+}
+
+fn history_document(device: &str, capability: Option<&str>, hours: u64) -> Result<Value> {
+    let snapshot = capabilities::get(device)?;
+    let id = snapshot
+        .get("id")
+        .and_then(Value::as_str)
+        .context("the device has no id")?;
+    let name = snapshot.get("name").and_then(Value::as_str).unwrap_or(id);
+    let (hours, since) = series::window(hours, series::unix_now());
+    let capabilities = snapshot
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .context("the device has no capabilities")?;
+    let readings: Vec<&Value> = capabilities
+        .iter()
+        .filter(|capability| capability.get("kind").and_then(Value::as_str) == Some("reading"))
+        .collect();
+    let selected: Vec<&Value> = if let Some(wanted) = capability {
+        let found = readings
+            .iter()
+            .copied()
+            .find(|item| item.get("id").and_then(Value::as_str) == Some(wanted));
+        let Some(found) = found else {
+            if capabilities
+                .iter()
+                .any(|item| item.get("id").and_then(Value::as_str) == Some(wanted))
+            {
+                anyhow::bail!("{wanted} is not a reading");
+            }
+            anyhow::bail!("{name} has no capability {wanted}");
+        };
+        vec![found]
+    } else {
+        readings
+    };
+    let owned: Vec<Chosen> = selected
+        .iter()
+        .map(|reading| {
+            let capability = reading
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            let reading_name = reading
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(&capability)
+                .to_owned();
+            let unit = reading
+                .get("unit")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            Chosen {
+                samples: series::samples(id, &capability, since),
+                capability,
+                name: reading_name,
+                unit,
+            }
+        })
+        .collect();
+    let views: Vec<series::SeriesOut<'_>> = owned
+        .iter()
+        .map(|reading| series::SeriesOut {
+            capability: &reading.capability,
+            name: &reading.name,
+            unit: &reading.unit,
+            samples: &reading.samples,
+        })
+        .collect();
+    let path = series::csv_path(id).unwrap_or_default();
+    Ok(series::document(id, name, &path, hours, since, &views))
+}
+
+struct Chosen {
+    capability: String,
+    name: String,
+    unit: String,
+    samples: Vec<(u64, i32)>,
 }
 
 /// Whether a bridge is answering on the socket.

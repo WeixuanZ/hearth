@@ -4,7 +4,7 @@
 use crate::{
     capabilities, cluster,
     config::Config,
-    devices,
+    devices, series,
     surfaces::{control, homekit},
 };
 use anyhow::{anyhow, Result};
@@ -17,6 +17,7 @@ use tokio::{
 
 pub async fn run() -> Result<()> {
     let _socket = control::Socket;
+    series::start();
     let mut terminate = signal(SignalKind::terminate())?;
     tokio::select! {
         result = control::serve() => result?,
@@ -24,6 +25,7 @@ pub async fn run() -> Result<()> {
         _ = tokio::signal::ctrl_c() => log::info!("stopping"),
         _ = terminate.recv() => log::info!("stopping"),
     }
+    series::shutdown();
     Ok(())
 }
 
