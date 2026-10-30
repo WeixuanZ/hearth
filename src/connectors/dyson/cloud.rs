@@ -139,7 +139,8 @@ pub async fn request_code(email: &str, country: &str) -> Result<Challenge> {
 }
 
 /// Finishes the login with the emailed code and lists the account's fans.
-pub async fn verify(challenge: Challenge, password: &str, otp: &str) -> Result<Vec<CloudDevice>> {
+/// Takes the challenge by reference, so a mistyped code can be tried again.
+pub async fn verify(challenge: &Challenge, password: &str, otp: &str) -> Result<Vec<CloudDevice>> {
     let Challenge {
         client,
         host,
@@ -150,10 +151,7 @@ pub async fn verify(challenge: Challenge, password: &str, otp: &str) -> Result<V
 
     let verify = client
         .post(format!("{host}/v3/userregistration/email/verify"))
-        .query(&[
-            ("country", country.as_str()),
-            ("culture", culture(&country)),
-        ])
+        .query(&[("country", country.as_str()), ("culture", culture(country))])
         .json(&serde_json::json!({
             "email": email,
             "password": password,

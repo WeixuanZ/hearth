@@ -125,12 +125,14 @@ enum ControlSocket {
         var message: String
     }
 
-    static func request(_ body: [String: Any]) throws -> Data {
+    /// Sends one request and waits for its reply, `wait` seconds at most:
+    /// longer for a step that waits on a person, like Allow on a TV.
+    static func request(_ body: [String: Any], wait: Int = 5) throws -> Data {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw Failure(message: "no socket") }
         defer { close(fd) }
 
-        var timeout = timeval(tv_sec: 5, tv_usec: 0)
+        var timeout = timeval(tv_sec: wait, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
         var address = sockaddr_un()

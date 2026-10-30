@@ -5,11 +5,11 @@ mod connectors;
 mod devices;
 mod run;
 mod series;
+mod setup;
 mod surfaces;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use connectors::{bosch, dyson, samsung};
 use std::io::{self, BufRead, Write};
 use surfaces::cli;
 
@@ -104,6 +104,11 @@ enum Command {
     /// Forget Apple Home, and take a new HomeKit identity. For a bridge
     /// Home will not add again.
     Unpair,
+    /// Add a device: dyson, frame or bosch. Asks what it needs.
+    Add {
+        /// dyson, frame or bosch.
+        product: String,
+    },
     /// Add a Dyson purifier.
     Dyson {
         #[command(subcommand)]
@@ -174,17 +179,6 @@ enum BoschCommand {
         #[arg(long)]
         id: Option<String>,
     },
-    /// Finish a sign-in. Paste the hcauth address from the browser.
-    Submit {
-        /// The hcauth address, or the code from it.
-        redirect: Option<String>,
-        /// Address, if the name Home Connect gives does not resolve.
-        #[arg(long)]
-        host: Option<String>,
-        /// Appliance id, if the account has more than one.
-        #[arg(long)]
-        id: Option<String>,
-    },
 }
 
 #[tokio::main]
@@ -244,6 +238,8 @@ async fn main() -> Result<()> {
             println!("If Home still shows an old Hearth, remove it there.");
             println!("Code: {}", config.homekit_pin);
         }
+        Command::Add { product } => setup::in_terminal(&product, setup::Answers::new()).await?,
+        // The same steps as `add`, with what the flags already answer.
         Command::Dyson {
             command:
                 DysonCommand::Login {
@@ -251,18 +247,37 @@ async fn main() -> Result<()> {
                     country,
                     serial,
                 },
-        } => dyson::login(email, country, serial).await?,
+        } => {
+            let mut given = answers([("email", Some(email)), ("country", Some(country))]);
+            given.extend(answers([("serial", serial)]));
+            setup::in_terminal("dyson", given).await?
+        }
         Command::Frame {
             command: FrameCommand::Pair { host, name },
-        } => samsung::pair(host, name).await?,
-        Command::Bosch { command } => match command {
-            BoschCommand::Login { host, id } => bosch::login(host, id).await?,
-            BoschCommand::Submit { redirect, host, id } => {
-                bosch::submit(redirect, host, id).await?
-            }
-        },
+        } => {
+            let given = answers([
+                ("name", Some(name)),
+                ("host", Some(host.unwrap_or_default())),
+            ]);
+            setup::in_terminal("frame", given).await?
+        }
+        Command::Bosch {
+            command: BoschCommand::Login { host, id },
+        } => {
+            let mut given = answers([("host", Some(host.unwrap_or_default()))]);
+            given.extend(answers([("appliance", id)]));
+            setup::in_terminal("bosch", given).await?
+        }
     }
     Ok(())
+}
+
+/// Answers for a setup, from the flags that were given.
+fn answers<const N: usize>(pairs: [(&str, Option<String>); N]) -> setup::Answers {
+    pairs
+        .into_iter()
+        .filter_map(|(id, value)| Some((id.to_owned(), value?)))
+        .collect()
 }
 
 pub fn prompt(label: &str) -> Result<String> {

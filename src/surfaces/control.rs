@@ -12,6 +12,10 @@
 //!   → {"ok":true}  or  {"error":"…"}
 //! {"op":"rename","device":"tv","name":"Living room TV"}
 //!   → {"ok":true}, and Home shows the new name
+//! {"op":"products"}
+//!   → the devices that can be added
+//! {"op":"setup","product":"frame"}  then  {"op":"setup","product":"frame","answers":{…}}
+//!   → {"step":{title, note, fields, link, wait}}, until {"done":"Added …"}
 //! {"op":"history","device":"purifier","capability":"temperature","hours":24}
 //!   → readings for that long, one point a minute at most
 //! ```
@@ -33,7 +37,7 @@
 
 use crate::{
     capabilities::{self, Capability, Kind},
-    cluster, config, series,
+    cluster, config, series, setup,
 };
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -66,6 +70,12 @@ enum Request {
         capability: Option<String>,
         #[serde(default)]
         hours: Option<u64>,
+    },
+    Products,
+    Setup {
+        product: String,
+        #[serde(default)]
+        answers: Option<setup::Answers>,
     },
     Approve {
         code: String,
@@ -142,6 +152,11 @@ async fn answer(line: &str) -> Value {
             status["group"] = cluster::status();
             status
         }
+        // On this computer: the device joins the group's config from here.
+        Request::Products => json!(setup::PRODUCTS),
+        Request::Setup { product, answers } => setup::step(&product, answers)
+            .await
+            .unwrap_or_else(|error| json!({ "error": format!("{error:#}") })),
         Request::Approve { code } => done(cluster::approve(&code)),
         Request::Decline => done(cluster::decline()),
         Request::Confirm => done(cluster::confirm()),

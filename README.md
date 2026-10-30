@@ -39,26 +39,13 @@ downloads the latest release for this machine (Linux x86_64 or aarch64, macOS Ap
 
 ## Set up
 
-**A Dyson purifier.** `login` asks for your MyDyson password and the code Dyson emails, then keeps only the fan's local password. It is the one time hearth talks to Dyson.
+**Add a device from the menu bar**: the `+` beside Start, then choose it and follow its steps. Or in the terminal, `hearth add dyson`, `hearth add frame` or `hearth add bosch`, which asks the same steps. A device added on any computer in the group reaches all of them.
 
-```sh
-hearth dyson login --email you@example.com --country GB
-```
+**A Dyson purifier.** You sign in to MyDyson once, with your password and the code Dyson emails; hearth keeps only the fan's local password. It is the one time hearth talks to Dyson. In the terminal the flags answer the questions: `hearth dyson login --email you@example.com --country GB`.
 
-**A Samsung Frame.** Turn the TV on, out of art mode. On the TV, turn on device connection and Power On with Mobile (Settings → General → External Device Manager, and Connection), and IP Remote (Settings → General → Network → Expert Settings). Then press Allow twice: once for the remote, once for IP Control, which picks inputs and powers the TV fully off.
+**A Samsung Frame.** Turn the TV on, out of art mode. On the TV, turn on device connection and Power On with Mobile (Settings → General → External Device Manager, and Connection), and IP Remote (Settings → General → Network → Expert Settings). Then press Allow twice: once for the remote, once for IP Control, which picks inputs and powers the TV fully off. Nothing leaves your network.
 
-```sh
-hearth frame pair
-```
-
-**A Bosch dishwasher.** It has to be on the home Wi-Fi, and already paired in the Home Connect app. `login` opens Home Connect's own sign-in. Paste the `hcauth` address the browser is sent to. The account password is not saved. The dishwasher's local key is.
-
-```sh
-hearth bosch login
-hearth bosch submit "hcauth://auth/prod?code=…&state=…"
-```
-
-If the account has more than one dishwasher, pass `--id`. If the name Home Connect gives does not resolve, pass `--host`. Starting a programme needs Remote Start on the dishwasher. Reading it does not.
+**A Bosch dishwasher.** It has to be on the home Wi-Fi, already set up in the Home Connect app. You sign in once on Home Connect's own page, which ends on an `hcauth://` address the browser may say it cannot open: paste that address back. The account password is not saved; the dishwasher's local key is, and after that hearth talks only to the dishwasher. Starting a programme needs Remote Start on the dishwasher. Reading it does not.
 
 **Apple Home.** Start the bridge (the menu bar's Start, or `hearth run`), then in the Home app choose Add Accessory → More options → Hearth, and enter the code the menu bar or `hearth pin` shows.
 
@@ -309,6 +296,8 @@ A computer that serves keeps serving, so a laptop that wakes up does not take Ho
 {"op":"set","device":"tv","capability":"input","value":"hdmi2"}  → {"ok":true} or {"error":"…"}
 {"op":"rename","device":"tv","name":"Living room TV"}              → {"ok":true}, and Home follows
 {"op":"history","device":"purifier","capability":"temperature","hours":24}
+{"op":"products"}                                                 → what can be added
+{"op":"setup","product":"frame"}, then with "answers":{…}         → {"step":{title, note, fields, link, wait}} until {"done":"…"}
 {"op":"approve","code":"482 193"}   {"op":"decline"}   {"op":"confirm"}   {"op":"separate"}   {"op":"join"}
 ```
 
@@ -318,7 +307,7 @@ The status has a `group`: this computer's `role` (`serving`, `standby`, `joining
 
 ### Adding a device
 
-1. **Connector.** Under `src/connectors/<maker>/`: the protocol, and a `hearth <maker> …` setup command if the device needs pairing.
+1. **Connector.** Under `src/connectors/<maker>/`: the protocol, and a `Setup` in `setup.rs` with the steps that add the device (what to ask, a page to open, waiting on the device), listed in `setup::PRODUCTS` and `setup::Flow`. The menu bar and `hearth add` show them without knowing the brand.
 2. **Settings.** In `src/config.rs`: a struct for what the device needs, implementing `Settings` (its id, its name, the HomeKit accessory ids it owns), and a variant of `Device`. Ids, merging between computers and renames then work for it.
 3. **Device.** Under `src/devices/<kind>/<model>/`: a task that keeps the device's state and connection (see `devices::tv::samsung_frame::spawn`), started from `devices::spawn`.
 4. **Capabilities.** In `capabilities.rs` next to it: a `snapshot` from state, and a function from a request to the device's command. Publish with `capabilities::publish`; take requests from `capabilities::listen`.

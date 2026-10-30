@@ -4,6 +4,7 @@ import SwiftUI
 struct Panel: View {
     @ObservedObject var model: BridgeModel
     @ObservedObject var updater: Updater
+    @State private var adding = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,7 +18,10 @@ struct Panel: View {
                 HomeCard(model: model)
                     .padding(.top, 14)
             }
-            if let devices = model.status?.devices, model.running, !devices.isEmpty {
+            if adding {
+                AddDevice(model: model) { adding = false }
+                    .padding(.top, 14)
+            } else if let devices = model.status?.devices, model.running, !devices.isEmpty {
                 VStack(spacing: 8) {
                     ForEach(devices) { device in
                         DeviceCard(model: model, device: device)
@@ -79,6 +83,11 @@ struct Panel: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if model.running {
+                Button("Add a device") { adding = true }
+                    .controlSize(.small)
+                    .padding(.top, 6)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -96,6 +105,15 @@ struct Panel: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .disabled(model.starting)
+                if model.running, !adding {
+                    Button {
+                        adding = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Add a device")
+                }
                 update
                 Spacer()
                 Text("v\(updater.version)")
