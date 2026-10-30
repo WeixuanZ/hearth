@@ -11,7 +11,8 @@
 //! (finer than these sensors). A minute is written when a value changes, and
 //! at least every fifteen minutes while it is still being measured, so a flat
 //! night does not fill the disk and a gap longer than that means the sensor
-//! was off. Rows older than thirty days are dropped.
+//! was off. A minute is appended once it ends, so the file only grows at the
+//! end; rows older than thirty days are dropped once a day.
 
 use crate::config;
 use anyhow::{anyhow, Context, Result};
@@ -31,6 +32,8 @@ pub const INTERVAL_SECS: u64 = 60;
 pub const HEARTBEAT_SECS: u64 = 15 * 60;
 /// How long a sample is kept.
 pub const RETAIN_SECS: u64 = 30 * 24 * 60 * 60;
+/// Old rows are dropped in batches this long, so files are rarely rewritten.
+const COMPACT_SECS: u64 = 24 * 60 * 60;
 const FLUSH_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
 static LOG: Mutex<Option<Log>> = Mutex::new(None);
@@ -79,6 +82,36 @@ pub fn observe(device: &str, readings: &[(&str, f64)]) {
     }
 }
 
+/// Keeps the readings in a status from the computer serving Home, so this
+/// one has the history too if it takes over.
+pub fn observe_status(status: &Value) {
+    for device in status["devices"].as_array().into_iter().flatten() {
+        let readings: Vec<(&str, f64)> = device["capabilities"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|capability| capability["kind"] == "reading" && capability["active"] == true)
+            .filter_map(|capability| {
+                Some((capability["id"].as_str()?, capability["value"].as_f64()?))
+            })
+            .collect();
+        observe(device["id"].as_str().unwrap_or_default(), &readings);
+    }
+}
+
+/// Deletes the history of removed devices, as removals reach this computer.
+pub fn forget_removed<'a>(removed: impl IntoIterator<Item = &'a String>) {
+    let mut guard = lock();
+    let Some(log) = guard.as_mut() else {
+        return;
+    };
+    for device in removed {
+        if log.devices.contains_key(device) {
+            log.forget(device);
+        }
+    }
+}
+
 /// Samples of one reading since `since` (Unix seconds), including the minute
 /// still open. Empty when nothing has been recorded.
 pub fn samples(device: &str, capability: &str, since: u64) -> Vec<(u64, i32)> {
@@ -87,19 +120,6 @@ pub fn samples(device: &str, capability: &str, since: u64) -> Vec<(u64, i32)> {
         .as_ref()
         .map(|log| log.samples(device, capability, since))
         .unwrap_or_default()
-}
-
-/// Deletes a device's file, including from memory when this process records.
-pub fn forget(device: &str) {
-    let mut guard = lock();
-    if let Some(log) = guard.as_mut() {
-        log.forget(device);
-        return;
-    }
-    drop(guard);
-    if let Ok(path) = csv_path(device) {
-        let _ = fs::remove_file(path);
-    }
 }
 
 /// Where a device's CSV is, whether or not it exists yet.
@@ -254,7 +274,7 @@ fn service(force: bool) {
         return;
     };
     log.maintenance(now, force);
-    if let Err(error) = log.write_dirty() {
+    if let Err(error) = log.write() {
         log::warn!("could not save readings: {error:#}");
     }
 }
@@ -280,9 +300,13 @@ struct Log {
 struct DeviceSeries {
     columns: Vec<String>,
     rows: Vec<Row>,
-    /// The last row is the minute underway, and may not be written yet.
+    /// The last row is the minute underway. It stays in memory until it ends.
     open: bool,
-    dirty: bool,
+    /// How many rows, from the first, the file already holds.
+    written: usize,
+    /// The file no longer matches the rows before `written`: a column was
+    /// added, or old rows dropped. Written whole next time.
+    rewrite: bool,
 }
 
 struct Row {
@@ -340,16 +364,8 @@ impl Log {
         series
             .rows
             .iter()
-            .filter_map(|row| {
-                if row.time < since {
-                    return None;
-                }
-                row.values
-                    .get(index)
-                    .copied()
-                    .flatten()
-                    .map(|value| (row.time, value))
-            })
+            .filter(|row| row.time >= since)
+            .filter_map(|row| Some((row.time, row.values.get(index).copied().flatten()?)))
             .collect()
     }
 
@@ -370,9 +386,7 @@ impl Log {
             .copied()
             .filter(|id| id.to_lowercase() == folded)
             .collect();
-        let matches = if exact.len() == 1 {
-            exact
-        } else if exact.is_empty() {
+        let matches = if exact.is_empty() {
             ids.iter()
                 .copied()
                 .filter(|id| id.to_lowercase().contains(&folded))
@@ -392,44 +406,25 @@ impl Log {
         }
     }
 
+    /// Ends minutes that are over, all of them when `force`, and drops what
+    /// is older than the retention window.
     fn maintenance(&mut self, now: u64, force: bool) {
         let minute = minute_start(now);
-        let ids: Vec<String> = self.devices.keys().cloned().collect();
-        for id in ids {
-            let Some(device) = self.devices.get_mut(&id) else {
-                continue;
-            };
-            let stale = device.open && device.rows.last().is_some_and(|row| row.time < minute);
-            if device.open && (force || stale) {
+        for device in self.devices.values_mut() {
+            let ended = device.rows.last().is_some_and(|row| row.time < minute);
+            if device.open && (force || ended) {
                 device.finish(force);
             }
-            device.trim_to(minute);
+            device.compact(now);
         }
     }
 
-    fn write_dirty(&mut self) -> Result<()> {
-        let pending: Vec<String> = self
-            .devices
-            .iter()
-            .filter(|(_, device)| device.dirty)
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in pending {
-            let Some(device) = self.devices.get(&id) else {
-                continue;
-            };
-            let path = self.file(&id);
-            match device.csv() {
-                Some(body) => atomic_write(&path, &body)?,
-                None => {
-                    if path.exists() {
-                        fs::remove_file(&path)?;
-                    }
-                }
-            }
-            if let Some(device) = self.devices.get_mut(&id) {
-                device.dirty = false;
-            }
+    /// Appends the minutes that have ended to each file, or writes it whole
+    /// when it has to change.
+    fn write(&mut self) -> Result<()> {
+        for (id, device) in &mut self.devices {
+            let path = self.dir.join(format!("{}.csv", encode_id(id)));
+            device.save(&path)?;
         }
         Ok(())
     }
@@ -457,10 +452,7 @@ impl Log {
             indexes.push(index);
         }
         let mut by_time = BTreeMap::new();
-        for line in lines {
-            if line.is_empty() {
-                continue;
-            }
+        for line in lines.filter(|line| !line.is_empty()) {
             let fields = parse_line(line);
             let Some(time) = fields.get(time_at).and_then(|text| text.parse().ok()) else {
                 continue;
@@ -471,17 +463,22 @@ impl Log {
                 .collect();
             by_time.insert(time, values);
         }
-        let rows = by_time
+        let rows: Vec<Row> = by_time
             .into_iter()
             .map(|(time, values)| Row { time, values })
             .collect();
+        // A file edited by hand, or out of order, is written back as read.
+        let rewrite = header.first().map(String::as_str) != Some("time")
+            || header.len() != columns.len() + 1
+            || text.lines().skip(1).filter(|line| !line.is_empty()).count() != rows.len();
         self.devices.insert(
             id,
             DeviceSeries {
                 columns,
+                written: rows.len(),
                 rows,
                 open: false,
-                dirty: false,
+                rewrite,
             },
         );
         Ok(())
@@ -493,6 +490,11 @@ impl DeviceSeries {
         let minute = minute_start(unix);
         let column = self.column(capability);
         if self.rows.last().is_some_and(|row| row.time == minute) {
+            // A minute already in the file, as after a quick restart, changes.
+            if !self.open && self.written == self.rows.len() {
+                self.written -= 1;
+                self.rewrite = true;
+            }
             self.open = true;
             self.set(column, milli);
             return;
@@ -507,7 +509,6 @@ impl DeviceSeries {
             values,
         });
         self.open = true;
-        self.dirty = true;
     }
 
     fn column(&mut self, name: &str) -> usize {
@@ -518,41 +519,30 @@ impl DeviceSeries {
         for row in &mut self.rows {
             row.values.push(None);
         }
-        self.dirty = true;
+        self.rewrite = true;
         self.columns.len() - 1
     }
 
     fn set(&mut self, column: usize, milli: i32) {
-        let Some(row) = self.rows.last_mut() else {
-            return;
-        };
-        if row.values.get(column).copied().flatten() == Some(milli) {
-            return;
+        if let Some(row) = self.rows.last_mut() {
+            row.values.resize(row.values.len().max(column + 1), None);
+            row.values[column] = Some(milli);
         }
-        if column >= row.values.len() {
-            row.values.resize(column + 1, None);
-        }
-        row.values[column] = Some(milli);
-        self.dirty = true;
     }
 
+    /// Ends the minute underway: kept if it says something new, or the
+    /// heartbeat is due, or `force` (the process is stopping).
     fn finish(&mut self, force: bool) {
         if !self.open {
             return;
         }
+        self.open = false;
         let has_value = self
             .rows
             .last()
             .is_some_and(|row| row.values.iter().any(Option::is_some));
-        let keep = has_value && (force || self.worth_keeping());
-        self.open = false;
-        if !keep {
+        if !(has_value && (force || self.worth_keeping())) {
             self.rows.pop();
-            self.dirty = true;
-            return;
-        }
-        if let Some(newest) = self.rows.last().map(|row| row.time) {
-            self.trim_to(newest);
         }
     }
 
@@ -566,55 +556,89 @@ impl DeviceSeries {
         open.time.saturating_sub(previous.time) >= HEARTBEAT_SECS || open.values != previous.values
     }
 
-    fn trim_to(&mut self, newest: u64) {
-        let cutoff = newest.saturating_sub(RETAIN_SECS);
-        let end = if self.open {
-            self.rows.len().saturating_sub(1)
-        } else {
-            self.rows.len()
-        };
-        let drop = self.rows[..end]
+    /// Drops rows past the retention window, a day's worth at a time, so the
+    /// file is rewritten about once a day rather than every minute.
+    fn compact(&mut self, now: u64) {
+        let cutoff = now.saturating_sub(RETAIN_SECS);
+        let stale = |row: &Row| row.time < cutoff;
+        if self
+            .rows
+            .first()
+            .is_none_or(|row| row.time + COMPACT_SECS >= cutoff)
+        {
+            return;
+        }
+        let drop = self
+            .rows
             .iter()
-            .position(|row| row.time >= cutoff)
-            .unwrap_or(end);
-        if drop > 0 {
-            self.rows.drain(0..drop);
-            self.dirty = true;
-        }
+            .take(self.rows.len() - usize::from(self.open))
+            .take_while(|row| stale(row))
+            .count();
+        self.rows.drain(..drop);
+        self.written = self.written.saturating_sub(drop);
+        self.rewrite = true;
     }
 
-    /// Rows that belong in the file. The open minute is left out when it
-    /// repeats the previous one and the heartbeat has not elapsed.
-    fn persisted(&self) -> &[Row] {
-        match self.rows.split_last() {
-            Some((_, earlier)) if self.open && !self.worth_keeping() => earlier,
-            _ => &self.rows,
+    fn save(&mut self, path: &Path) -> Result<()> {
+        let ended = self.rows.len() - usize::from(self.open);
+        if self.rewrite || self.written == 0 {
+            if ended == 0 {
+                let _ = fs::remove_file(path);
+            } else {
+                atomic_write(path, &self.csv(&self.rows[..ended]))?;
+            }
+            self.rewrite = false;
+        } else if ended > self.written {
+            let mut body = String::new();
+            for row in &self.rows[self.written..ended] {
+                body.push_str(&line(row));
+            }
+            append(path, &body)?;
         }
+        self.written = ended;
+        Ok(())
     }
 
-    fn csv(&self) -> Option<String> {
-        let rows = self.persisted();
-        if rows.is_empty() {
-            return None;
-        }
+    fn header(&self) -> String {
         let mut out = String::from("time");
         for column in &self.columns {
             out.push(',');
             out.push_str(&escape(column));
         }
         out.push('\n');
-        for row in rows {
-            out.push_str(&row.time.to_string());
-            for value in &row.values {
-                out.push(',');
-                if let Some(value) = value {
-                    out.push_str(&format_value(*value));
-                }
-            }
-            out.push('\n');
-        }
-        Some(out)
+        out
     }
+
+    fn csv(&self, rows: &[Row]) -> String {
+        let mut out = self.header();
+        for row in rows {
+            out.push_str(&line(row));
+        }
+        out
+    }
+}
+
+fn line(row: &Row) -> String {
+    let mut out = row.time.to_string();
+    for value in &row.values {
+        out.push(',');
+        if let Some(value) = value {
+            out.push_str(&format_value(*value));
+        }
+    }
+    out.push('\n');
+    out
+}
+
+fn append(path: &Path, body: &str) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(path)
+        .and_then(|mut file| file.write_all(body.as_bytes()))
+        .with_context(|| format!("could not save {}", path.display()))
 }
 
 fn encode_id(id: &str) -> String {
@@ -723,12 +747,16 @@ mod tests {
         log.note("dyson:ABC", "temperature", 21.4, 10);
         log.note("dyson:ABC", "temperature", 21.8504, 50);
         log.note("dyson:ABC", "humidity", 41.0, 50);
+        // The minute underway is in memory, and written once it ends.
+        log.write().unwrap();
+        assert!(!dir.join("dyson%3AABC.csv").exists());
+        log.maintenance(60, false);
         let samples = log.samples("dyson:ABC", "temperature", 0);
         assert_eq!(samples, vec![(0, 21850)]);
         assert_eq!(format_value(21850), "21.85");
         assert_eq!(format_value(-500), "-0.5");
         assert_eq!(format_value(21000), "21");
-        log.write_dirty().unwrap();
+        log.write().unwrap();
         let text = fs::read_to_string(dir.join("dyson%3AABC.csv")).unwrap();
         assert_eq!(text, "time,temperature,humidity\n0,21.85,41\n");
         let loaded = Log::open(dir).unwrap();
@@ -741,7 +769,7 @@ mod tests {
         let (mut log, dir) = temp_log();
         log.note("dyson:ABC", "pm25", 4.0, 0);
         log.note("dyson:ABC", "pm25", 4.0, 60);
-        log.write_dirty().unwrap();
+        log.write().unwrap();
         let text = fs::read_to_string(dir.join("dyson%3AABC.csv")).unwrap();
         assert_eq!(text, "time,pm25\n0,4\n");
         // Still in memory, so a chart drawn now reaches the current minute.
@@ -752,7 +780,14 @@ mod tests {
 
         log.note("dyson:ABC", "pm25", 9.0, 120);
         log.note("dyson:ABC", "pm25", 9.0, 120 + HEARTBEAT_SECS);
-        log.write_dirty().unwrap();
+        // As when the process stops: the minute underway is kept too.
+        log.maintenance(120 + HEARTBEAT_SECS, true);
+        log.write().unwrap();
+        let text = fs::read_to_string(dir.join("dyson%3AABC.csv")).unwrap();
+        assert_eq!(
+            text,
+            format!("time,pm25\n0,4\n120,9\n{},9\n", 120 + HEARTBEAT_SECS)
+        );
         let loaded = Log::open(dir).unwrap();
         assert_eq!(
             loaded.samples("dyson:ABC", "pm25", 0),
@@ -762,7 +797,8 @@ mod tests {
     }
 
     #[test]
-    fn rows_older_than_the_retention_window_are_dropped() {
+    fn old_rows_are_dropped_a_day_at_a_time() {
+        let day = 24 * 60 * 60;
         let mut device = DeviceSeries {
             columns: vec!["temperature".into()],
             rows: vec![
@@ -771,22 +807,49 @@ mod tests {
                     values: vec![Some(1000)],
                 },
                 Row {
-                    time: 31 * 24 * 60 * 60,
+                    time: 2 * day,
                     values: vec![Some(2000)],
                 },
             ],
+            written: 2,
             ..DeviceSeries::default()
         };
-        device.trim_to(31 * 24 * 60 * 60);
+        // A few hours past the window: kept until a day's worth is due.
+        device.compact(RETAIN_SECS + 3600);
+        assert_eq!((device.rows.len(), device.rewrite), (2, false));
+        device.compact(RETAIN_SECS + day + 3600);
         assert_eq!(device.rows.len(), 1);
-        assert_eq!(device.rows[0].time, 31 * 24 * 60 * 60);
+        assert_eq!(
+            (device.rows[0].time, device.written, device.rewrite),
+            (2 * day, 1, true)
+        );
+    }
+
+    #[test]
+    fn ended_minutes_are_appended_and_a_new_column_rewrites() {
+        let (mut log, dir) = temp_log();
+        let path = dir.join("dyson%3AABC.csv");
+        log.note("dyson:ABC", "pm25", 4.0, 0);
+        log.note("dyson:ABC", "pm25", 5.0, 60);
+        log.note("dyson:ABC", "pm25", 6.0, 120);
+        log.write().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "time,pm25\n0,4\n60,5\n");
+        log.note("dyson:ABC", "humidity", 40.0, 120);
+        log.note("dyson:ABC", "pm25", 7.0, 180);
+        log.write().unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "time,pm25,humidity\n0,4,\n60,5,\n120,6,40\n"
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
     fn a_slash_in_an_id_cannot_escape_the_directory() {
         let (mut log, dir) = temp_log();
         log.note("frame:a/b", "temperature", 20.0, 0);
-        log.write_dirty().unwrap();
+        log.maintenance(0, true);
+        log.write().unwrap();
         let name = dir.join("frame%3Aa%2Fb.csv");
         assert!(name.is_file());
         assert!(!dir.join("frame:a").exists());

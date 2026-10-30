@@ -304,7 +304,7 @@ The menu bar, the CLI, the socket and the group need no changes.
 
 ### On disk
 
-Under `~/.config/hearth/`: `config.toml` (the bridge and devices, shared by the group), `homekit/` (the bridge's keys and Home's pairings, shared), `group.json` (the group key, 0600, never sent after joining), `node` (this computer's id), `control.sock`, `hearth.log`, and `series/` (one CSV of readings per device, mode 0600, kept for 30 days). The computer serving Home records from the device. Another computer records what it sees, and asks the one serving when you look, so the menu bar and `hearth history` work from either.
+Under `~/.config/hearth/`: `config.toml` (the bridge and devices, shared by the group), `homekit/` (the bridge's keys and Home's pairings, shared), `group.json` (the group key, 0600, never sent after joining), `node` (this computer's id), `control.sock`, `hearth.log`, and `series/` (one CSV of readings per device, mode 0600, kept for 30 days). The computer serving Home records from the devices; one on standby copies the readings once a minute, so its history is complete if it takes over. The menu bar and `hearth history` ask the one serving, from any computer. Removing a device deletes its history on every computer.
 
 ### Build, test and release
 

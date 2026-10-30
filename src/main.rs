@@ -185,24 +185,8 @@ async fn main() -> Result<()> {
         Command::Rename { device, name } => cli::rename(&device, &name, cli.json).await?,
         Command::Remove { device } => {
             let mut config = config::load()?;
-            let id = config
-                .devices
-                .iter()
-                .find(|item| item.id() == device || item.name().eq_ignore_ascii_case(device.trim()))
-                .map(|item| item.id());
             let name = config::remove(&mut config, &device)?;
             config::save(&config)?;
-            if let Some(id) = id {
-                if surfaces::control::running().await {
-                    surfaces::control::request(
-                        serde_json::json!({ "op": "history_forget", "device": id }),
-                    )
-                    .await
-                    .ok();
-                } else {
-                    series::forget(&id);
-                }
-            }
             println!("Removed {name}.");
         }
         Command::Group { command } => {

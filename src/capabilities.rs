@@ -225,18 +225,8 @@ pub fn publish(mut snapshot: Snapshot) {
     let readings: Vec<(&str, f64)> = snapshot
         .capabilities
         .iter()
-        .filter_map(|capability| {
-            let Kind::Reading { .. } = capability.kind else {
-                return None;
-            };
-            if !capability.active {
-                return None;
-            }
-            capability
-                .value
-                .as_f64()
-                .map(|value| (capability.id, value))
-        })
+        .filter(|capability| matches!(capability.kind, Kind::Reading { .. }) && capability.active)
+        .filter_map(|capability| Some((capability.id, capability.value.as_f64()?)))
         .collect();
     crate::series::observe(&snapshot.id, &readings);
     with(|registry| {
@@ -316,8 +306,13 @@ pub fn status() -> Option<Value> {
 
 /// One device's snapshot, as JSON.
 pub fn get(device: &str) -> Result<Value> {
+    snapshot(device).map(|snapshot| json!(snapshot))
+}
+
+/// One device's snapshot.
+pub fn snapshot(device: &str) -> Result<Snapshot> {
     with(|registry| {
-        find(&registry.devices, device).map(|index| json!(registry.devices[index].snapshot))
+        find(&registry.devices, device).map(|index| registry.devices[index].snapshot.clone())
     })
     .ok_or_else(|| anyhow!("the bridge is starting"))?
 }
