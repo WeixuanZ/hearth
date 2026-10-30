@@ -15,6 +15,7 @@ use crate::{
     capabilities,
     config::{self, Config},
     run::Serving,
+    series,
     surfaces::control,
 };
 use anyhow::{anyhow, Context, Result};
@@ -171,6 +172,7 @@ async fn step(
     let now = now();
     heard.retain(|_, peer| now.saturating_sub(peer.seen) < 2 * FRESH_MS);
     *config = config::load()?;
+    series::forget_removed(config.removed.keys());
     let files = Files::read()?;
     let (id, name, key) = with(|group| (group.id.clone(), group.name.clone(), group.key.clone()))?;
 
@@ -238,10 +240,20 @@ async fn step(
         }
         Role::Standby { .. } => {
             *serving = None;
-            fresh
+            let leader = fresh
                 .iter()
                 .find(|peer| peer.hello.serving && peer.hello.bridge == config.bridge_id)
-                .map(|peer| SocketAddr::new(peer.addr, peer.hello.port))
+                .map(|peer| SocketAddr::new(peer.addr, peer.hello.port));
+            // A copy of the readings history, there if this one takes over.
+            if let (Some(leader), true) = (leader, now % 60_000 < TICK.as_millis() as u64) {
+                let request = Request::Control {
+                    request: json!({ "op": "status" }),
+                };
+                if let Ok(status) = ask(leader, &key, &request).await {
+                    series::observe_status(&status);
+                }
+            }
+            leader
         }
         Role::Looking => {
             *serving = None;

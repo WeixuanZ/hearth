@@ -19,7 +19,7 @@ plutil -replace CFBundleShortVersionString -string "$version" "$app/Contents/Inf
 
 swiftc -O -parse-as-library \
   -target "${arch}-apple-macosx13.0" \
-  -framework SwiftUI -framework AppKit \
+  -framework SwiftUI -framework AppKit -framework Charts \
   -o "$app/Contents/MacOS/Hearth" \
   ./*.swift
 

@@ -1,7 +1,8 @@
 //! What the CLI prints: tables for people, JSON for scripts and agents.
 
-use crate::{config, surfaces::control};
+use crate::{config, series, surfaces::control};
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, Local};
 use serde_json::{json, Value};
 use std::io::IsTerminal;
 
@@ -59,6 +60,34 @@ pub async fn get(device: &str, capability: Option<&str>, as_json: bool) -> Resul
         print_json(capability)
     } else {
         println!("{}", value_text(capability));
+        Ok(())
+    }
+}
+
+/// Readings over the last `hours`. Talks to the bridge when it is running, so
+/// any computer in the group sees the same series, and reads the local CSV
+/// when it is not.
+pub async fn history(
+    device: &str,
+    capability: Option<&str>,
+    hours: u64,
+    as_json: bool,
+) -> Result<()> {
+    let value = if control::running().await {
+        control::request(json!({
+            "op": "history",
+            "device": device,
+            "capability": capability,
+            "hours": hours,
+        }))
+        .await?
+    } else {
+        series::offline_document(device, capability, hours)?
+    };
+    if as_json {
+        print_json(&value)
+    } else {
+        print_history(&value);
         Ok(())
     }
 }
@@ -148,6 +177,155 @@ pub async fn group(op: Option<Value>, as_json: bool) -> Result<()> {
 fn print_json(value: &Value) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+fn print_history(value: &Value) {
+    let style = Style::detect();
+    let device = value["name"].as_str().unwrap_or("device");
+    let hours = value["hours"].as_u64().unwrap_or(24);
+    let path = value["path"].as_str().unwrap_or("");
+    let series = value["series"].as_array();
+    let Some(series) = series else {
+        println!("{device} has no readings.");
+        return;
+    };
+    if series.is_empty() {
+        println!("{device} has no readings.");
+        return;
+    }
+    for (index, reading) in series.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        print_reading(device, reading, hours, &style);
+    }
+    if !path.is_empty() {
+        println!();
+        println!("{}", style.dim(path));
+    }
+}
+
+fn print_reading(device: &str, reading: &Value, hours: u64, style: &Style) {
+    let name = reading["name"].as_str().unwrap_or("reading");
+    let unit = reading["unit"].as_str().unwrap_or("");
+    let samples: Vec<(u64, f64)> = reading["samples"]
+        .as_array()
+        .map(|samples| {
+            samples
+                .iter()
+                .filter_map(|sample| Some((sample["t"].as_u64()?, sample["v"].as_f64()?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    let span = if hours == 1 {
+        "last hour".to_owned()
+    } else {
+        format!("last {hours} hours")
+    };
+    println!(
+        "{}  {}",
+        style.bold(&format!("{device} · {name}")),
+        style.dim(&span)
+    );
+    if samples.is_empty() {
+        println!("No readings in the {span}.");
+        return;
+    }
+    let latest = samples.last().map(|(_, value)| *value).unwrap_or(0.0);
+    let min = samples
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(f64::INFINITY, f64::min);
+    let max = samples
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(f64::NEG_INFINITY, f64::max);
+    println!(
+        "{} now    {} min    {} max    {} {}",
+        with_unit(latest, unit),
+        with_unit(min, unit),
+        with_unit(max, unit),
+        samples.len(),
+        if samples.len() == 1 {
+            "sample"
+        } else {
+            "samples"
+        }
+    );
+    let line = sparkline(&samples);
+    println!("{line}");
+    if let (Some((start, _)), Some((end, _))) = (samples.first(), samples.last()) {
+        let start = clock(*start, hours);
+        let end = clock(*end, hours);
+        let gap = line
+            .chars()
+            .count()
+            .saturating_sub(start.chars().count() + end.chars().count());
+        println!("{}", style.dim(&format!("{start}{}{end}", " ".repeat(gap))));
+    }
+}
+
+fn with_unit(value: f64, unit: &str) -> String {
+    let text = series::milli_of(value).map_or_else(|| format!("{value}"), series::format_value);
+    if unit.is_empty() {
+        text
+    } else {
+        format!("{text} {unit}")
+    }
+}
+
+fn clock(unix: u64, hours: u64) -> String {
+    let Some(time) = DateTime::from_timestamp(unix as i64, 0) else {
+        return String::new();
+    };
+    let pattern = if hours > 48 { "%m-%d %H:%M" } else { "%H:%M" };
+    time.with_timezone(&Local).format(pattern).to_string()
+}
+
+/// 48 columns across the whole span. A blank is a gap, not a zero.
+fn sparkline(samples: &[(u64, f64)]) -> String {
+    const WIDTH: usize = 48;
+    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let Some((start, _)) = samples.first() else {
+        return String::new();
+    };
+    let Some((end, _)) = samples.last() else {
+        return String::new();
+    };
+    if samples.len() == 1 || start == end {
+        return "▄".to_owned();
+    }
+    let span = end.saturating_sub(*start).max(1);
+    let mut bins: Vec<Vec<f64>> = vec![Vec::new(); WIDTH];
+    for (time, value) in samples {
+        let index = ((*time - start) as u128 * (WIDTH as u128 - 1) / span as u128) as usize;
+        bins[index.min(WIDTH - 1)].push(*value);
+    }
+    let averages: Vec<Option<f64>> = bins
+        .iter()
+        .map(|bin| {
+            if bin.is_empty() {
+                None
+            } else {
+                Some(bin.iter().sum::<f64>() / bin.len() as f64)
+            }
+        })
+        .collect();
+    let known: Vec<f64> = averages.iter().copied().flatten().collect();
+    let min = known.iter().copied().fold(f64::INFINITY, f64::min);
+    let max = known.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let range = max - min;
+    averages
+        .into_iter()
+        .map(|value| match value {
+            None => ' ',
+            Some(_) if range < f64::EPSILON => '▄',
+            Some(value) => {
+                let scaled = ((value - min) / range * (BLOCKS.len() - 1) as f64).round() as usize;
+                BLOCKS[scaled.min(BLOCKS.len() - 1)]
+            }
+        })
+        .collect()
 }
 
 fn print_device(device: &Value, style: &Style) {

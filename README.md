@@ -47,7 +47,7 @@ hearth frame pair
 
 ## Use it
 
-**Menu bar.** The bridge, which computer serves Home, the pairing code while Home does not have it yet, and each device. Click a device to open its controls, drawn from its capabilities: toggles, choices, sliders, a remote, and readings.
+**Menu bar.** The bridge, which computer serves Home, the pairing code while Home does not have it yet, and each device. Click a device to open its controls, drawn from its capabilities: toggles, choices, sliders, a remote, and readings. Hover a reading — temperature, humidity, PM2.5 — and the last 24 hours draw under it.
 
 **CLI.** Talks to the running bridge, so it shares the devices' connections and answers in milliseconds, from any computer in the group.
 
@@ -55,6 +55,8 @@ hearth frame pair
 hearth devices                    # every device, each capability, what it accepts
 hearth get tv                     # one device
 hearth get purifier temperature
+hearth history purifier temperature
+hearth history purifier --hours 168
 hearth set tv power on
 hearth set tv input hdmi2
 hearth set tv remote select
@@ -116,7 +118,7 @@ sudo loginctl enable-linger "$USER"   # keep it up while logged out
 
 - **Dyson heat and power.** Heat, or a heat target, turns the fan on, since it heats only while it blows; turning the fan off ends heat, so it does not come back by itself. The fan also stops heating when jet focus is turned off.
 - **Dyson oscillation.** Home has no angle, so the purifier has a switch for each sweep the Dyson app offers. The menu bar and CLI pick the sweep directly.
-- **Dyson sensors.** The fan measures while it runs, or while it is off with continuous monitoring on. Otherwise its sensors show as inactive.
+- **Dyson sensors.** The fan measures while it runs, or while it is off with continuous monitoring on. Otherwise its sensors show as inactive. While they are measuring, hearth keeps them: one sample a minute, written when a value changes and at least every fifteen minutes, for thirty days. `hearth history purifier temperature` prints them, and hovering the number in the menu bar draws the last day. The file is CSV, one per device, under `~/.config/hearth/series/`, so a spreadsheet or pandas can open it. The column `time` is Unix seconds. An empty cell means that reading was not being measured.
 - **Dyson address.** Set `host` on the fan in the config if it does not announce itself on the network.
 - **Frame art mode** is on only while the TV is: asking for art mode turns the TV on, and turning it off ends art mode. It is a tile of its own, because Home shows a TV only as power and an input picker. An input with nothing plugged in is refused. Without IP Control, inputs fall back to remote keys, which newer firmware ignores.
 - **Frame remote.** Arrows, select, back and volume are in Control Center's remote, which keeps one connection to the TV open, so keys land at once.
@@ -166,6 +168,7 @@ flowchart TB
 ```text
 src/
   capabilities.rs         the vocabulary, device snapshots, and the registry
+  series.rs               readings over time, as CSV
   config.rs               config.toml: Settings for each kind, dates, merging two copies
   connectors/dyson/       MyDyson login, MQTT, the fan's messages
   connectors/samsung/     pairing, the remote and art channels, IP Control
@@ -274,8 +277,11 @@ A computer that serves keeps serving, so a laptop that wakes up does not take Ho
 {"op":"get","device":"tv"}                                        → one device
 {"op":"set","device":"tv","capability":"input","value":"hdmi2"}  → {"ok":true} or {"error":"…"}
 {"op":"rename","device":"tv","name":"Living room TV"}              → {"ok":true}, and Home follows
+{"op":"history","device":"purifier","capability":"temperature","hours":24}
 {"op":"approve","code":"482 193"}   {"op":"decline"}   {"op":"confirm"}   {"op":"separate"}   {"op":"join"}
 ```
+
+`history` answers every reading when `capability` is left out. `hours` defaults to 24 and stops at 720, which is as far as the files go. Each sample is `{"t": <unix seconds>, "v": <number>}`. The reply names the CSV, under `series/`.
 
 The status has a `group`: this computer's `role` (`serving`, `standby`, `joining`, `looking`), who serves, the members, and any request to join.
 
@@ -298,7 +304,7 @@ The menu bar, the CLI, the socket and the group need no changes.
 
 ### On disk
 
-Under `~/.config/hearth/`: `config.toml` (the bridge and devices, shared by the group), `homekit/` (the bridge's keys and Home's pairings, shared), `group.json` (the group key, 0600, never sent after joining), `node` (this computer's id), `control.sock`, and `hearth.log`.
+Under `~/.config/hearth/`: `config.toml` (the bridge and devices, shared by the group), `homekit/` (the bridge's keys and Home's pairings, shared), `group.json` (the group key, 0600, never sent after joining), `node` (this computer's id), `control.sock`, `hearth.log`, and `series/` (one CSV of readings per device, mode 0600, kept for 30 days). The computer serving Home records from the devices; one on standby copies the readings once a minute, so its history is complete if it takes over. The menu bar and `hearth history` ask the one serving, from any computer. Removing a device deletes its history on every computer.
 
 ### Build, test and release
 

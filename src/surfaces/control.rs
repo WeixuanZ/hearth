@@ -12,6 +12,8 @@
 //!   → {"ok":true}  or  {"error":"…"}
 //! {"op":"rename","device":"tv","name":"Living room TV"}
 //!   → {"ok":true}, and Home shows the new name
+//! {"op":"history","device":"purifier","capability":"temperature","hours":24}
+//!   → readings for that long, one point a minute at most
 //! ```
 //!
 //! On a computer that is not serving Home, device requests go on to the one
@@ -29,7 +31,10 @@
 //! The socket is mode 0600 and never on the network, so only this user can
 //! control the devices. State is served from memory, so a reply is immediate.
 
-use crate::{capabilities, cluster, config};
+use crate::{
+    capabilities::{self, Capability, Kind},
+    cluster, config, series,
+};
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -54,6 +59,13 @@ enum Request {
     Rename {
         device: String,
         name: String,
+    },
+    History {
+        device: String,
+        #[serde(default)]
+        capability: Option<String>,
+        #[serde(default)]
+        hours: Option<u64>,
     },
     Approve {
         code: String,
@@ -155,6 +167,12 @@ pub async fn here(value: Value) -> Value {
             value,
         }) => done(capabilities::set(&device, &capability, value).await),
         Ok(Request::Rename { device, name }) => done(capabilities::rename(&device, &name)),
+        Ok(Request::History {
+            device,
+            capability,
+            hours,
+        }) => history(&device, capability.as_deref(), hours.unwrap_or(24))
+            .unwrap_or_else(|error| json!({ "error": format!("{error:#}") })),
         Ok(_) => json!({ "error": "not a device request" }),
         Err(error) => json!({ "error": format!("bad request: {error}") }),
     }
@@ -176,6 +194,50 @@ fn done(result: Result<()>) -> Value {
         Ok(()) => json!({ "ok": true }),
         Err(error) => json!({ "error": format!("{error:#}") }),
     }
+}
+
+/// A device's readings over the last `hours`, from this computer's record.
+fn history(device: &str, capability: Option<&str>, hours: u64) -> Result<Value> {
+    let snapshot = capabilities::snapshot(device)?;
+    let readings: Vec<(&Capability, &str)> = snapshot
+        .capabilities
+        .iter()
+        .filter(|reading| capability.is_none_or(|wanted| reading.id == wanted))
+        .filter_map(|reading| match reading.kind {
+            Kind::Reading { unit } => Some((reading, unit)),
+            _ => None,
+        })
+        .collect();
+    if let (Some(wanted), true) = (capability, readings.is_empty()) {
+        if snapshot.capabilities.iter().any(|item| item.id == wanted) {
+            anyhow::bail!("{wanted} is not a reading");
+        }
+        anyhow::bail!("{} has no capability {wanted}", snapshot.name);
+    }
+    let (hours, since) = series::window(hours, series::unix_now());
+    let samples: Vec<_> = readings
+        .iter()
+        .map(|(reading, _)| series::samples(&snapshot.id, reading.id, since))
+        .collect();
+    let views: Vec<_> = readings
+        .iter()
+        .zip(&samples)
+        .map(|((reading, unit), samples)| series::SeriesOut {
+            capability: reading.id,
+            name: &reading.name,
+            unit,
+            samples,
+        })
+        .collect();
+    let path = series::csv_path(&snapshot.id)?;
+    Ok(series::document(
+        &snapshot.id,
+        &snapshot.name,
+        &path,
+        hours,
+        since,
+        &views,
+    ))
 }
 
 /// Whether a bridge is answering on the socket.

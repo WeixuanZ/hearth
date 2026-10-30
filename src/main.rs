@@ -4,6 +4,7 @@ mod config;
 mod connectors;
 mod devices;
 mod run;
+mod series;
 mod surfaces;
 
 use anyhow::Result;
@@ -22,12 +23,15 @@ Examples:
   hearth set purifier speed 4
   hearth set purifier sweep 90
   hearth get purifier temperature --json
+  hearth history purifier temperature
+  hearth history purifier --hours 168 --json
   hearth rename tv \"Living room TV\"  Renames it in Home too
   hearth group                       Which computer serves Home
 
 A device is its id, name, connector (dyson, frame), kind (purifier, tv), or a
 part of its name. A value is on or off, a number, or an option id listed by
-`hearth devices`. devices, get and set talk to the running bridge.";
+`hearth devices`. devices, get, set and history talk to the running bridge.
+history also reads the saved files when the bridge is stopped.";
 
 #[derive(Parser)]
 #[command(
@@ -54,6 +58,16 @@ enum Command {
         device: String,
         /// Like power, input or temperature. All of them if left out.
         capability: Option<String>,
+    },
+    /// Show readings over time: temperature, humidity, air quality.
+    History {
+        /// Id, name, connector, kind, or part of a name.
+        device: String,
+        /// Like temperature or pm25. All readings if left out.
+        capability: Option<String>,
+        /// How far back to look, up to 720 (30 days).
+        #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u64).range(1..=720))]
+        hours: u64,
     },
     /// Change a capability, like power, an input or a speed.
     Set {
@@ -156,6 +170,11 @@ async fn main() -> Result<()> {
         Command::Get { device, capability } => {
             cli::get(&device, capability.as_deref(), cli.json).await?
         }
+        Command::History {
+            device,
+            capability,
+            hours,
+        } => cli::history(&device, capability.as_deref(), hours, cli.json).await?,
         Command::Set {
             device,
             capability,

@@ -1,4 +1,5 @@
 import AppKit
+import Charts
 import SwiftUI
 
 /// A device: a summary that opens, in place, into controls made from its
@@ -126,14 +127,10 @@ struct DeviceCard: View {
 
     @ViewBuilder
     private var summary: some View {
-        let readings = all("reading").filter(\.active).prefix(3)
+        let readings = Array(all("reading").filter(\.active).prefix(3))
         if !readings.isEmpty {
-            HStack(alignment: .top, spacing: 16) {
-                ForEach(Array(readings)) { reading in
-                    ReadingView(reading: reading)
-                }
-            }
-            .padding(.leading, 24)
+            Readings(device: device, readings: readings, grid: false)
+                .padding(.leading, 24)
         }
     }
 
@@ -152,16 +149,8 @@ struct DeviceCard: View {
             }
             let readings = all("reading")
             if !readings.isEmpty {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 76), alignment: .leading)],
-                    alignment: .leading,
-                    spacing: 8
-                ) {
-                    ForEach(readings) { reading in
-                        ReadingView(reading: reading)
-                    }
-                }
-                .padding(.top, 2)
+                Readings(device: device, readings: readings, grid: true)
+                    .padding(.top, 2)
             }
         }
         .padding(.leading, 24)
@@ -445,6 +434,105 @@ private final class KeyboardRemote {
     }
 }
 
+private struct Readings: View {
+    let device: Device
+    let readings: [Capability]
+    /// Three in a row, or a wrapping grid when the card is open.
+    var grid: Bool
+    @State private var hovered: String?
+    @State private var cache: [String: HistorySeries] = [:]
+    @State private var fetched: [String: Date] = [:]
+    @State private var loading: String?
+    @State private var failure: String?
+    @State private var interval = 60
+    @State private var heartbeat = 900
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if grid {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 76), alignment: .leading)],
+                    alignment: .leading,
+                    spacing: 8
+                ) {
+                    ForEach(readings) { reading in
+                        cell(reading)
+                    }
+                }
+            } else {
+                HStack(alignment: .top, spacing: 16) {
+                    ForEach(readings) { reading in
+                        cell(reading)
+                    }
+                }
+            }
+            if let hovered, let reading = readings.first(where: { $0.id == hovered }) {
+                ReadingHistory(
+                    reading: reading,
+                    series: cache[hovered],
+                    interval: interval,
+                    heartbeat: heartbeat,
+                    loading: loading == hovered && cache[hovered] == nil,
+                    failure: cache[hovered] == nil ? failure : nil
+                )
+            }
+        }
+        .onHover { inside in
+            // Cleared here, not on the number, so the pointer can move onto the chart.
+            if !inside { hovered = nil }
+        }
+    }
+
+    private func cell(_ reading: Capability) -> some View {
+        ReadingView(reading: reading)
+            .padding(.vertical, 1)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside {
+                    hovered = reading.id
+                    load(reading.id)
+                }
+            }
+    }
+
+    /// The last day is enough to glance at, and small enough to ask for on hover.
+    private func load(_ id: String) {
+        if let at = fetched[id], cache[id] != nil, Date().timeIntervalSince(at) < 60 {
+            return
+        }
+        if loading == id { return }
+        loading = id
+        failure = nil
+        let deviceId = device.id
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let data = try ControlSocket.request([
+                    "op": "history",
+                    "device": deviceId,
+                    "capability": id,
+                    "hours": 24,
+                ])
+                let reply = try JSONDecoder().decode(HistoryReply.self, from: data)
+                let series = reply.series.first ?? HistorySeries(
+                    capability: id, name: id, unit: "", samples: [])
+                DispatchQueue.main.async {
+                    cache[id] = series
+                    fetched[id] = Date()
+                    interval = reply.interval
+                    heartbeat = reply.heartbeat
+                    if loading == id { loading = nil }
+                }
+            } catch {
+                let message = (error as? ControlSocket.Failure)?.message ?? "Couldn't load history"
+                DispatchQueue.main.async {
+                    failure = message
+                    if loading == id { loading = nil }
+                }
+            }
+        }
+    }
+}
+
 private struct ReadingView: View {
     let reading: Capability
 
@@ -459,6 +547,123 @@ private struct ReadingView: View {
                 .lineLimit(1)
         }
         .opacity(reading.active ? 1 : 0.45)
+    }
+}
+
+private struct PlotPoint: Identifiable {
+    let id: Int
+    let time: Date
+    let value: Double
+    /// Breaks the line across a gap, so an hour switched off is not a slope.
+    let segment: Int
+}
+
+private struct ReadingHistory: View {
+    let reading: Capability
+    let series: HistorySeries?
+    let interval: Int
+    let heartbeat: Int
+    let loading: Bool
+    let failure: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let series, !series.samples.isEmpty {
+                chart(series)
+                    .frame(height: 88)
+            }
+            Text(caption)
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func chart(_ series: HistorySeries) -> some View {
+        let points = plots(series)
+        let values = series.samples.map(\.v)
+        let low = values.min() ?? 0
+        let high = values.max() ?? 0
+        let pad = max((high - low) * 0.2, 0.5)
+        return Chart(points) { point in
+            LineMark(
+                x: .value("Time", point.time),
+                y: .value(reading.name, point.value),
+                series: .value("Run", point.segment)
+            )
+            .interpolationMethod(.linear)
+            .foregroundStyle(Color.primary.opacity(0.85))
+            if points.count < 2 {
+                PointMark(
+                    x: .value("Time", point.time),
+                    y: .value(reading.name, point.value)
+                )
+                .foregroundStyle(Color.primary.opacity(0.85))
+            }
+        }
+        .chartYScale(domain: (low - pad)...(high + pad))
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 3)) { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let date = value.as(Date.self) {
+                        Text(date, format: .dateTime.hour())
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+        .chartYAxis {
+            AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let number = value.as(Double.self) {
+                        Text(format(number, nil))
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+        }
+        .chartLegend(.hidden)
+    }
+
+    private func plots(_ series: HistorySeries) -> [PlotPoint] {
+        var points: [PlotPoint] = []
+        var segment = 0
+        var previous: Double?
+        let breakAfter = Double(heartbeat + interval)
+        for (index, sample) in series.samples.enumerated() {
+            if let previous, sample.t - previous > breakAfter {
+                segment += 1
+            }
+            previous = sample.t
+            points.append(PlotPoint(
+                id: index,
+                time: Date(timeIntervalSince1970: sample.t),
+                value: sample.v,
+                segment: segment
+            ))
+        }
+        return points
+    }
+
+    private var caption: String {
+        if let failure, series == nil {
+            return failure
+        }
+        guard let series else {
+            return loading ? "Loading the last 24 hours…" : "No readings in the last 24 hours"
+        }
+        guard let low = series.samples.map(\.v).min(), let high = series.samples.map(\.v).max() else {
+            return "No readings in the last 24 hours"
+        }
+        if abs(high - low) < 0.0005 {
+            return "\(format(low, reading.unit)) · 24 hours"
+        }
+        return "\(format(low, reading.unit))–\(format(high, reading.unit)) · 24 hours"
     }
 }
 
