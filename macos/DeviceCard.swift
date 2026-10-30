@@ -159,13 +159,16 @@ struct DeviceCard: View {
         .padding(.leading, 24)
     }
 
-    private var symbol: String {
-        switch device.category {
-        case "purifier": return "fanblades"
-        case "tv": return "tv"
-        case "dishwasher": return "dishwasher"
-        default: return "circle.dashed"
-        }
+    private var symbol: String { categorySymbol(device.category) }
+}
+
+/// The icon for a kind of device.
+func categorySymbol(_ category: String) -> String {
+    switch category {
+    case "purifier": return "fanblades"
+    case "tv": return "tv"
+    case "dishwasher": return "dishwasher"
+    default: return "circle.dashed"
     }
 }
 

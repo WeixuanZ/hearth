@@ -1,8 +1,8 @@
 //! One Home Connect sign-in.
 //!
 //! The account password is typed into Home Connect's own page. The PKCE
-//! verifier is kept only until the local key is stored, then deleted. The
-//! access token is not written down.
+//! verifier and the access token live in memory, only while the sign-in
+//! lasts; nothing but the dishwasher's local key is written down.
 
 use super::protocol::label_of;
 use super::xml;
@@ -10,10 +10,9 @@ use crate::config::{self, BoschDevice};
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{fs, path::Path, time::Duration};
+use std::time::Duration;
 
 const CLIENT_ID: &str = "9B75AC9EC512F36C84256AC47D813E2C1DD0D6520DF774B020E1E6E2EB29B1F3";
 const REDIRECT: &str = "hcauth://auth/prod";
@@ -24,26 +23,44 @@ const REGIONS: &[&str] = &[
     "https://na.services.home-connect.com",
 ];
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Pending {
+/// A sign-in under way, until Home Connect sends the browser back.
+pub struct SignIn {
     verifier: String,
     state: String,
     nonce: String,
-    #[serde(default)]
-    host: Option<String>,
-    #[serde(default)]
-    id: Option<String>,
 }
 
-impl Pending {
-    fn fresh(host: Option<String>, id: Option<String>) -> Self {
+impl SignIn {
+    pub fn new() -> Self {
         Self {
             verifier: random_b64(32),
             state: random_b64(16),
             nonce: random_b64(16),
-            host,
-            id,
         }
+    }
+
+    /// Home Connect's own sign-in page.
+    pub fn address(&self) -> String {
+        self.authorize_url()
+    }
+
+    /// Trades the address the browser was sent to for the account's dishwashers.
+    pub async fn finish(&self, redirect: &str) -> Result<Account> {
+        let (code, state) = parse_redirect(redirect)?;
+        if state.is_some_and(|state| state != self.state) {
+            anyhow::bail!("that address is from another sign-in. Start again");
+        }
+        let client = http()?;
+        let token = access_token(&client, self, &code).await?;
+        let account = subject(&token)?;
+        let (region, body) = appliances(&client, &token, &account).await?;
+        let dishwashers = candidates(parse_appliances(&body), None)?;
+        Ok(Account {
+            client,
+            token,
+            region,
+            dishwashers,
+        })
     }
 
     fn authorize_url(&self) -> String {
@@ -57,90 +74,48 @@ impl Pending {
     }
 }
 
-pub async fn login(host: Option<String>, id: Option<String>) -> Result<()> {
-    let pending = Pending::fresh(host, id);
-    save_pending(&pending)?;
-    println!("Open this address and sign in to Home Connect.");
-    println!("When the browser is sent to an hcauth address, copy that whole address.");
-    println!("The account password is not saved.");
-    println!();
-    println!("{}", pending.authorize_url());
-    println!();
-    let redirect = crate::prompt("Paste the hcauth address (or the code): ")?;
-    finish(&pending, &redirect).await
+/// A signed-in account, while someone chooses which dishwasher to add.
+pub struct Account {
+    client: reqwest::Client,
+    token: String,
+    region: String,
+    pub dishwashers: Vec<Found>,
 }
 
-pub async fn submit(
-    redirect: Option<String>,
-    host: Option<String>,
-    id: Option<String>,
-) -> Result<()> {
-    let mut pending = load_pending()?;
-    if host.is_some() {
-        pending.host = host;
+impl Account {
+    /// Saves a dishwasher with its local key and feature map. `host` when
+    /// its own name does not resolve. Returns its name.
+    pub async fn add(&self, chosen: &Found, host: Option<&str>) -> Result<String> {
+        let keys = encryption(&self.client, &self.region, &self.token, &chosen.ha_id).await?;
+        let bytes = description(&self.client, &self.region, &self.token, &chosen.ha_id).await?;
+        let features = xml::features_from_zip(&bytes)?;
+        let host = host
+            .map(str::trim)
+            .filter(|host| !host.is_empty())
+            .map_or_else(
+                || discovered_host(chosen, keys.iv.is_empty()),
+                str::to_owned,
+            );
+        let device = BoschDevice {
+            aid: 0,
+            door_aid: 0,
+            leak_aid: 0,
+            cycle_aid: 0,
+            name: display_name(chosen),
+            brand: pretty_brand(&chosen.brand),
+            model: chosen.model.clone(),
+            ha_id: chosen.ha_id.clone(),
+            host,
+            key: keys.key,
+            iv: keys.iv,
+            features,
+        };
+        let name = device.name.clone();
+        let mut saved = config::load_or_new()?;
+        config::upsert_bosch(&mut saved, device);
+        config::save(&saved)?;
+        Ok(name)
     }
-    if id.is_some() {
-        pending.id = id;
-    }
-    let redirect = match redirect {
-        Some(text) => text,
-        None => crate::prompt("Paste the hcauth address (or the code): ")?,
-    };
-    finish(&pending, &redirect).await
-}
-
-async fn finish(pending: &Pending, redirect: &str) -> Result<()> {
-    let (code, state) = parse_redirect(redirect)?;
-    if let Some(state) = state {
-        if state != pending.state {
-            anyhow::bail!("that sign-in does not match this login. Run `hearth bosch login` again");
-        }
-    }
-    let client = http()?;
-    let token = access_token(&client, pending, &code).await?;
-    let account = subject(&token)?;
-    let (region, body) = appliances(&client, &token, &account).await?;
-    let found = parse_appliances(&body);
-    let chosen = choose(found, pending.id.as_deref())?;
-    let keys = encryption(&client, &region, &token, &chosen.ha_id).await?;
-    let bytes = description(&client, &region, &token, &chosen.ha_id).await?;
-    let features = xml::features_from_zip(&bytes)?;
-    let host = pending
-        .host
-        .clone()
-        .filter(|host| !host.trim().is_empty())
-        .unwrap_or_else(|| discovered_host(&chosen, keys.iv.is_empty()));
-    let device = BoschDevice {
-        aid: 0,
-        door_aid: 0,
-        leak_aid: 0,
-        cycle_aid: 0,
-        name: display_name(&chosen),
-        brand: pretty_brand(&chosen.brand),
-        model: chosen.model.clone(),
-        ha_id: chosen.ha_id.clone(),
-        host,
-        key: keys.key,
-        iv: keys.iv,
-        features,
-    };
-    let mut saved = config::load_or_new()?;
-    let model = device.model.clone();
-    let name = device.name.clone();
-    config::upsert_bosch(&mut saved, device);
-    let path = config::save(&saved)?;
-    let _ = fs::remove_file(pending_path()?);
-    println!();
-    println!("Saved {}.", path.display());
-    if model.is_empty() {
-        println!("{name}.");
-    } else {
-        println!("{name}, model {model}.");
-    }
-    println!("Apple Home pairing code: {}", saved.homekit_pin);
-    println!("Next: hearth run");
-    println!("Starting a programme needs Remote Start on the dishwasher. Reading it does not.");
-    Ok(())
 }
 
 fn http() -> Result<reqwest::Client> {
@@ -150,7 +125,7 @@ fn http() -> Result<reqwest::Client> {
         .context("could not start http")
 }
 
-async fn access_token(client: &reqwest::Client, pending: &Pending, code: &str) -> Result<String> {
+async fn access_token(client: &reqwest::Client, pending: &SignIn, code: &str) -> Result<String> {
     let body = form(&[
         ("grant_type", "authorization_code"),
         ("client_id", CLIENT_ID),
@@ -260,11 +235,22 @@ fn keys_in(body: &Value) -> Option<Keys> {
 }
 
 #[derive(Clone)]
-struct Found {
-    ha_id: String,
+pub struct Found {
+    pub ha_id: String,
     brand: String,
     kind: String,
     model: String,
+}
+
+impl Found {
+    /// How the menu bar lists it.
+    pub fn label(&self) -> String {
+        if self.model.is_empty() {
+            display_name(self)
+        } else {
+            format!("{} ({})", display_name(self), self.model)
+        }
+    }
 }
 
 fn parse_appliances(body: &Value) -> Vec<Found> {
@@ -313,21 +299,6 @@ fn candidates(found: Vec<Found>, id: Option<&str>) -> Result<Vec<Found>> {
         );
     }
     Ok(dishwashers)
-}
-
-fn choose(found: Vec<Found>, id: Option<&str>) -> Result<Found> {
-    let mut pool = candidates(found, id)?;
-    if pool.len() == 1 {
-        return Ok(pool.remove(0));
-    }
-    println!("This account has more than one appliance:");
-    for item in &pool {
-        println!("  {}  {}  {}", item.ha_id, item.model, item.kind);
-    }
-    let id = crate::prompt("Appliance id to put in Apple Home: ")?;
-    pool.into_iter()
-        .find(|item| item.ha_id.eq_ignore_ascii_case(id.trim()))
-        .ok_or_else(|| anyhow!("that id is not on the account"))
 }
 
 fn is_dishwasher(item: &Found) -> bool {
@@ -439,51 +410,6 @@ pub fn parse_redirect(text: &str) -> Result<(String, Option<String>)> {
         .context("that address has no code. Paste the whole hcauth address")
 }
 
-fn pending_path() -> Result<std::path::PathBuf> {
-    Ok(config::config_dir()?.join("bosch-login.json"))
-}
-
-fn save_pending(pending: &Pending) -> Result<()> {
-    let path = pending_path()?;
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    write_private(&path, serde_json::to_vec_pretty(pending)?.as_slice())?;
-    Ok(())
-}
-
-fn load_pending() -> Result<Pending> {
-    let path = pending_path()?;
-    let text = fs::read_to_string(&path).with_context(|| {
-        format!(
-            "no Home Connect sign-in in progress. Run `hearth bosch login` ({})",
-            path.display()
-        )
-    })?;
-    serde_json::from_str(&text).context("the saved Home Connect sign-in could not be read")
-}
-
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    std::io::Write::write_all(&mut file, bytes)?;
-    Ok(())
-}
-
-trait OpenOptionsExt {
-    fn mode(&mut self, mode: u32) -> &mut Self;
-}
-
-impl OpenOptionsExt for fs::OpenOptions {
-    fn mode(&mut self, mode: u32) -> &mut Self {
-        std::os::unix::fs::OpenOptionsExt::mode(self, mode)
-    }
-}
-
 fn random_b64(bytes: usize) -> String {
     let mut buf = vec![0u8; bytes];
     rand::thread_rng().fill_bytes(&mut buf);
@@ -554,8 +480,8 @@ mod tests {
 
     #[test]
     fn the_sign_in_address_carries_the_challenge_not_the_verifier() {
-        let pending = Pending::fresh(None, None);
-        let url = pending.authorize_url();
+        let pending = SignIn::new();
+        let url = pending.address();
         assert!(url.contains("code_challenge="));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("redirect_uri=hcauth%3A%2F%2Fauth%2Fprod"));
