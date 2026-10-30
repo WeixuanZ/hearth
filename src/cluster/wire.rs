@@ -100,6 +100,10 @@ pub enum Request {
     State,
     /// A control socket request, for the computer serving Home.
     Control { request: Value },
+    /// A hash of each day of readings history. See `series::digest`.
+    HistoryDigest,
+    /// A device's readings history on those days.
+    HistoryRows { device: String, days: Vec<u64> },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

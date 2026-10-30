@@ -214,6 +214,16 @@ async fn step(
     for peer in &fresh {
         catch_up(peer, &key, config, &files, serving.is_some()).await;
     }
+    if now % 60_000 < TICK.as_millis() as u64 {
+        for peer in &fresh {
+            if let Err(error) = share_history(peer, &key, config).await {
+                log::debug!(
+                    "could not share history with {}: {error:#}",
+                    peer.hello.name
+                );
+            }
+        }
+    }
 
     let paired = config::paired();
     let conflict = fresh
@@ -240,20 +250,10 @@ async fn step(
         }
         Role::Standby { .. } => {
             *serving = None;
-            let leader = fresh
+            fresh
                 .iter()
                 .find(|peer| peer.hello.serving && peer.hello.bridge == config.bridge_id)
-                .map(|peer| SocketAddr::new(peer.addr, peer.hello.port));
-            // A copy of the readings history, there if this one takes over.
-            if let (Some(leader), true) = (leader, now % 60_000 < TICK.as_millis() as u64) {
-                let request = Request::Control {
-                    request: json!({ "op": "status" }),
-                };
-                if let Ok(status) = ask(leader, &key, &request).await {
-                    series::observe_status(&status);
-                }
-            }
-            leader
+                .map(|peer| SocketAddr::new(peer.addr, peer.hello.port))
         }
         Role::Looking => {
             *serving = None;
@@ -348,6 +348,39 @@ async fn catch_up(peer: &Heard, key: &GroupKey, config: &mut Config, files: &Fil
     if let Err(error) = result {
         log::debug!("could not catch up with {}: {error:#}", hello.name);
     }
+}
+
+/// Takes the days of readings history a member holds differently, so every
+/// member keeps the whole record and any can take over with it. Each pulls
+/// from each, once a minute; merges converge, see `series::merge`.
+async fn share_history(peer: &Heard, key: &GroupKey, config: &Config) -> Result<()> {
+    let addr = SocketAddr::new(peer.addr, peer.hello.port);
+    let theirs: BTreeMap<String, BTreeMap<u64, String>> =
+        serde_json::from_value(ask(addr, key, &Request::HistoryDigest).await?)?;
+    let ours = series::digest();
+    for (device, days) in theirs {
+        if config.removed.contains_key(&device) {
+            continue;
+        }
+        let mine = ours.get(&device);
+        let days: Vec<u64> = days
+            .into_iter()
+            .filter(|(day, hash)| mine.and_then(|mine| mine.get(day)) != Some(hash))
+            .map(|(day, _)| day)
+            .collect();
+        if days.is_empty() {
+            continue;
+        }
+        let request = Request::HistoryRows {
+            device: device.clone(),
+            days,
+        };
+        series::merge(
+            &device,
+            serde_json::from_value(ask(addr, key, &request).await?)?,
+        );
+    }
+    Ok(())
 }
 
 /// Who serves Home. A member that is serving keeps it, the lowest id if two
@@ -489,6 +522,8 @@ async fn answer(mut stream: TcpStream) -> Result<()> {
                     files: Files::read()?.encoded(),
                 })?,
                 Request::Control { request } => control::here(request).await,
+                Request::HistoryDigest => json!(series::digest()),
+                Request::HistoryRows { device, days } => json!(series::rows(&device, &days)),
             };
             let sealed = crypto::seal(
                 &key.message(),

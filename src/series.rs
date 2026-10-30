@@ -17,6 +17,7 @@
 use crate::config;
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
@@ -82,20 +83,39 @@ pub fn observe(device: &str, readings: &[(&str, f64)]) {
     }
 }
 
-/// Keeps the readings in a status from the computer serving Home, so this
-/// one has the history too if it takes over.
-pub fn observe_status(status: &Value) {
-    for device in status["devices"].as_array().into_iter().flatten() {
-        let readings: Vec<(&str, f64)> = device["capabilities"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|capability| capability["kind"] == "reading" && capability["active"] == true)
-            .filter_map(|capability| {
-                Some((capability["id"].as_str()?, capability["value"].as_f64()?))
-            })
-            .collect();
-        observe(device["id"].as_str().unwrap_or_default(), &readings);
+/// One device's rows as one computer hands them to another: the minute,
+/// and each reading by name.
+pub type Rows = Vec<(u64, BTreeMap<String, i32>)>;
+
+/// A hash of each day of each device's history, minutes that have ended
+/// only, so two computers can tell which days they hold differently.
+pub fn digest() -> BTreeMap<String, BTreeMap<u64, String>> {
+    lock().as_ref().map_or_else(BTreeMap::new, |log| {
+        log.devices
+            .iter()
+            .map(|(id, device)| (id.clone(), device.digest()))
+            .collect()
+    })
+}
+
+/// A device's rows on the given days.
+pub fn rows(device: &str, days: &[u64]) -> Rows {
+    lock()
+        .as_ref()
+        .and_then(|log| log.devices.get(device))
+        .map(|series| series.export(days))
+        .unwrap_or_default()
+}
+
+/// Takes in another computer's rows. A minute either lacks is filled; one
+/// both hold keeps the larger of two values. That does not depend on the
+/// order or the repetition of merges, so every computer ends with the same.
+pub fn merge(device: &str, rows: Rows) {
+    if let Some(log) = lock().as_mut() {
+        log.devices
+            .entry(device.to_owned())
+            .or_default()
+            .merge(rows, unix_now());
     }
 }
 
@@ -599,6 +619,82 @@ impl DeviceSeries {
         Ok(())
     }
 
+    fn ended(&self) -> &[Row] {
+        &self.rows[..self.rows.len() - usize::from(self.open)]
+    }
+
+    /// Each row's cells by name, in name order, so the column order of a
+    /// file does not matter.
+    fn named(&self, row: &Row) -> BTreeMap<String, i32> {
+        self.columns
+            .iter()
+            .zip(&row.values)
+            .filter_map(|(column, value)| Some((column.clone(), (*value)?)))
+            .collect()
+    }
+
+    fn digest(&self) -> BTreeMap<u64, String> {
+        let mut days: BTreeMap<u64, Sha256> = BTreeMap::new();
+        for row in self.ended() {
+            let hash = days.entry(day(row.time)).or_default();
+            hash.update(row.time.to_be_bytes());
+            for (column, value) in self.named(row) {
+                hash.update(column.as_bytes());
+                hash.update([0]);
+                hash.update(value.to_be_bytes());
+            }
+        }
+        days.into_iter()
+            .map(|(day, hash)| (day, format!("{:x}", hash.finalize())))
+            .collect()
+    }
+
+    fn export(&self, days: &[u64]) -> Rows {
+        self.ended()
+            .iter()
+            .filter(|row| days.contains(&day(row.time)))
+            .map(|row| (row.time, self.named(row)))
+            .collect()
+    }
+
+    fn merge(&mut self, rows: Rows, now: u64) {
+        let cutoff = now.saturating_sub(RETAIN_SECS);
+        // The minute underway stays last; nothing after it comes in.
+        let open = self
+            .open
+            .then(|| self.rows.last().map(|row| row.time))
+            .flatten();
+        let mut changed = false;
+        for (time, cells) in rows {
+            if time < cutoff || open.is_some_and(|open| time > open) {
+                continue;
+            }
+            let columns: Vec<(usize, i32)> = cells
+                .into_iter()
+                .map(|(name, value)| (self.column(&name), value))
+                .collect();
+            let at = match self.rows.binary_search_by_key(&time, |row| row.time) {
+                Ok(at) => at,
+                Err(at) => {
+                    let values = vec![None; self.columns.len()];
+                    self.rows.insert(at, Row { time, values });
+                    changed = true;
+                    at
+                }
+            };
+            let row = &mut self.rows[at];
+            row.values.resize(self.columns.len(), None);
+            for (column, value) in columns {
+                let cell = &mut row.values[column];
+                if cell.is_none_or(|have| have < value) {
+                    *cell = Some(value);
+                    changed = true;
+                }
+            }
+        }
+        self.rewrite |= changed;
+    }
+
     fn header(&self) -> String {
         let mut out = String::from("time");
         for column in &self.columns {
@@ -616,6 +712,10 @@ impl DeviceSeries {
         }
         out
     }
+}
+
+fn day(time: u64) -> u64 {
+    time / (24 * 60 * 60)
 }
 
 fn line(row: &Row) -> String {
@@ -867,5 +967,51 @@ mod tests {
         assert_eq!(loaded.samples("dyson:ABC", "pm2,5", 0), vec![(60, 3500)]);
         drop(log);
         let _ = fs::remove_dir_all(loaded.dir);
+    }
+
+    #[test]
+    fn two_computers_end_with_the_same_history_whichever_merges_first() {
+        let (mut one, one_dir) = temp_log();
+        let (mut other, other_dir) = temp_log();
+        // The first saw the morning, the second the afternoon, both noon.
+        for minute in 0..3 {
+            one.note("abc:1", "temperature", 20.0 + minute as f64, minute * 60);
+        }
+        for minute in 2..5 {
+            other.note("abc:1", "humidity", 40.0 + minute as f64, minute * 60);
+        }
+        one.maintenance(600, true);
+        other.maintenance(600, true);
+        let digest = |log: &Log| log.devices["abc:1"].digest();
+        assert_ne!(digest(&one), digest(&other));
+
+        let days: Vec<u64> = digest(&other).keys().copied().collect();
+        let theirs = other.devices["abc:1"].export(&days);
+        let ours = one.devices["abc:1"].export(&days);
+        one.devices
+            .get_mut("abc:1")
+            .unwrap()
+            .merge(theirs.clone(), 600);
+        other.devices.get_mut("abc:1").unwrap().merge(ours, 600);
+        assert_eq!(digest(&one), digest(&other));
+        assert_eq!(one.samples("abc:1", "temperature", 0).len(), 3);
+        assert_eq!(
+            other.samples("abc:1", "humidity", 120),
+            vec![(120, 42000), (180, 43000), (240, 44000)]
+        );
+
+        // Merging again changes nothing, and the files say the same.
+        one.devices.get_mut("abc:1").unwrap().merge(theirs, 600);
+        assert!(one.devices["abc:1"].rewrite);
+        one.write().unwrap();
+        other.write().unwrap();
+        let file = |dir: &PathBuf| fs::read_to_string(dir.join("abc%3A1.csv")).unwrap();
+        assert_eq!(
+            Log::open(one_dir.clone()).unwrap().devices["abc:1"].digest(),
+            Log::open(other_dir.clone()).unwrap().devices["abc:1"].digest()
+        );
+        assert!(file(&one_dir).starts_with("time,"));
+        let _ = fs::remove_dir_all(one_dir);
+        let _ = fs::remove_dir_all(other_dir);
     }
 }
