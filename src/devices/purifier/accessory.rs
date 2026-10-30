@@ -11,7 +11,9 @@ use crate::connectors::dyson::protocol::{
 };
 use crate::{
     config::DysonDevice,
-    surfaces::homekit::characteristics::{configured_name, hook_bool, hook_f32, hook_u8, put},
+    surfaces::homekit::characteristics::{
+        configured_name, device_name, hook_bool, hook_f32, hook_u8, put,
+    },
 };
 use anyhow::{anyhow, Result};
 use hap::{
@@ -212,6 +214,9 @@ pub(super) async fn build_purifier(
 
     // hap sends an empty Name otherwise, which Home refuses.
     name(purifier.name.as_mut(), &device.name).await?;
+    if let Some(configured) = purifier.configured_name.as_mut() {
+        device_name(configured, device.id(), &device.name).await?;
+    }
     name(air.name.as_mut(), "Air quality").await?;
     name(humidity.name.as_mut(), "Humidity").await?;
     name(filter.name.as_mut(), "Filter").await?;

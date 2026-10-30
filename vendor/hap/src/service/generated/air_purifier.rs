@@ -11,6 +11,7 @@ use crate::{
 		target_air_purifier_state::TargetAirPurifierStateCharacteristic,
 		lock_physical_controls::LockPhysicalControlsCharacteristic,
 		name::NameCharacteristic,
+		configured_name::ConfiguredNameCharacteristic,
 		rotation_speed::RotationSpeedCharacteristic,
 		swing_mode::SwingModeCharacteristic,
 	},
@@ -46,6 +47,8 @@ pub struct AirPurifierService {
 	pub rotation_speed: Option<RotationSpeedCharacteristic>,
 	/// Swing Mode characteristic (optional).
 	pub swing_mode: Option<SwingModeCharacteristic>,
+	/// Configured Name characteristic (optional). Home follows a change to it.
+	pub configured_name: Option<ConfiguredNameCharacteristic>,
 }
 
 impl AirPurifierService {
@@ -61,6 +64,7 @@ impl AirPurifierService {
 			name: Some(NameCharacteristic::new(id + 1 + 1 + 3, accessory_id)),
 			rotation_speed: Some(RotationSpeedCharacteristic::new(id + 1 + 2 + 3, accessory_id)),
 			swing_mode: Some(SwingModeCharacteristic::new(id + 1 + 3 + 3, accessory_id)),
+			configured_name: Some(ConfiguredNameCharacteristic::new(id + 1 + 4 + 3, accessory_id)),
 			..Default::default()
         }
     }
@@ -144,6 +148,9 @@ impl HapService for AirPurifierService {
 		if let Some(c) = &self.swing_mode {
 		    characteristics.push(c);
 		}
+		if let Some(c) = &self.configured_name {
+		    characteristics.push(c);
+		}
 		characteristics
     }
 
@@ -164,6 +171,9 @@ impl HapService for AirPurifierService {
 		    characteristics.push(c);
 		}
 		if let Some(c) = &mut self.swing_mode {
+		    characteristics.push(c);
+		}
+		if let Some(c) = &mut self.configured_name {
 		    characteristics.push(c);
 		}
 		characteristics

@@ -1,10 +1,11 @@
 //! Helpers every device uses to build its HomeKit accessories.
 
-use crate::config;
+use crate::{capabilities, config};
 use anyhow::{anyhow, Result};
 use hap::{
     accessory::HapAccessory,
     characteristic::{CharacteristicCallbacks, HapCharacteristic},
+    futures::lock::Mutex,
     HapType,
 };
 use std::sync::{
@@ -36,6 +37,48 @@ pub async fn configured_name(
         Ok(())
     }));
     Ok(())
+}
+
+/// Shows the device's name as the Configured Name of its main service, the
+/// name Home follows. A rename in Home renames the device everywhere.
+pub async fn device_name(
+    characteristic: &mut (impl HapCharacteristic + CharacteristicCallbacks<String>),
+    id: String,
+    name: &str,
+) -> Result<()> {
+    characteristic
+        .set_value(serde_json::json!(name))
+        .await
+        .map_err(|error| anyhow!("{error}"))?;
+    characteristic.on_update(Some(move |_old: &String, new: &String| {
+        if let Err(error) = capabilities::rename(&id, new) {
+            log::warn!("could not rename {id} to {new}: {error:#}");
+        }
+        Ok(())
+    }));
+    Ok(())
+}
+
+/// Brings a rename from the menu bar or the CLI to Home, on the Configured
+/// Name that `device_name` set up on `service`.
+pub fn follow_name(id: &str, accessory: Arc<Mutex<Box<dyn HapAccessory>>>, service: HapType) {
+    let Some(mut names) = capabilities::name(id) else {
+        return;
+    };
+    tokio::spawn(async move {
+        while names.changed().await.is_ok() {
+            let name = names.borrow_and_update().clone();
+            let mut accessory = accessory.lock().await;
+            let characteristic = accessory
+                .get_mut_service(service)
+                .and_then(|service| service.get_mut_characteristic(HapType::ConfiguredName));
+            if let Some(characteristic) = characteristic {
+                if let Err(error) = characteristic.set_value(serde_json::json!(name)).await {
+                    log::warn!("could not show {name} in Home: {error}");
+                }
+            }
+        }
+    });
 }
 
 pub fn hook_u8<T: Send + 'static>(

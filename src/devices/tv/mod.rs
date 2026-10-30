@@ -11,10 +11,14 @@ use crate::{
         link,
         protocol::{self, ArtReply, Input},
     },
+    surfaces::homekit::characteristics::follow_name,
 };
 use accessory::{apply, apply_art, build, build_art, View};
 use anyhow::{anyhow, Result};
-use hap::server::{IpServer, Server};
+use hap::{
+    server::{IpServer, Server},
+    HapType,
+};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -53,6 +57,7 @@ pub async fn spawn(device: FrameDevice, server: IpServer) -> Result<()> {
         .add_accessory(build(&tv.device, &suppress, &tx).await?)
         .await
         .map_err(|error| anyhow!("{error}"))?;
+    follow_name(&id, accessory.clone(), HapType::Television);
     let art = server
         .add_accessory(build_art(&tv.device, &suppress, &tx).await?)
         .await

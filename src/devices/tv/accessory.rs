@@ -9,7 +9,7 @@ use crate::connectors::samsung::protocol::Input;
 use crate::{
     config::FrameDevice,
     surfaces::homekit::characteristics::{
-        configured_name, hook_bool, hook_i32, hook_u32, hook_u8, put,
+        configured_name, device_name, hook_bool, hook_i32, hook_u32, hook_u8, put,
     },
 };
 use anyhow::{anyhow, Result};
@@ -133,7 +133,7 @@ pub async fn build(
     if let Some(brightness) = television.brightness.as_mut() {
         hook_i32(brightness, suppress, tx, Command::Brightness);
     }
-    configured_name(&mut television.configured_name, device.aid, &device.name).await?;
+    device_name(&mut television.configured_name, device.id(), &device.name).await?;
     if let Some(name) = television.name.as_mut() {
         set(name, json!(device.name)).await?;
     }

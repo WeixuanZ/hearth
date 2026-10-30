@@ -6,6 +6,9 @@ struct DeviceCard: View {
     @ObservedObject var model: BridgeModel
     let device: Device
     @State private var open: Bool
+    /// The name being typed, while renaming.
+    @State private var draft: String?
+    @FocusState private var naming: Bool
 
     init(model: BridgeModel, device: Device, open: Bool = false) {
         self.model = model
@@ -32,9 +35,48 @@ struct DeviceCard: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.primary.opacity(0.045))
         )
+        .contextMenu {
+            Button("Rename…", action: beginRename)
+        }
     }
 
+    private func beginRename() {
+        draft = device.name
+        // Once the field exists.
+        DispatchQueue.main.async { naming = true }
+    }
+
+    private func endRename(save: Bool) {
+        if save, let draft { model.rename(device, draft) }
+        draft = nil
+    }
+
+    @ViewBuilder
     private var header: some View {
+        if draft != nil {
+            HStack(spacing: 8) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                TextField("Name", text: Binding(get: { draft ?? "" }, set: { draft = $0 }))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 13, weight: .semibold))
+                    .focused($naming)
+                    .onSubmit { endRename(save: true) }
+                    .onExitCommand { endRename(save: false) }
+                    .onChange(of: naming) { focused in
+                        if !focused { endRename(save: true) }
+                    }
+                Button("Done") { endRename(save: true) }
+                    .controlSize(.small)
+            }
+        } else {
+            summaryHeader
+        }
+    }
+
+    private var summaryHeader: some View {
         HStack(alignment: .center, spacing: 8) {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) { open.toggle() }
@@ -62,6 +104,15 @@ struct DeviceCard: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            if open {
+                Button(action: beginRename) {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Rename")
+            }
             if let power = all("power").first {
                 Toggle("Power", isOn: model.binding(device, power))
                     .toggleStyle(.switch)

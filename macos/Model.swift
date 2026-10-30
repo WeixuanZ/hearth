@@ -54,9 +54,21 @@ final class BridgeModel: ObservableObject {
         {
             status?.devices[d].capabilities[c].value = value
         }
-        let body: [String: Any] = [
-            "op": "set", "device": device.id, "capability": capability.id, "value": value.json,
-        ]
+        send(["op": "set", "device": device.id, "capability": capability.id, "value": value.json])
+    }
+
+    /// Renames a device here at once; the bridge renames it in Home.
+    func rename(_ device: Device, _ name: String) {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty, name != device.name else { return }
+        if let d = status?.devices.firstIndex(where: { $0.id == device.id }) {
+            status?.devices[d].name = name
+        }
+        send(["op": "rename", "device": device.id, "name": name])
+    }
+
+    /// Asks the bridge, and shows a refusal for a moment.
+    private func send(_ body: [String: Any]) {
         queue.async { [weak self] in
             var message: String?
             do {

@@ -66,7 +66,7 @@ A device is its id, name, kind (`tv`, `purifier`), connector (`frame`, `dyson`),
 
 **Scripts and agents.** Add `--json` to any command. `hearth devices --json` lists every capability with its kind, value, accepted options or range, and whether it is active, which is enough to drive any device without knowing its brand. Errors go to stderr with exit status 1. Programs can also talk to the [control socket](#control-socket) directly.
 
-**Rename a device** with `hearth rename "Old name" "New name"`, then restart the bridge. Names given in the Home app stick too.
+**Rename a device** from the pencil on its card in the menu bar, with `hearth rename tv "Living room TV"`, or in the Home app. A device has one name: renaming it anywhere renames it in the menu bar, the CLI and Home.
 
 **Start over with Home.** If Home will not add the bridge, or says it already belongs to a home, choose Forget Home in the menu bar (or stop the bridge and run `hearth unpair`). The bridge comes back as a new accessory. Remove any old Hearth from Home.
 
@@ -132,6 +132,7 @@ vendor/hap/              the HomeKit protocol, patched
 {"op":"status"}                                                   → the bridge and every device
 {"op":"get","device":"tv"}                                        → one device
 {"op":"set","device":"tv","capability":"input","value":"hdmi2"}  → {"ok":true} or {"error":"…"}
+{"op":"rename","device":"tv","name":"Living room TV"}              → {"ok":true}, and Home follows
 ```
 
 ### Adding a device
@@ -139,7 +140,7 @@ vendor/hap/              the HomeKit protocol, patched
 1. **Connector.** Under `src/connectors/<maker>/`: the protocol, and a `hearth <maker> …` setup command if the device needs pairing. Add its `kind` to `src/config.rs`.
 2. **Device.** Under `src/devices/<type>/`: a task that keeps the device's state and connection (see `devices::tv::spawn`).
 3. **Capabilities.** In `capabilities.rs` next to it: a `snapshot` from state, and a function from a request to the device's command. Publish with `capabilities::publish`; take requests from `capabilities::listen`.
-4. **HomeKit.** In `accessory.rs`: the accessories, with fixed iids per service (tests check they are unique), `configured_name` for names Home can change, and the same commands as the capabilities.
+4. **HomeKit.** In `accessory.rs`: the accessories, with fixed iids per service (tests check they are unique), and the same commands as the capabilities. Give the main service `device_name`, and call `follow_name` once the accessory is added, so renames reach Home and come back from it. Other services take `configured_name`, for names Home can change.
 5. **Run it.** Spawn it in `src/run.rs`.
 
 The menu bar, the CLI and the socket need no changes.
@@ -148,6 +149,7 @@ The menu bar, the CLI and the socket need no changes.
 
 - A service linked to a TV shows up in its input picker, so the TV links only inputs.
 - Home caches the accessory layout until the configuration number changes. hearth fingerprints the layout and bumps the number when it differs.
+- After pairing, Home names an accessory from the Configured Name of its main service, not from its accessory information, so that is where a rename goes.
 - `bridge_id` in the config is hashed into the HomeKit identity. Changing it makes Home see a new accessory, which is how `hearth unpair` starts over.
 
 ### Build, test and release

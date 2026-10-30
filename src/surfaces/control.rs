@@ -10,6 +10,8 @@
 //!   → one device, with its capabilities
 //! {"op":"set","device":"tv","capability":"input","value":"hdmi2"}
 //!   → {"ok":true}  or  {"error":"…"}
+//! {"op":"rename","device":"tv","name":"Living room TV"}
+//!   → {"ok":true}, and Home shows the new name
 //! ```
 //!
 //! The socket is mode 0600 and never on the network, so only this user can
@@ -36,6 +38,10 @@ enum Request {
         device: String,
         capability: String,
         value: Value,
+    },
+    Rename {
+        device: String,
+        name: String,
     },
 }
 
@@ -92,11 +98,24 @@ async fn answer(line: &str) -> Value {
             device,
             capability,
             value,
-        }) => match capabilities::set(&device, &capability, value).await {
-            Ok(()) => json!({ "ok": true }),
-            Err(error) => json!({ "error": format!("{error:#}") }),
-        },
+        }) => done(capabilities::set(&device, &capability, value).await),
+        Ok(Request::Rename { device, name }) => done(capabilities::rename(&device, &name)),
         Err(error) => json!({ "error": format!("bad request: {error}") }),
+    }
+}
+
+fn done(result: Result<()>) -> Value {
+    match result {
+        Ok(()) => json!({ "ok": true }),
+        Err(error) => json!({ "error": format!("{error:#}") }),
+    }
+}
+
+/// Whether a bridge is answering on the socket.
+pub async fn running() -> bool {
+    match path() {
+        Ok(path) => UnixStream::connect(path).await.is_ok(),
+        Err(_) => false,
     }
 }
 

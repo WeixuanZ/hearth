@@ -39,7 +39,7 @@ impl Tv {
         let showing = self.on && self.art != Some(true);
         let input = Input::from_id(self.input).map(|input| input.source().to_lowercase());
         Snapshot {
-            id: format!("frame:{}", self.device.host),
+            id: self.device.id(),
             kind: "frame",
             category: "tv",
             name: self.device.name.clone(),
