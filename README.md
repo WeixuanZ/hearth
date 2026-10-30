@@ -47,7 +47,7 @@ hearth frame pair
 
 ## Use it
 
-**Menu bar.** The bridge, which computer serves Home, the pairing code while Home does not have it yet, and each device. Click a device to open its controls, drawn from its capabilities: toggles, choices, sliders, a remote, and readings. Hover a reading — temperature, humidity, PM2.5 — and the last 24 hours draw under it.
+**Menu bar.** The bridge, which computer serves Home, the pairing code while Home does not have it yet, and each device. Click a device to open its controls, drawn from its capabilities: toggles, choices, sliders, a remote, and readings. Rest the pointer on a reading, like temperature or PM2.5, and its history opens beside the menu, drawn the way Apple Weather draws its own: the last day as a smooth line coloured by value, which the pointer scrubs, or the last week as each day's low to high.
 
 **CLI.** Talks to the running bridge, so it shares the devices' connections and answers in milliseconds, from any computer in the group.
 
@@ -71,7 +71,7 @@ A device is its id, name, kind (`tv`, `purifier`), connector (`frame`, `dyson`),
 
 **Scripts and agents.** Add `--json` to any command. `hearth devices --json` lists every capability with its kind, value, accepted options or range, and whether it is active, which is enough to drive any device without knowing its brand. Errors go to stderr with exit status 1. Programs can also talk to the [control socket](#control-socket) directly.
 
-**Names.** A device has one name. Rename it from the pencil on its card, with `hearth rename`, or in the Home app, and it changes everywhere. A second device of a model gets a name of its own, like `The Frame 2`.
+**Names.** A device has one name. Rename it from the pencil that appears beside its name in the menu bar, with `hearth rename`, or in the Home app, and it changes everywhere. A second device of a model gets a name of its own, like `The Frame 2`.
 
 **Start over with Home.** If Home will not add the bridge, or says it already belongs to a home, choose Forget Home in the menu bar on the computer serving Home (or stop the bridge and run `hearth unpair`). The bridge comes back as a new accessory. Remove any old Hearth from Home.
 
@@ -118,7 +118,7 @@ sudo loginctl enable-linger "$USER"   # keep it up while logged out
 
 - **Dyson heat and power.** Heat, or a heat target, turns the fan on, since it heats only while it blows; turning the fan off ends heat, so it does not come back by itself. The fan also stops heating when jet focus is turned off.
 - **Dyson oscillation.** Home has no angle, so the purifier has a switch for each sweep the Dyson app offers. The menu bar and CLI pick the sweep directly.
-- **Dyson sensors.** The fan measures while it runs, or while it is off with continuous monitoring on. Otherwise its sensors show as inactive. While they are measuring, hearth keeps them: one sample a minute, written when a value changes and at least every fifteen minutes, for thirty days. `hearth history purifier temperature` prints them, and hovering the number in the menu bar draws the last day. The file is CSV, one per device, under `~/.config/hearth/series/`, so a spreadsheet or pandas can open it. The column `time` is Unix seconds. An empty cell means that reading was not being measured.
+- **Dyson sensors.** The fan measures while it runs, or while it is off with continuous monitoring on. Otherwise its sensors show as inactive. While they are measuring, hearth keeps them: one sample a minute, written when a value changes and at least every fifteen minutes, for thirty days. `hearth history purifier temperature` prints them, and resting on the number in the menu bar draws it. The file is CSV, one per device, under `~/.config/hearth/series/`, so a spreadsheet or pandas can open it. The column `time` is Unix seconds. An empty cell means that reading was not being measured.
 - **Dyson address.** Set `host` on the fan in the config if it does not announce itself on the network.
 - **Frame art mode** is on only while the TV is: asking for art mode turns the TV on, and turning it off ends art mode. It is a tile of its own, because Home shows a TV only as power and an input picker. An input with nothing plugged in is refused. Without IP Control, inputs fall back to remote keys, which newer firmware ignores.
 - **Frame remote.** Arrows, select, back and volume are in Control Center's remote, which keeps one connection to the TV open, so keys land at once.

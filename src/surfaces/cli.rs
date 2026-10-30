@@ -183,6 +183,12 @@ fn print_history(value: &Value) {
     let style = Style::detect();
     let device = value["name"].as_str().unwrap_or("device");
     let hours = value["hours"].as_u64().unwrap_or(24);
+    // A value holds until the next sample, unless that is further away than
+    // the heartbeat: then the reading was not being measured.
+    let gap = value["heartbeat"]
+        .as_u64()
+        .unwrap_or(series::HEARTBEAT_SECS)
+        + value["interval"].as_u64().unwrap_or(series::INTERVAL_SECS);
     let path = value["path"].as_str().unwrap_or("");
     let series = value["series"].as_array();
     let Some(series) = series else {
@@ -197,7 +203,7 @@ fn print_history(value: &Value) {
         if index > 0 {
             println!();
         }
-        print_reading(device, reading, hours, &style);
+        print_reading(device, reading, hours, gap, &style);
     }
     if !path.is_empty() {
         println!();
@@ -205,7 +211,7 @@ fn print_history(value: &Value) {
     }
 }
 
-fn print_reading(device: &str, reading: &Value, hours: u64, style: &Style) {
+fn print_reading(device: &str, reading: &Value, hours: u64, gap: u64, style: &Style) {
     let name = reading["name"].as_str().unwrap_or("reading");
     let unit = reading["unit"].as_str().unwrap_or("");
     let samples: Vec<(u64, f64)> = reading["samples"]
@@ -252,7 +258,7 @@ fn print_reading(device: &str, reading: &Value, hours: u64, style: &Style) {
             "samples"
         }
     );
-    let line = sparkline(&samples);
+    let line = sparkline(&samples, gap);
     println!("{line}");
     if let (Some((start, _)), Some((end, _))) = (samples.first(), samples.last()) {
         let start = clock(*start, hours);
@@ -282,8 +288,10 @@ fn clock(unix: u64, hours: u64) -> String {
     time.with_timezone(&Local).format(pattern).to_string()
 }
 
-/// 48 columns across the whole span. A blank is a gap, not a zero.
-fn sparkline(samples: &[(u64, f64)]) -> String {
+/// 48 columns across the whole span. A column with no sample of its own
+/// holds the last value until `gap` seconds have passed; after that it is
+/// blank, a gap rather than a zero.
+fn sparkline(samples: &[(u64, f64)], gap: u64) -> String {
     const WIDTH: usize = 48;
     const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     let Some((start, _)) = samples.first() else {
@@ -303,12 +311,15 @@ fn sparkline(samples: &[(u64, f64)]) -> String {
     }
     let averages: Vec<Option<f64>> = bins
         .iter()
-        .map(|bin| {
-            if bin.is_empty() {
-                None
-            } else {
-                Some(bin.iter().sum::<f64>() / bin.len() as f64)
+        .enumerate()
+        .map(|(index, bin)| {
+            if !bin.is_empty() {
+                return Some(bin.iter().sum::<f64>() / bin.len() as f64);
             }
+            let at = start + (index as u128 * span as u128 / (WIDTH as u128 - 1)) as u64;
+            let held = samples.partition_point(|(time, _)| *time <= at);
+            let (time, value) = samples[held.checked_sub(1)?];
+            (at - time <= gap).then_some(value)
         })
         .collect();
     let known: Vec<f64> = averages.iter().copied().flatten().collect();
@@ -462,5 +473,22 @@ impl Style {
         } else {
             text.to_owned()
         }
+    }
+}
+
+#[cfg(test)]
+mod sparkline_tests {
+    use super::sparkline;
+
+    #[test]
+    fn a_steady_value_holds_and_only_a_long_silence_is_a_gap() {
+        // Stored on change and every 15 minutes: steady, so one line.
+        let steady: Vec<(u64, f64)> = (0..=8).map(|n| (n * 900, 66.0)).collect();
+        assert!(!sparkline(&steady, 960).contains(' '));
+        // Off for two hours in the middle.
+        let gapped = [(0, 20.0), (900, 20.0), (8100, 21.0), (9000, 21.0)];
+        let line = sparkline(&gapped, 960);
+        assert!(line.contains(' '));
+        assert!(!line.starts_with(' ') && !line.ends_with(' '));
     }
 }
