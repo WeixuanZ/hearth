@@ -180,6 +180,7 @@ pub(super) async fn build_door(device: &BoschDevice) -> Result<ContactSensorAcce
     let mut door = ContactSensorAccessory::new(device.door_aid, sensor_information(device, &label))
         .map_err(|error| anyhow!("{error}"))?;
     set_name(door.contact_sensor.name.as_mut(), &label).await?;
+    set_name(door.contact_sensor.configured_name.as_mut(), &label).await?;
     door.contact_sensor.status_fault = None;
     door.contact_sensor.status_low_battery = None;
     door.contact_sensor.status_tampered = None;
@@ -191,6 +192,7 @@ pub(super) async fn build_leak(device: &BoschDevice) -> Result<LeakSensorAccesso
     let mut leak = LeakSensorAccessory::new(device.leak_aid, sensor_information(device, &label))
         .map_err(|error| anyhow!("{error}"))?;
     set_name(leak.leak_sensor.name.as_mut(), &label).await?;
+    set_name(leak.leak_sensor.configured_name.as_mut(), &label).await?;
     leak.leak_sensor.status_fault = None;
     leak.leak_sensor.status_low_battery = None;
     leak.leak_sensor.status_tampered = None;
@@ -203,6 +205,7 @@ pub(super) async fn build_cycle(device: &BoschDevice) -> Result<MotionSensorAcce
         MotionSensorAccessory::new(device.cycle_aid, sensor_information(device, &label))
             .map_err(|error| anyhow!("{error}"))?;
     set_name(cycle.motion_sensor.name.as_mut(), &label).await?;
+    set_name(cycle.motion_sensor.configured_name.as_mut(), &label).await?;
     cycle.motion_sensor.status_fault = None;
     cycle.motion_sensor.status_low_battery = None;
     cycle.motion_sensor.status_tampered = None;

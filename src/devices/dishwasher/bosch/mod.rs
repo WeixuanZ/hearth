@@ -14,7 +14,7 @@ use crate::{
         link,
         protocol::{Command, Reading},
     },
-    surfaces::homekit::characteristics::follow_name,
+    surfaces::homekit::characteristics::{follow_label, follow_name},
 };
 use accessory::{
     apply_cycle, apply_door, apply_leak, apply_main, build_cycle, build_door, build_leak,
@@ -22,8 +22,6 @@ use accessory::{
 };
 use anyhow::{anyhow, Result};
 use hap::{
-    accessory::HapAccessory,
-    futures::lock::Mutex,
     server::{IpServer, Server},
     HapType,
 };
@@ -127,33 +125,6 @@ pub async fn spawn(device: BoschDevice, server: IpServer) -> Result<()> {
     Ok(())
 }
 
-/// Keeps a sensor's name in step with the device, as "{name} {suffix}".
-fn follow_label(
-    id: &str,
-    accessory: Arc<Mutex<Box<dyn HapAccessory>>>,
-    service: HapType,
-    suffix: &'static str,
-) {
-    let Some(mut names) = crate::capabilities::name(id) else {
-        return;
-    };
-    tokio::spawn(async move {
-        while names.changed().await.is_ok() {
-            let current = names.borrow_and_update().clone();
-            let name = format!("{current} {suffix}");
-            let mut accessory = accessory.lock().await;
-            let characteristic = accessory
-                .get_mut_service(service)
-                .and_then(|service| service.get_mut_characteristic(HapType::Name));
-            if let Some(characteristic) = characteristic {
-                if let Err(error) = characteristic.set_value(serde_json::json!(name)).await {
-                    log::warn!("could not show {suffix} in Home: {error}");
-                }
-            }
-        }
-    });
-}
-
 async fn drive(
     device: BoschDevice,
     states: watch::Sender<Reading>,
@@ -162,7 +133,11 @@ async fn drive(
     let mut delay = 2u64;
     loop {
         match link::session(&device, Some(&states), Some(&mut commands)).await {
-            Ok(_) => log::info!("{} connection closed", device.name),
+            Ok(_) => {
+                log::info!("{} connection closed", device.name);
+                // It was up, so the next try is a fresh one, not a backoff.
+                delay = 2;
+            }
             Err(error) => log::warn!("{}: {error:#}", device.name),
         }
         if commands.is_closed() {

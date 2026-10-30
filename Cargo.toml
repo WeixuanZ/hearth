@@ -35,6 +35,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 rpassword = "7"
 rustls = "0.23"
 serde = { version = "1", features = ["derive"] }
+# Keys in the order written: Home Connect appliances are sent their messages
+# field for field as their own app sends them.
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
 socket2 = { version = "0.5", features = ["all"] }
