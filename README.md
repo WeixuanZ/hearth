@@ -8,6 +8,13 @@ hearth is generic. Every device describes itself as a few **capabilities**: powe
 
 **One bridge, several computers.** Homebridge is one process on one computer: install it again and Home sees a second bridge with a second code. hearth is the same bridge on every computer that has joined. One of them serves Apple Home; if it sleeps or is closed, another takes over within seconds as the same bridge, and Home does not notice. Any of them controls every device. An Apple TV or HomePod is still the Home hub for control away from home.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screens/menu-bar-dark.png">
+    <img src="docs/screens/menu-bar-light.png" alt="The menu bar: Hearth serving Home with a purifier, a TV and a dishwasher, and the purifier's temperature over the last day beside it" width="760">
+  </picture>
+</p>
+
 ## Supported devices
 
 | Kind | Device | Reached over | Capabilities |
@@ -58,6 +65,15 @@ If the account has more than one dishwasher, pass `--id`. If the name Home Conne
 ## Use it
 
 **Menu bar.** The bridge, which computer serves Home, the pairing code while Home does not have it yet, and each device. Click a device to open its controls, drawn from its capabilities: toggles, choices, sliders, a remote, and readings. Rest the pointer on a reading, like temperature or PM2.5, and its history opens beside the menu, drawn the way Apple Weather draws its own: the last day as a smooth line coloured by value, which the pointer scrubs, or the last week as each day's low to high.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screens/history-dark.png">
+    <img src="docs/screens/history-light.png" alt="A reading's history: the last 24 hours as a line coloured by temperature, and the last 7 days as each day's range" width="760">
+  </picture>
+</p>
+
+A device with a remote, like the Frame, gets a pad in its card, and while the card is open the keyboard drives it: arrows, Return to select, Escape to go back.
 
 **CLI.** Talks to the running bridge, so it shares the devices' connections and answers in milliseconds, from any computer in the group.
 
