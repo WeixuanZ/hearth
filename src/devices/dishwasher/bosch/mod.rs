@@ -41,11 +41,14 @@ pub async fn spawn(device: BoschDevice, server: IpServer) -> Result<()> {
     crate::capabilities::publish(snapshot);
     let (requests_tx, mut requests) = mpsc::channel(16);
     crate::capabilities::listen(&id, requests_tx);
+    let (state_tx, state_rx) = watch::channel(Reading::default());
     let commands = commands_tx.clone();
     let asked = device.clone();
+    let known = state_rx.clone();
     tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
-            let result = match capabilities::command(&asked, &request) {
+            let reading = known.borrow().clone();
+            let result = match capabilities::command(&asked, &reading, &request) {
                 Ok(command) => commands
                     .send(command)
                     .await
@@ -56,7 +59,6 @@ pub async fn spawn(device: BoschDevice, server: IpServer) -> Result<()> {
         }
     });
 
-    let (state_tx, state_rx) = watch::channel(Reading::default());
     let suppress = Arc::new(AtomicBool::new(false));
     let main = server
         .add_accessory(build_main(&device, &suppress, &commands_tx).await?)

@@ -186,6 +186,19 @@ impl Set {
     }
 }
 
+#[cfg(test)]
+impl Set {
+    /// A request with nobody waiting for the answer.
+    pub fn test(capability: &str, value: Value) -> Self {
+        let (done, _) = oneshot::channel();
+        Self {
+            capability: capability.into(),
+            value,
+            done,
+        }
+    }
+}
+
 struct Entry {
     snapshot: Snapshot,
     commands: Option<mpsc::Sender<Set>>,

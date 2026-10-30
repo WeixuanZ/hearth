@@ -152,7 +152,20 @@ fn option_id(key: &str) -> &'static str {
 }
 
 /// What a request asks of the dishwasher, in the commands HomeKit sends too.
-pub fn command(device: &BoschDevice, set: &Set) -> Result<Command> {
+/// The command for a request, refused while the dishwasher would ignore it:
+/// starting anything needs Remote Start, pressed on the machine.
+pub fn command(device: &BoschDevice, reading: &Reading, set: &Set) -> Result<Command> {
+    let command = to_command(device, set)?;
+    let starts = !matches!(command, Command::Power(false));
+    if starts && reading.online && !reading.machine.remote_start {
+        anyhow::bail!(
+            "the dishwasher is not accepting remote start. Press Remote Start on it first"
+        );
+    }
+    Ok(command)
+}
+
+fn to_command(device: &BoschDevice, set: &Set) -> Result<Command> {
     Ok(match set.capability.as_str() {
         "power" => Command::Power(set.bool()?),
         "programme" => {
@@ -250,5 +263,23 @@ mod tests {
             .find(|capability| capability.id == "programme")
             .unwrap();
         assert_eq!(programme.value, serde_json::json!("30"));
+    }
+
+    #[test]
+    fn starting_anything_needs_remote_start_but_turning_off_does_not() {
+        let device = device();
+        let mut reading = Reading {
+            online: true,
+            ..Reading::default()
+        };
+        let start = Set::test("programme", serde_json::json!("30"));
+        let error = command(&device, &reading, &start).unwrap_err().to_string();
+        assert!(error.contains("Remote Start"));
+        assert!(command(&device, &reading, &Set::test("power", false.into())).is_ok());
+        reading.machine.remote_start = true;
+        assert!(matches!(
+            command(&device, &reading, &start),
+            Ok(Command::Program(30))
+        ));
     }
 }
