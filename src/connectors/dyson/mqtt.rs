@@ -196,10 +196,14 @@ pub async fn session(
 
     let result = loop {
         tokio::select! {
-            packet = read_packet(&mut reader) => {
+            // The pings draw an answer every 20 seconds, so a minute of
+            // silence is a link that died without closing, as when the fan
+            // drops off the network. Ending lets the caller reconnect.
+            packet = timeout(Duration::from_secs(60), read_packet(&mut reader)) => {
                 let (header, body) = match packet {
-                    Ok(packet) => packet,
-                    Err(error) => break Err(error),
+                    Ok(Ok(packet)) => packet,
+                    Ok(Err(error)) => break Err(error),
+                    Err(_) => break Err(anyhow!("the purifier went quiet")),
                 };
                 match header >> 4 {
                     3 => {

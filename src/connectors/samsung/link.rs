@@ -156,29 +156,39 @@ impl Remote {
         key: &str,
         hold: Option<Duration>,
     ) -> Result<Option<String>> {
-        let mut found = None;
         if let Some(socket) = self.0.as_mut() {
             if !alive(socket).await {
                 self.0 = None;
             }
         }
-        for attempt in 0..2 {
-            if self.0.is_none() {
-                let (socket, token) = open_remote(host, token).await?;
-                found = found.or(token);
-                self.0 = Some(socket);
+        // A kept channel can still have been dropped by the TV since: then
+        // one more try, on a new one.
+        let reused = self.0.is_some();
+        match self.send(host, token, key, hold).await {
+            Err(error) if reused => {
+                log::debug!("remote channel dropped, reopening: {error:#}");
+                self.send(host, token, key, hold).await
             }
-            let socket = self.0.as_mut().expect("opened above");
-            match send_key(socket, key, hold).await {
-                Ok(()) => return Ok(found),
-                Err(error) if attempt == 0 => {
-                    log::debug!("remote channel dropped, reopening: {error:#}");
-                    self.0 = None;
-                }
-                Err(error) => return Err(error),
-            }
+            result => result,
         }
-        unreachable!("the second attempt returns")
+    }
+
+    /// Sends a key on the kept channel, or a new one, and keeps the channel
+    /// once a key has gone through on it.
+    async fn send(
+        &mut self,
+        host: &str,
+        token: &str,
+        key: &str,
+        hold: Option<Duration>,
+    ) -> Result<Option<String>> {
+        let (mut socket, found) = match self.0.take() {
+            Some(socket) => (socket, None),
+            None => open_remote(host, token).await?,
+        };
+        send_key(&mut socket, key, hold).await?;
+        self.0 = Some(socket);
+        Ok(found)
     }
 }
 

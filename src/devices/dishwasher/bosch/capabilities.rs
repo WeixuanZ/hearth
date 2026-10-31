@@ -119,12 +119,10 @@ fn number_in(text: &str) -> Option<f32> {
 }
 
 fn push_detail(detail: &mut String, note: &str) {
-    if detail.is_empty() {
-        detail.push_str(note);
-    } else {
+    if !detail.is_empty() {
         detail.push_str(" · ");
-        detail.push_str(note);
     }
+    detail.push_str(note);
 }
 
 fn selected(current: &str, feature_name: &str) -> bool {

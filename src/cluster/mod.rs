@@ -52,6 +52,10 @@ const FOUND_MS: u64 = 3_000;
 const LOWER_MS: u64 = 15_000;
 /// How long someone has to approve a computer that asks to join.
 const ASKING: Duration = Duration::from_secs(180);
+/// How long a member has to answer a request. Long enough for a TV to wake
+/// for a forwarded request; short enough that one stalled member cannot hold
+/// up the hellos and a takeover.
+const ANSWER: Duration = Duration::from_secs(15);
 
 struct Group {
     id: String,
@@ -470,7 +474,13 @@ async fn ask(addr: SocketAddr, key: &GroupKey, request: &Request) -> Result<Valu
     let mut stream = timeout(Duration::from_secs(3), TcpStream::connect(addr))
         .await
         .context("the other computer did not answer")??;
-    let Message::Nonce { nonce } = wire::receive(&mut stream).await? else {
+    timeout(ANSWER, exchange(&mut stream, key, request))
+        .await
+        .context("the other computer stopped answering")?
+}
+
+async fn exchange(stream: &mut TcpStream, key: &GroupKey, request: &Request) -> Result<Value> {
+    let Message::Nonce { nonce } = wire::receive(stream).await? else {
         anyhow::bail!("the other computer did not start properly");
     };
     let nonce = crypto::decode(&nonce)?;
@@ -478,8 +488,8 @@ async fn ask(addr: SocketAddr, key: &GroupKey, request: &Request) -> Result<Valu
     let message = Message::Sealed {
         sealed: crypto::encode(&sealed),
     };
-    wire::send(&mut stream, &message).await?;
-    let Message::Sealed { sealed } = wire::receive(&mut stream).await? else {
+    wire::send(stream, &message).await?;
+    let Message::Sealed { sealed } = wire::receive(stream).await? else {
         anyhow::bail!("the other computer refused");
     };
     let reply = crypto::open(
@@ -643,7 +653,7 @@ async fn join(
     mut confirm: watch::Receiver<bool>,
 ) -> Result<GroupKey> {
     let mut stream = timeout(Duration::from_secs(3), TcpStream::connect(addr)).await??;
-    let Message::Nonce { .. } = wire::receive(&mut stream).await? else {
+    let Message::Nonce { .. } = timeout(ANSWER, wire::receive(&mut stream)).await?? else {
         anyhow::bail!("the other computer did not start properly");
     };
     let ours = Ephemeral::new();
@@ -654,7 +664,8 @@ async fn join(
         public: crypto::encode(&our_public),
     };
     wire::send(&mut stream, &message).await?;
-    let Message::Joining { public, .. } = wire::receive(&mut stream).await? else {
+    let Message::Joining { public, .. } = timeout(ANSWER, wire::receive(&mut stream)).await??
+    else {
         anyhow::bail!("the other computer cannot take a request now");
     };
     let theirs = crypto::decode_key(&public)?;
