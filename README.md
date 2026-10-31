@@ -78,6 +78,7 @@ hearth set purifier sweep 90
 hearth rename tv "Living room TV"
 hearth remove "The Frame 2"
 hearth group                      # which computer serves Home
+hearth doctor                     # what stands between Home and the devices
 ```
 
 A device is its id, name, kind (`tv`, `purifier`, `dishwasher`), connector (`frame`, `dyson`, `bosch`), or a part of its name; with two TVs, `tv` asks which. A value is `on`/`off`, a number, or an option id from `hearth devices`.
@@ -85,6 +86,8 @@ A device is its id, name, kind (`tv`, `purifier`, `dishwasher`), connector (`fra
 **Scripts and agents.** Add `--json` to any command. `hearth devices --json` lists every capability with its kind, value, accepted options or range, and whether it is active, which is enough to drive any device without knowing its brand. Errors go to stderr with exit status 1. Programs can also talk to the [control socket](#control-socket) directly.
 
 **Names.** A device has one name. Rename it from the pencil that appears beside its name in the menu bar, with `hearth rename`, or in the Home app, and it changes everywhere. A second device of a model gets a name of its own, like `The Frame 2`.
+
+**When something does not work**, `hearth doctor` checks the config, the bridge and its place in Home, the network, the macOS firewall, and each device, and says what to do about anything wrong. It only looks: a device the bridge cannot reach is dialled and hung up on, and nothing is sent to it. It exits with status 1 if a check failed.
 
 **Start over with Home.** If Home will not add the bridge, or says it already belongs to a home, choose Forget Home in the menu bar on the computer serving Home (or stop the bridge and run `hearth unpair`). The bridge comes back as a new accessory. Remove any old Hearth from Home.
 
@@ -308,7 +311,7 @@ The status has a `group`: this computer's `role` (`serving`, `standby`, `joining
 ### Adding a device
 
 1. **Connector.** Under `src/connectors/<maker>/`: the protocol, and a `Setup` in `setup.rs` with the steps that add the device (what to ask, a page to open, waiting on the device), listed in `setup::PRODUCTS` and `setup::Flow`. The menu bar and `hearth add` show them without knowing the brand.
-2. **Settings.** In `src/config.rs`: a struct for what the device needs, implementing `Settings` (its id, its name, the HomeKit accessory ids it owns), and a variant of `Device`. Ids, merging between computers and renames then work for it.
+2. **Settings.** In `src/config.rs`: a struct for what the device needs, implementing `Settings` (its id, its name, the HomeKit accessory ids it owns, the address `hearth doctor` dials, and any setup left to do), and a variant of `Device`. Ids, merging between computers and renames then work for it.
 3. **Device.** Under `src/devices/<kind>/<model>/`: a task that keeps the device's state and connection (see `devices::tv::samsung_frame::spawn`), started from `devices::spawn`.
 4. **Capabilities.** In `capabilities.rs` next to it: a `snapshot` from state, and a function from a request to the device's command. Publish with `capabilities::publish`; take requests from `capabilities::listen`.
 5. **HomeKit.** In `accessory.rs`: the accessories, with fixed iids per service (tests check they are unique), and the same commands as the capabilities. Give the main service `device_name`, and call `follow_name` once the accessory is added, so renames reach Home and come back from it. Other services take `configured_name`, for names Home can change.
