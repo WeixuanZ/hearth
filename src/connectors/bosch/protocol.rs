@@ -912,10 +912,17 @@ mod tests {
         };
         let features = BTreeMap::from([
             ("256".to_owned(), feature("BSH.Common.Root.SelectedProgram")),
-            ("8196".to_owned(), feature("Dishcare.Dishwasher.Program.Eco50")),
+            (
+                "8196".to_owned(),
+                feature("Dishcare.Dishwasher.Program.Eco50"),
+            ),
         ]);
         let mut machine = Machine::default();
-        absorb(&features, &mut machine, &json!([{ "uid": 256, "value": 8196 }]));
+        absorb(
+            &features,
+            &mut machine,
+            &json!([{ "uid": 256, "value": 8196 }]),
+        );
         assert_eq!(label_of(&machine.program), "Eco 50");
         assert!(!machine.running());
         machine.operation = "BSH.Common.EnumType.OperationState.Run".into();
