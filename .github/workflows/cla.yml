@@ -33,4 +33,6 @@ jobs:
           path-to-document: https://github.com/${{ github.repository }}/blob/main/CLA.md
           path-to-signatures: signatures/cla.json
           branch: cla-signatures
-          allowlist: WeixuanZ,dependabot[bot],github-actions[bot]
+          # Claude* covers the Co-Authored-By trailer on Claude Code commits:
+          # it names no GitHub account, so it could never sign.
+          allowlist: WeixuanZ,dependabot[bot],github-actions[bot],Claude*
