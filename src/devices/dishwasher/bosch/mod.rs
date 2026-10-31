@@ -134,6 +134,14 @@ async fn drive(
 ) -> Result<()> {
     let mut delay = 2u64;
     loop {
+        // Asked for while it was unreachable, as from Home: dropped, not
+        // sent late. A session takes commands only once it is connected.
+        while let Ok(command) = commands.try_recv() {
+            log::info!(
+                "{}: not sent, it was not connected: {command:?}",
+                device.name
+            );
+        }
         match link::session(&device, Some(&states), Some(&mut commands)).await {
             Ok(_) => {
                 log::info!("{} connection closed", device.name);

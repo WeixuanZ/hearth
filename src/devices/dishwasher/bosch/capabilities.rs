@@ -44,7 +44,7 @@ pub fn snapshot(device: &BoschDevice, reading: &Reading) -> Snapshot {
     } else {
         label_of(&machine.program)
     };
-    let mut detail = if machine.remaining_secs == 0 {
+    let mut detail = if machine.remaining_secs == 0 || !machine.running() {
         programme
     } else if programme.is_empty() {
         format_remaining(machine.remaining_secs)
@@ -89,25 +89,34 @@ fn headline(reading: &Reading) -> String {
 }
 
 fn readings(machine: &crate::connectors::bosch::protocol::Machine) -> Vec<Capability> {
-    let mut out = vec![Capability::reading(
-        "remaining",
-        "Remaining",
-        "min",
-        (machine.remaining_secs > 0).then_some(machine.remaining_secs as f32 / 60.0),
-    )];
-    if machine.power {
+    let running = machine.running();
+    let mut out = vec![
+        Capability::reading(
+            "remaining",
+            "Remaining",
+            "min",
+            (machine.remaining_secs > 0).then_some(machine.remaining_secs as f32 / 60.0),
+        )
+        .active(running),
+        Capability::reading("progress", "Progress", "%", Some(machine.progress as f32))
+            .active(running),
+    ];
+    // Forecasts are shares of the most the machine can use, not amounts.
+    if let Some(value) = number_in(&machine.energy) {
         out.push(Capability::reading(
-            "progress",
-            "Progress",
+            "energy",
+            "Energy forecast",
             "%",
-            Some(machine.progress as f32),
+            Some(value),
         ));
     }
-    if let Some(value) = number_in(&machine.energy) {
-        out.push(Capability::reading("energy", "Energy", "kWh", Some(value)));
-    }
     if let Some(value) = number_in(&machine.water) {
-        out.push(Capability::reading("water", "Water", "L", Some(value)));
+        out.push(Capability::reading(
+            "water",
+            "Water forecast",
+            "%",
+            Some(value),
+        ));
     }
     out
 }
@@ -154,8 +163,12 @@ fn option_id(key: &str) -> &'static str {
 /// starting anything needs Remote Start, pressed on the machine.
 pub fn command(device: &BoschDevice, reading: &Reading, set: &Set) -> Result<Command> {
     let command = to_command(device, set)?;
+    // Never kept for later: a programme asked for an hour ago must not start now.
+    if !reading.online {
+        anyhow::bail!("the dishwasher is not connected, so nothing was sent");
+    }
     let starts = !matches!(command, Command::Power(false));
-    if starts && reading.online && !reading.machine.remote_start {
+    if starts && !reading.machine.remote_start {
         anyhow::bail!(
             "the dishwasher is not accepting remote start. Press Remote Start on it first"
         );
@@ -271,6 +284,10 @@ mod tests {
             ..Reading::default()
         };
         let start = Set::test("programme", serde_json::json!("30"));
+        let offline = command(&device, &Reading::default(), &start)
+            .unwrap_err()
+            .to_string();
+        assert!(offline.contains("not connected"));
         let error = command(&device, &reading, &start).unwrap_err().to_string();
         assert!(error.contains("Remote Start"));
         assert!(command(&device, &reading, &Set::test("power", false.into())).is_ok());
