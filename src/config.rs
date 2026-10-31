@@ -91,6 +91,13 @@ pub trait Settings {
     fn name_mut(&mut self) -> &mut String;
     /// Every HomeKit accessory id it owns, its own first. 0 until assigned.
     fn aids(&mut self) -> Vec<&mut u64>;
+    /// Where the bridge reaches it on the network, when that is a fixed
+    /// address rather than one found each time. `hearth doctor` dials it.
+    fn address(&self) -> Option<(String, u16)>;
+    /// What setup left to do, if anything.
+    fn incomplete(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 impl Settings for DysonDevice {
@@ -105,6 +112,10 @@ impl Settings for DysonDevice {
     }
     fn aids(&mut self) -> Vec<&mut u64> {
         vec![&mut self.aid]
+    }
+    /// Empty means found on the network by its serial.
+    fn address(&self) -> Option<(String, u16)> {
+        (!self.host.is_empty()).then(|| (self.host.clone(), self.port))
     }
 }
 
@@ -121,6 +132,15 @@ impl Settings for FrameDevice {
     /// The TV, and art mode as a tile of its own.
     fn aids(&mut self) -> Vec<&mut u64> {
         vec![&mut self.aid, &mut self.art_aid]
+    }
+    /// The TV's own API, which answers even before it is paired.
+    fn address(&self) -> Option<(String, u16)> {
+        Some((self.host.clone(), 8001))
+    }
+    fn incomplete(&self) -> Option<&'static str> {
+        self.token
+            .is_empty()
+            .then_some("not paired with the TV. Run `hearth frame pair` while it is on")
     }
 }
 
@@ -184,6 +204,15 @@ impl Settings for BoschDevice {
             &mut self.leak_aid,
             &mut self.cycle_aid,
         ]
+    }
+    /// The machine announces a bare name, which resolves with `.local`.
+    fn address(&self) -> Option<(String, u16)> {
+        let port = if self.iv.is_empty() { 443 } else { 80 };
+        let host = match self.host.contains('.') || self.host.contains(':') {
+            true => self.host.clone(),
+            false => format!("{}.local", self.host),
+        };
+        (!self.host.is_empty()).then_some((host, port))
     }
 }
 
@@ -1023,6 +1052,25 @@ mod tests {
         let homes = merge(&local, &remote, true, true);
         assert!(homes.conflict);
         assert_eq!(homes.config, local);
+    }
+
+    #[test]
+    fn a_dishwashers_bare_name_is_dialled_on_local() {
+        let mut device = washer();
+        let at = |device: &BoschDevice| {
+            device
+                .address()
+                .map(|(host, port)| format!("{host}:{port}"))
+        };
+        assert_eq!(
+            at(&device).as_deref(),
+            Some("BOSCH-Dishwasher-BOSCH-HA.local:443")
+        );
+        device.host = "10.0.0.9".into();
+        device.iv = "iv".into();
+        assert_eq!(at(&device).as_deref(), Some("10.0.0.9:80"));
+        device.host.clear();
+        assert_eq!(at(&device), None);
     }
 
     fn washer() -> BoschDevice {

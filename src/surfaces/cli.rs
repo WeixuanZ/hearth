@@ -448,26 +448,26 @@ fn accepts(capability: &Value) -> String {
 }
 
 /// Bold and dim, only on a terminal, and never with NO_COLOR set.
-struct Style {
+pub(super) struct Style {
     color: bool,
 }
 
 impl Style {
-    fn detect() -> Self {
+    pub(super) fn detect() -> Self {
         Self {
             color: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
         }
     }
 
-    fn bold(&self, text: &str) -> String {
+    pub(super) fn bold(&self, text: &str) -> String {
         self.wrap("1", text)
     }
 
-    fn dim(&self, text: &str) -> String {
+    pub(super) fn dim(&self, text: &str) -> String {
         self.wrap("2", text)
     }
 
-    fn wrap(&self, code: &str, text: &str) -> String {
+    pub(super) fn wrap(&self, code: &str, text: &str) -> String {
         if self.color {
             format!("\x1b[{code}m{text}\x1b[0m")
         } else {
