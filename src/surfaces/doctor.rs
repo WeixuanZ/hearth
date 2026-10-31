@@ -186,6 +186,7 @@ fn firewall(status: Option<&Value>) -> Option<Finding> {
 
 /// From what `socketfilterfw` printed: whether it is on, whether it blocks
 /// everything, and what it does with the bridge.
+#[cfg(any(target_os = "macos", test))]
 fn firewall_finding(state: &str, block_all: &str, bridge: &str) -> Finding {
     if !state.contains("enabled") {
         return Finding::new("Firewall", Verdict::Ok, "off");
