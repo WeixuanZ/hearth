@@ -385,17 +385,20 @@ pub fn load() -> Result<Config> {
     ))
 }
 
+/// The config, or a new one when there is none yet. A config that is there
+/// but cannot be read is an error: a new one saved over it would lose every
+/// device and the bridge's identity.
 pub fn load_or_new() -> Result<Config> {
-    match load() {
-        Ok(config) => Ok(config),
-        // Its own identity, or every new bridge would be the same accessory.
-        Err(_) => Ok(Config {
-            name: "Hearth".into(),
-            homekit_pin: format_pin(&random_pin()),
-            bridge_id: new_bridge_id(),
-            ..Default::default()
-        }),
+    if config_path()?.exists() || legacy_config_path()?.exists() {
+        return load();
     }
+    // Its own identity, or every new bridge would be the same accessory.
+    Ok(Config {
+        name: "Hearth".into(),
+        homekit_pin: format_pin(&random_pin()),
+        bridge_id: new_bridge_id(),
+        ..Default::default()
+    })
 }
 
 pub fn new_bridge_id() -> String {

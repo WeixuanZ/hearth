@@ -29,16 +29,20 @@ pub async fn session(
     let mut poll = tokio::time::interval(Duration::from_secs(60));
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     poll.tick().await;
+    // The poll draws an answer every minute. Its own tick is not an answer,
+    // so silence is timed from the last frame, not the last event.
+    let mut heard = tokio::time::Instant::now();
 
     loop {
-        let event = tokio::time::timeout(
-            Duration::from_secs(90),
-            next(&mut link, &mut talk, &mut commands, &mut poll),
-        )
-        .await
-        .context("the dishwasher went quiet")?;
+        let quiet = (heard + Duration::from_secs(150))
+            .saturating_duration_since(tokio::time::Instant::now());
+        let event =
+            tokio::time::timeout(quiet, next(&mut link, &mut talk, &mut commands, &mut poll))
+                .await
+                .context("the dishwasher went quiet")?;
         match event {
             Event::Frame(frame) => {
+                heard = tokio::time::Instant::now();
                 let Some(text) = frame? else {
                     if talk.synced() {
                         return Ok(machine);
