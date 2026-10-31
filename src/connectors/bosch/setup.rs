@@ -21,10 +21,12 @@ impl Setup {
         let step = Step::new(
             "Sign in to Home Connect",
             "Once, to learn the dishwasher's local key. After that hearth talks only to the \
-             dishwasher. Sign in on Home Connect's page. It ends on an address starting \
-             hcauth:// that the browser may say it cannot open: copy that whole address here.",
+             dishwasher. Sign in on Home Connect's page; when it is done, let the browser open \
+             Hearth. Without the menu bar app, the page ends on an address starting hcauth://: \
+             copy that whole address here.",
         )
         .link(sign_in.address())
+        .callback("redirect")
         .field(Field::text("redirect", "Address from the browser").hint("hcauth://…"))
         .field(
             Field::text("host", "Dishwasher's address")

@@ -28,6 +28,10 @@ pub struct Step {
     /// A page to open, like a sign-in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// The field the page fills by itself, where a surface can: it sends the
+    /// browser back to an address the menu bar app answers. Typed otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub callback: Option<&'static str>,
     /// Waiting on the device, like Allow on a TV: continue with no answers.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub wait: bool,
@@ -40,6 +44,7 @@ impl Step {
             note: note.into(),
             fields: Vec::new(),
             link: None,
+            callback: None,
             wait: false,
         }
     }
@@ -51,6 +56,11 @@ impl Step {
 
     pub fn link(mut self, link: String) -> Self {
         self.link = Some(link);
+        self
+    }
+
+    pub fn callback(mut self, field: &'static str) -> Self {
+        self.callback = Some(field);
         self
     }
 
@@ -330,6 +340,7 @@ mod tests {
             .as_str()
             .unwrap()
             .starts_with("https://"));
+        assert_eq!(started["step"]["callback"], "redirect");
         assert!(step("toaster", None).await.is_err());
         let error = step("frame", Some(Answers::new())).await.unwrap_err();
         assert!(error.to_string().contains("not started"));

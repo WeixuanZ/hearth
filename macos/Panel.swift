@@ -4,7 +4,7 @@ import SwiftUI
 struct Panel: View {
     @ObservedObject var model: BridgeModel
     @ObservedObject var updater: Updater
-    @State private var adding = false
+    @ObservedObject var setup: SetupSession
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -18,8 +18,8 @@ struct Panel: View {
                 HomeCard(model: model)
                     .padding(.top, 14)
             }
-            if adding {
-                AddDevice(model: model) { adding = false }
+            if setup.active {
+                AddDevice(session: setup)
                     .padding(.top, 14)
             } else if let devices = model.status?.devices, model.running, !devices.isEmpty {
                 VStack(spacing: 8) {
@@ -84,7 +84,7 @@ struct Panel: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if model.running {
-                Button("Add a device") { adding = true }
+                Button("Add a device") { setup.open() }
                     .controlSize(.small)
                     .padding(.top, 6)
             }
@@ -105,9 +105,9 @@ struct Panel: View {
                 .buttonStyle(.bordered)
                 .controlSize(.regular)
                 .disabled(model.starting)
-                if model.running, !adding {
+                if model.running, !setup.active {
                     Button {
-                        adding = true
+                        setup.open()
                     } label: {
                         Image(systemName: "plus")
                     }

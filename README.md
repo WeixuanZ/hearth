@@ -45,7 +45,7 @@ downloads the latest release for this machine (Linux x86_64 or aarch64, macOS Ap
 
 **A Samsung Frame.** Turn the TV on, out of art mode. On the TV, turn on device connection and Power On with Mobile (Settings → General → External Device Manager, and Connection), and IP Remote (Settings → General → Network → Expert Settings). Then press Allow twice: once for the remote, once for IP Control, which picks inputs and powers the TV fully off. Nothing leaves your network.
 
-**A Bosch dishwasher.** It has to be on the home Wi-Fi, already set up in the Home Connect app. You sign in once on Home Connect's own page, which ends on an `hcauth://` address the browser may say it cannot open: paste that address back. The account password is not saved; the dishwasher's local key is, and after that hearth talks only to the dishwasher. Starting a programme needs Remote Start on the dishwasher. Reading it does not.
+**A Bosch dishwasher.** It has to be on the home Wi-Fi, already set up in the Home Connect app. You sign in once on Home Connect's own page. From the menu bar, the browser then asks to open Hearth, which takes the sign-in from there; in the terminal, the page ends on an `hcauth://` address to paste back. The account password is not saved; the dishwasher's local key is, and after that hearth talks only to the dishwasher. Starting a programme needs Remote Start on the dishwasher. Reading it does not.
 
 **Apple Home.** Start the bridge (the menu bar's Start, or `hearth run`), then in the Home app choose Add Accessory → More options → Hearth, and enter the code the menu bar or `hearth pin` shows.
 
