@@ -24,7 +24,7 @@ const REMOTE: [(&str, &str, &str); 13] = [
     ("mute", "Mute", "KEY_MUTE"),
 ];
 
-impl Tv {
+impl<L> Tv<L> {
     pub(super) fn snapshot(&self) -> Snapshot {
         let headline = if !self.seen {
             "Looking"

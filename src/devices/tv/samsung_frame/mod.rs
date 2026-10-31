@@ -3,14 +3,11 @@
 
 mod accessory;
 mod capabilities;
+mod link;
 
 use crate::{
-    config::{self, FrameDevice},
-    connectors::samsung::{
-        ipc::IpControl,
-        link,
-        protocol::{self, ArtReply, Input},
-    },
+    config::FrameDevice,
+    connectors::samsung::protocol::{self, ArtReply, Input},
     surfaces::homekit::characteristics::follow_name,
 };
 use accessory::{apply, apply_art, build, build_art, View};
@@ -19,6 +16,7 @@ use hap::{
     server::{IpServer, Server},
     HapType,
 };
+use link::{Link, Network};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -45,7 +43,7 @@ pub enum Command {
 
 pub async fn spawn(device: FrameDevice, server: IpServer) -> Result<()> {
     let (tx, rx) = mpsc::channel(32);
-    let tv = Tv::new(device);
+    let tv = Tv::new(Network::new(&device), device);
     let snapshot = tv.snapshot();
     let id = snapshot.id.clone();
     crate::capabilities::publish(snapshot);
@@ -94,12 +92,10 @@ pub async fn spawn(device: FrameDevice, server: IpServer) -> Result<()> {
     Ok(())
 }
 
-/// The TV as hearth last saw it, and the connections it keeps open.
-struct Tv {
+/// The TV as hearth last saw it, and the link it reaches the TV by.
+struct Tv<L> {
     device: FrameDevice,
-    remote: link::Remote,
-    /// Set once IP Control is paired. Without it, power and inputs use keys.
-    ip: Option<IpControl>,
+    link: L,
     on: bool,
     input: u32,
     brightness: Option<i32>,
@@ -108,15 +104,11 @@ struct Tv {
     seen: bool,
 }
 
-impl Tv {
-    fn new(device: FrameDevice) -> Self {
-        let ip = (!device.ip_token.is_empty())
-            .then(|| IpControl::new(&device.host, &device.ip_token).ok())
-            .flatten();
+impl<L: Link> Tv<L> {
+    fn new(link: L, device: FrameDevice) -> Self {
         Self {
             device,
-            remote: link::Remote::default(),
-            ip,
+            link,
             on: false,
             input: 0,
             brightness: None,
@@ -132,36 +124,46 @@ impl Tv {
         mut requests: mpsc::Receiver<crate::capabilities::Set>,
         states: watch::Sender<View>,
     ) -> Result<()> {
-        let mut poll = tokio::time::interval(Duration::from_secs(20));
+        // Look before acting: a command handled on the defaults (off, art
+        // unknown) would power on or click a TV that is already showing.
+        let every = Duration::from_secs(20);
+        self.poll().await;
+        let mut poll = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
+            states.send(self.view()).ok();
+            crate::capabilities::publish(self.snapshot());
             tokio::select! {
                 command = commands.recv() => {
                     let Some(command) = command else { break };
+                    log::info!("{}: from Home: {command:?}", self.device.name);
                     if let Err(error) = self.handle(command).await {
                         log::warn!("{}: {error:#}", self.device.name);
                     }
                 }
                 Some(request) = requests.recv() => {
                     let result = match capabilities::command(&request) {
-                        Ok(command) => self.handle(command).await,
+                        Ok(command) => {
+                            log::info!("{}: requested: {command:?}", self.device.name);
+                            self.handle(command).await
+                        }
                         Err(error) => Err(error),
                     };
                     request.finish(result);
                 }
-                _ = poll.tick() => {
-                    if let Err(error) = self.refresh().await {
-                        log::debug!("{}: {error:#}", self.device.name);
-                        self.reachable = false;
-                        self.seen = true;
-                        self.on = false;
-                    }
-                }
+                _ = poll.tick() => self.poll().await,
             }
-            states.send(self.view()).ok();
-            crate::capabilities::publish(self.snapshot());
         }
         Ok(())
+    }
+
+    async fn poll(&mut self) {
+        if let Err(error) = self.refresh().await {
+            log::debug!("{}: {error:#}", self.device.name);
+            self.reachable = false;
+            self.seen = true;
+            self.on = false;
+        }
     }
 
     fn view(&self) -> View {
@@ -174,7 +176,7 @@ impl Tv {
     }
 
     async fn refresh(&mut self) -> Result<()> {
-        let info = link::device_info(&self.device.host).await?;
+        let info = self.link.info(&self.device).await?;
         self.on = info.on;
         self.reachable = true;
         self.seen = true;
@@ -190,8 +192,8 @@ impl Tv {
             self.art = None;
             return Ok(());
         }
-        if let Some(ip) = &self.ip {
-            match ip.input().await {
+        if self.link.ip_control() {
+            match self.link.input().await {
                 Ok(source) => match Input::from_source(&source) {
                     Some(input) => self.input = input as u32,
                     None => log::debug!("unknown input {source}"),
@@ -205,17 +207,14 @@ impl Tv {
         }
         // The art channel opens a few seconds after the picture. Until then
         // the TV is on and art mode is simply not known yet.
-        let replies = link::art(
-            &self.device.host,
-            &self.device.token,
-            "get_artmode_status",
-            None,
-        )
-        .await
-        .unwrap_or_else(|error| {
-            log::debug!("art: {error:#}");
-            Vec::new()
-        });
+        let replies = self
+            .link
+            .art(&self.device, "get_artmode_status", None)
+            .await
+            .unwrap_or_else(|error| {
+                log::debug!("art: {error:#}");
+                Vec::new()
+            });
         for reply in replies {
             match reply {
                 ArtReply::Mode(on) => self.art = Some(on),
@@ -238,12 +237,13 @@ impl Tv {
                 if !self.on {
                     self.power_on().await?;
                 }
-                if self.art != Some(false) {
+                if self.art == Some(true) {
                     let _ = self.set_art(false).await;
                 }
-                match &self.ip {
-                    Some(ip) => ip.set_input(input.source()).await?,
-                    None => self.click(&input.key()).await?,
+                if self.link.ip_control() {
+                    self.link.set_input(input.source()).await?;
+                } else {
+                    self.click(&input.key()).await?;
                 }
                 self.input = id;
             }
@@ -264,13 +264,10 @@ impl Tv {
                 let level = protocol::art_brightness(home);
                 self.brightness = Some(protocol::home_brightness(level));
                 let level = level.to_string();
-                let replies = link::art(
-                    &self.device.host,
-                    &self.device.token,
-                    "set_brightness",
-                    Some(&level),
-                )
-                .await?;
+                let replies = self
+                    .link
+                    .art(&self.device, "set_brightness", Some(&level))
+                    .await?;
                 if replies.is_empty() {
                     log::info!("the TV did not confirm the art brightness");
                 }
@@ -287,12 +284,9 @@ impl Tv {
 
     /// From standby, the TV comes back showing a picture, not art.
     async fn power_on(&mut self) -> Result<()> {
-        let by_ip = match &self.ip {
-            Some(ip) => ip.set_power(true).await.is_ok(),
-            None => false,
-        };
+        let by_ip = self.link.ip_control() && self.link.set_power(true).await.is_ok();
         if !by_ip {
-            match link::device_info(&self.device.host).await {
+            match self.link.info(&self.device).await {
                 Ok(info) if info.on => {
                     self.on = true;
                     return Ok(());
@@ -301,11 +295,9 @@ impl Tv {
                 Ok(_) => self.click("KEY_POWER").await?,
                 // Fully asleep, it answers only a wake packet, which may be enough.
                 Err(_) => {
-                    link::wake(&self.device.mac)?;
+                    self.link.wake(&self.device)?;
                     tokio::time::sleep(Duration::from_secs(2)).await;
-                    let woke = link::device_info(&self.device.host)
-                        .await
-                        .is_ok_and(|info| info.on);
+                    let woke = self.link.info(&self.device).await.is_ok_and(|info| info.on);
                     if !woke {
                         self.click("KEY_POWER").await?;
                     }
@@ -318,10 +310,7 @@ impl Tv {
     }
 
     async fn power_off(&mut self) -> Result<()> {
-        let by_ip = match &self.ip {
-            Some(ip) => ip.set_power(false).await.is_ok(),
-            None => false,
-        };
+        let by_ip = self.link.ip_control() && self.link.set_power(false).await.is_ok();
         if !by_ip {
             // A click toggles art, and the 2024 firmware ignores KEY_POWEROFF.
             // Only a held power key, repeated as a remote does, turns it off.
@@ -335,25 +324,30 @@ impl Tv {
 
     async fn set_art(&mut self, on: bool) -> Result<()> {
         let value = if on { "on" } else { "off" };
-        let replies = link::art(
-            &self.device.host,
-            &self.device.token,
-            "set_artmode_status",
-            Some(value),
-        )
-        .await
-        .unwrap_or_default();
+        let replies = self
+            .link
+            .art(&self.device, "set_artmode_status", Some(value))
+            .await
+            .unwrap_or_default();
         if !replies.is_empty() {
             self.art = Some(on);
             return Ok(());
         }
         // The art channel can stay silent. One power click moves a Frame
-        // showing a source into art, and one click in art leaves it.
-        if self.art != Some(on) {
-            self.click("KEY_POWER").await?;
-            self.art = Some(on);
+        // showing a source into art, and one click in art leaves it, so a
+        // click is right only when the mode is known: on a guess it can send
+        // the TV the wrong way.
+        match self.art {
+            Some(art) if art != on => {
+                self.click("KEY_POWER").await?;
+                self.art = Some(on);
+                Ok(())
+            }
+            Some(_) => Ok(()),
+            None => Err(anyhow!(
+                "the TV did not say whether it is showing art, so nothing was pressed"
+            )),
         }
-        Ok(())
     }
 
     async fn click(&mut self, key: &str) -> Result<()> {
@@ -364,10 +358,7 @@ impl Tv {
         if self.device.token.is_empty() {
             anyhow::bail!("not paired. Run `hearth frame pair` while the TV is on");
         }
-        let token = self
-            .remote
-            .press(&self.device.host, &self.device.token, key, hold)
-            .await?;
+        let token = self.link.press(&self.device, key, hold).await?;
         if let Some(token) = token.filter(|token| *token != self.device.token) {
             self.device.token = token;
             self.remember();
@@ -376,34 +367,201 @@ impl Tv {
     }
 
     fn remember(&self) {
-        let Ok(mut config) = config::load() else {
-            return;
-        };
-        let saved = config.devices.iter_mut().find_map(|item| match item {
-            config::Device::Frame(tv) if tv.host == self.device.host => Some(tv),
-            _ => None,
-        });
-        let Some(saved) = saved else {
-            return;
-        };
-        saved.token = self.device.token.clone();
-        saved.mac = self.device.mac.clone();
-        saved.model = self.device.model.clone();
-        if let Err(error) = config::save(&config) {
-            log::warn!("could not save the TV token: {error:#}");
-        }
+        self.link.save(&self.device);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connectors::samsung::protocol::DeviceInfo;
+    use std::sync::Mutex;
+
+    /// A Frame in memory: a picture or art while on, and every key it got.
+    #[derive(Default)]
+    struct Screen {
+        on: bool,
+        art: bool,
+        /// Whether the art channel answers. A real Frame's often stays silent.
+        answers: bool,
+        ip: bool,
+        sent: Vec<String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct Fake(Arc<Mutex<Screen>>);
+
+    impl Fake {
+        fn showing(art: bool, answers: bool) -> Self {
+            let fake = Self::default();
+            *fake.0.lock().unwrap() = Screen {
+                on: true,
+                art,
+                answers,
+                ..Default::default()
+            };
+            fake
+        }
+
+        fn sent(&self) -> Vec<String> {
+            self.0.lock().unwrap().sent.clone()
+        }
+
+        fn state(&self) -> (bool, bool) {
+            let screen = self.0.lock().unwrap();
+            (screen.on, screen.art)
+        }
+    }
+
+    impl Link for Fake {
+        async fn info(&self, _: &FrameDevice) -> Result<DeviceInfo> {
+            Ok(DeviceInfo {
+                on: self.0.lock().unwrap().on,
+                mac: String::new(),
+                model: String::new(),
+                name: "Frame".into(),
+                frame: true,
+            })
+        }
+
+        async fn art(
+            &self,
+            _: &FrameDevice,
+            request: &str,
+            value: Option<&str>,
+        ) -> Result<Vec<ArtReply>> {
+            let mut screen = self.0.lock().unwrap();
+            if !screen.answers || !screen.on {
+                return Ok(Vec::new());
+            }
+            if request == "set_artmode_status" {
+                screen.art = value == Some("on");
+            }
+            Ok(vec![ArtReply::Mode(screen.art)])
+        }
+
+        async fn press(
+            &mut self,
+            _: &FrameDevice,
+            key: &str,
+            hold: Option<Duration>,
+        ) -> Result<Option<String>> {
+            let mut screen = self.0.lock().unwrap();
+            match (key, hold) {
+                ("KEY_POWER", Some(_)) => (screen.on, screen.art) = (false, false),
+                ("KEY_POWER", None) if screen.on => screen.art = !screen.art,
+                ("KEY_POWER", None) => (screen.on, screen.art) = (true, false),
+                _ => {}
+            }
+            let held = if hold.is_some() { " held" } else { "" };
+            screen.sent.push(format!("{key}{held}"));
+            Ok(None)
+        }
+
+        fn wake(&self, _: &FrameDevice) -> Result<()> {
+            Ok(())
+        }
+
+        fn ip_control(&self) -> bool {
+            self.0.lock().unwrap().ip
+        }
+
+        async fn set_power(&self, on: bool) -> Result<()> {
+            let mut screen = self.0.lock().unwrap();
+            (screen.on, screen.art) = (on, false);
+            screen.sent.push(format!("power {on}"));
+            Ok(())
+        }
+
+        async fn input(&self) -> Result<String> {
+            Ok("HDMI1".into())
+        }
+
+        async fn set_input(&self, source: &str) -> Result<()> {
+            let mut screen = self.0.lock().unwrap();
+            screen.art = false;
+            screen.sent.push(format!("input {source}"));
+            Ok(())
+        }
+
+        fn save(&self, _: &FrameDevice) {}
+    }
+
+    /// Runs the TV's task over `commands` from Home, until they run out.
+    async fn run(fake: &Fake, commands: &[Command]) {
+        let device = FrameDevice {
+            token: "token".into(),
+            ..Default::default()
+        };
+        let (tx, rx) = mpsc::channel(8);
+        for command in commands {
+            tx.send(command.clone()).await.unwrap();
+        }
+        drop(tx);
+        let (_requests, requests) = mpsc::channel(1);
+        let tv = Tv::new(fake.clone(), device);
+        let (states, _) = watch::channel(tv.view());
+        tv.run(rx, requests, states).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn starting_up_leaves_the_tv_alone() {
+        for art in [false, true] {
+            let fake = Fake::showing(art, false);
+            run(&fake, &[]).await;
+            assert_eq!(fake.sent(), Vec::<String>::new());
+            assert_eq!(fake.state(), (true, art));
+        }
+    }
+
+    #[tokio::test]
+    async fn an_input_on_a_tv_already_showing_one_presses_only_its_key() {
+        // The art channel is silent, so the mode is not known: a power click
+        // to leave art would have sent a picture to art instead.
+        let fake = Fake::showing(false, false);
+        run(&fake, &[Command::Input(Input::Hdmi2 as u32)]).await;
+        assert_eq!(fake.sent(), [Input::Hdmi2.key()]);
+        assert_eq!(fake.state(), (true, false));
+    }
+
+    #[tokio::test]
+    async fn an_input_leaves_art_first_when_the_tv_says_it_is_in_art() {
+        let fake = Fake::showing(true, true);
+        fake.0.lock().unwrap().ip = true;
+        run(&fake, &[Command::Input(Input::Hdmi2 as u32)]).await;
+        assert_eq!(fake.sent(), ["input HDMI2"]);
+        assert_eq!(fake.state(), (true, false));
+    }
+
+    #[tokio::test]
+    async fn art_mode_is_not_toggled_on_a_guess() {
+        let fake = Fake::showing(true, false);
+        run(&fake, &[Command::Art(false), Command::Art(true)]).await;
+        assert_eq!(fake.sent(), Vec::<String>::new());
+        assert_eq!(fake.state(), (true, true));
+    }
+
+    #[tokio::test]
+    async fn art_from_standby_wakes_the_tv_then_clicks_into_art() {
+        let fake = Fake::default();
+        run(&fake, &[Command::Art(true)]).await;
+        assert_eq!(fake.sent(), ["KEY_POWER", "KEY_POWER"]);
+        assert_eq!(fake.state(), (true, true));
+    }
+
+    #[tokio::test]
+    async fn turning_off_holds_the_power_key() {
+        let fake = Fake::showing(true, true);
+        run(&fake, &[Command::Active(false)]).await;
+        assert_eq!(fake.sent(), ["KEY_POWER held"]);
+        assert_eq!(fake.state(), (false, false));
+    }
 
     #[test]
     fn art_mode_shows_only_while_the_tv_is_on() {
-        let mut tv = Tv::new(FrameDevice::default());
+        let mut tv = Tv::new(Fake::default(), FrameDevice::default());
         tv.art = Some(true);
-        let art = |tv: &Tv| {
+        let art = |tv: &Tv<Fake>| {
             let snapshot = tv.snapshot();
             let art = snapshot.capabilities.iter().find(|c| c.id == "art");
             (tv.view().art, art.map(|c| c.value.clone()))
