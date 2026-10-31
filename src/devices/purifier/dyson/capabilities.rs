@@ -4,10 +4,15 @@
 use crate::config::Settings as _;
 use crate::connectors::dyson::protocol::{sweep, Intent, MachineState, SWEEPS};
 use crate::{
-    capabilities::{Capability, Item, Set, Snapshot},
+    capabilities::{Alert, Capability, Item, Set, Snapshot},
     config::DysonDevice,
 };
 use anyhow::{anyhow, Result};
+
+/// A filter this worn is due for replacing.
+const FILTER_LOW: u8 = 10;
+/// PM2.5 in µg/m³ above which air counts as unhealthy for sensitive groups.
+const PM25_HIGH: f32 = 35.0;
 
 pub fn snapshot(device: &DysonDevice, state: &MachineState) -> Snapshot {
     let online = state.topic_prefix.is_some() || state.temperature_c.is_some();
@@ -84,7 +89,26 @@ pub fn snapshot(device: &DysonDevice, state: &MachineState) -> Snapshot {
         headline,
         detail: device.model.clone(),
         capabilities,
+        alerts: if online { alerts(state) } else { Vec::new() },
     }
+}
+
+fn alerts(state: &MachineState) -> Vec<Alert> {
+    let mut alerts = Vec::new();
+    if let Some(life) = state.hepa_life.filter(|life| *life <= FILTER_LOW) {
+        alerts.push(Alert::new(
+            "filter",
+            format!("Filter life is down to {life}%. Time to replace it."),
+        ));
+    }
+    let pm25 = state.pm25.filter(|_| state.sensing());
+    if let Some(pm25) = pm25.filter(|pm25| *pm25 > PM25_HIGH) {
+        alerts.push(Alert::new(
+            "pm25",
+            format!("PM2.5 is {pm25:.0} µg/m³. The air is unhealthy."),
+        ));
+    }
+    alerts
 }
 
 /// What a request asks of the fan, in the intents HomeKit sends too.
@@ -110,4 +134,57 @@ pub fn intent(set: &Set) -> Result<Intent> {
         "heat_target" => Intent::HeatTargetC(set.number()?),
         _ => return Err(set.unknown()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn alerts(state: MachineState) -> Vec<&'static str> {
+        let device = DysonDevice {
+            aid: 2,
+            name: "Purifier".into(),
+            serial: "ABC-XY-12345678".into(),
+            model: "HP09".into(),
+            product_type: "auto".into(),
+            mqtt_password: "secret".into(),
+            host: String::new(),
+            port: 1883,
+            heating: true,
+        };
+        let snap = snapshot(&device, &state);
+        snap.alerts.iter().map(|alert| alert.id).collect()
+    }
+
+    #[test]
+    fn a_worn_filter_and_dirty_air_are_alerts() {
+        let measuring = MachineState {
+            temperature_c: Some(20.0),
+            monitoring: true,
+            ..MachineState::default()
+        };
+        let clean = MachineState {
+            hepa_life: Some(11),
+            pm25: Some(35.0),
+            ..measuring.clone()
+        };
+        assert_eq!(alerts(clean), Vec::<&str>::new());
+        let worn = MachineState {
+            hepa_life: Some(10),
+            pm25: Some(36.0),
+            ..measuring
+        };
+        assert_eq!(alerts(worn), ["filter", "pm25"]);
+    }
+
+    #[test]
+    fn a_stale_reading_raises_nothing() {
+        let resting = MachineState {
+            temperature_c: Some(20.0),
+            pm25: Some(80.0),
+            ..MachineState::default()
+        };
+        assert_eq!(alerts(resting), Vec::<&str>::new());
+        assert_eq!(alerts(MachineState::default()), Vec::<&str>::new());
+    }
 }

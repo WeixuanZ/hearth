@@ -2,10 +2,10 @@
 //! HomeKit shows the same state through `accessory`, and both send the same commands.
 
 use crate::connectors::bosch::protocol::{
-    format_remaining, label_of, option_switches, programs, Command, Reading,
+    format_remaining, label_of, option_switches, programs, Command, Machine, Reading,
 };
 use crate::{
-    capabilities::{Capability, Item, Set, Snapshot},
+    capabilities::{Alert, Capability, Item, Set, Snapshot},
     config::{BoschDevice, Settings as _},
 };
 use anyhow::{anyhow, Result};
@@ -73,7 +73,32 @@ pub fn snapshot(device: &BoschDevice, reading: &Reading) -> Snapshot {
         headline: headline(reading),
         detail,
         capabilities,
+        alerts: if reading.online {
+            alerts(machine)
+        } else {
+            Vec::new()
+        },
     }
+}
+
+fn alerts(machine: &Machine) -> Vec<Alert> {
+    [
+        (machine.finished, "finished", "The programme has finished."),
+        (
+            machine.salt_low == Some(true),
+            "salt",
+            "The salt is low. Refill it.",
+        ),
+        (
+            machine.rinse_low == Some(true),
+            "rinse_aid",
+            "The rinse aid is low. Refill it.",
+        ),
+    ]
+    .into_iter()
+    .filter(|(holds, ..)| *holds)
+    .map(|(_, id, message)| Alert::new(id, message))
+    .collect()
 }
 
 fn headline(reading: &Reading) -> String {
@@ -243,6 +268,30 @@ mod tests {
             iv: String::new(),
             features,
         }
+    }
+
+    #[test]
+    fn a_finished_programme_and_low_salt_are_alerts_while_it_is_connected() {
+        let machine = Machine {
+            finished: true,
+            salt_low: Some(true),
+            rinse_low: Some(false),
+            ..Machine::default()
+        };
+        let alerts = |online| {
+            let reading = Reading {
+                online,
+                machine: machine.clone(),
+            };
+            let ids: Vec<_> = snapshot(&device(), &reading)
+                .alerts
+                .iter()
+                .map(|alert| alert.id)
+                .collect();
+            ids
+        };
+        assert_eq!(alerts(true), ["finished", "salt"]);
+        assert_eq!(alerts(false), Vec::<&str>::new());
     }
 
     #[test]

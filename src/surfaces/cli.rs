@@ -356,6 +356,10 @@ fn print_device(device: &Value, style: &Style) {
             text("detail")
         ))
     );
+    for alert in device["alerts"].as_array().into_iter().flatten() {
+        let message = alert["message"].as_str().unwrap_or_default();
+        println!("{} {message}", style.wrap("33", "!"));
+    }
     let capabilities = device["capabilities"]
         .as_array()
         .cloned()

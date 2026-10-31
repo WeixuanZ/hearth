@@ -142,6 +142,26 @@ pub struct Snapshot {
     pub headline: String,
     pub detail: String,
     pub capabilities: Vec<Capability>,
+    /// What is worth telling someone about now. Each stays while it holds,
+    /// and surfaces notify when one appears.
+    pub alerts: Vec<Alert>,
+}
+
+/// Something that needs a person, like a filter to replace.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Alert {
+    /// Stable for the device, so a surface notifies once while it holds.
+    pub id: &'static str,
+    pub message: String,
+}
+
+impl Alert {
+    pub fn new(id: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            id,
+            message: message.into(),
+        }
+    }
 }
 
 /// A request to change one capability. The device answers through `done`
