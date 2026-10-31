@@ -189,6 +189,14 @@ pub struct Machine {
     pub options: BTreeMap<String, bool>,
 }
 
+impl Machine {
+    /// Running a programme, or about to: the only time its remaining time
+    /// and progress mean anything. Otherwise they are the last programme's.
+    pub fn running(&self) -> bool {
+        self.operation.ends_with("Run") || self.operation.ends_with("DelayedStart")
+    }
+}
+
 impl Default for Machine {
     fn default() -> Self {
         Self {
@@ -701,7 +709,13 @@ fn absorb(features: &BTreeMap<String, BoschFeature>, machine: &mut Machine, data
         let Some(value) = item.get("value") else {
             continue;
         };
-        if let Some((name, text)) = describe(features, &uid, value) {
+        let Some((name, text)) = describe(features, &uid, value) else {
+            continue;
+        };
+        // The machine names a programme by its uid: its name is in the map.
+        if name.ends_with("ActiveProgram") || name.ends_with("SelectedProgram") {
+            note_program(features, machine, value);
+        } else {
             apply_value(machine, &name, &text);
         }
     }
@@ -888,5 +902,23 @@ mod tests {
         let program = talk.submit(&features, Command::Program(30)).unwrap();
         assert!(program.contains(r#""program":30"#));
         assert!(program.find(r#""program""#).unwrap() < program.find(r#""options""#).unwrap());
+    }
+
+    #[test]
+    fn a_programme_given_by_its_uid_is_named() {
+        let feature = |name: &str| BoschFeature {
+            name: name.into(),
+            values: BTreeMap::new(),
+        };
+        let features = BTreeMap::from([
+            ("256".to_owned(), feature("BSH.Common.Root.SelectedProgram")),
+            ("8196".to_owned(), feature("Dishcare.Dishwasher.Program.Eco50")),
+        ]);
+        let mut machine = Machine::default();
+        absorb(&features, &mut machine, &json!([{ "uid": 256, "value": 8196 }]));
+        assert_eq!(label_of(&machine.program), "Eco 50");
+        assert!(!machine.running());
+        machine.operation = "BSH.Common.EnumType.OperationState.Run".into();
+        assert!(machine.running());
     }
 }

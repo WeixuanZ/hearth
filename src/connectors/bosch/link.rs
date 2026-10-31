@@ -64,6 +64,7 @@ pub async fn session(
                 }
             }
             Event::Command(Some(command)) => {
+                log::info!("{}: sending {command:?}", device.name);
                 let starting = matches!(command, Command::Program(_) | Command::Power(true));
                 if starting && talk.synced() && !machine.remote_start {
                     log::warn!(
