@@ -137,6 +137,13 @@ impl<L: Link> Tv<L> {
                 command = commands.recv() => {
                     let Some(command) = command else { break };
                     log::info!("{}: from Home: {command:?}", self.device.name);
+                    // Home's input picker works only while the TV is on. With it
+                    // off, an input comes from a scene or an automation, beside
+                    // turning it off, and waking the TV for it would undo that.
+                    if matches!(command, Command::Input(_)) && !self.on {
+                        log::info!("{}: off, so the input was not set", self.device.name);
+                        continue;
+                    }
                     if let Err(error) = self.handle(command).await {
                         log::warn!("{}: {error:#}", self.device.name);
                     }
@@ -547,6 +554,18 @@ mod tests {
         run(&fake, &[Command::Art(true)]).await;
         assert_eq!(fake.sent(), ["KEY_POWER", "KEY_POWER"]);
         assert_eq!(fake.state(), (true, true));
+    }
+
+    #[tokio::test]
+    async fn a_scene_that_turns_the_tv_off_with_an_input_leaves_it_off() {
+        let fake = Fake::showing(false, false);
+        run(
+            &fake,
+            &[Command::Active(false), Command::Input(Input::Hdmi4 as u32)],
+        )
+        .await;
+        assert_eq!(fake.sent(), ["KEY_POWER held"]);
+        assert_eq!(fake.state(), (false, false));
     }
 
     #[tokio::test]
