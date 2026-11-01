@@ -173,11 +173,12 @@ fn headline(reading: &Reading, kept: Kept) -> String {
 }
 fn readings(machine: &crate::connectors::bosch::protocol::Machine) -> Vec<Capability> {
     let mut out = Vec::new();
-    // Forecasts are shares of the most the machine can use, not amounts.
+    // The machine's forecast for the programme chosen, as a share of the most
+    // any of its programmes uses: 51% is half its hungriest. Not an amount.
     if let Some(value) = number_in(&machine.energy) {
         out.push(Capability::reading(
             "energy",
-            "Energy forecast",
+            "Energy (of max)",
             "%",
             Some(value),
         ));
@@ -185,7 +186,7 @@ fn readings(machine: &crate::connectors::bosch::protocol::Machine) -> Vec<Capabi
     if let Some(value) = number_in(&machine.water) {
         out.push(Capability::reading(
             "water",
-            "Water forecast",
+            "Water (of max)",
             "%",
             Some(value),
         ));
