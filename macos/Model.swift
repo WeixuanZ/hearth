@@ -15,6 +15,7 @@ final class BridgeModel: ObservableObject {
     @Published var problem: String?
 
     private let queue = DispatchQueue(label: "hearth.control")
+    private let notifier = Notifier()
     private var timer: Timer?
 
     /// Whether a Home holds the bridge. Unknown while it is not running.
@@ -44,6 +45,7 @@ final class BridgeModel: ObservableObject {
                 guard let self else { return }
                 self.status = status
                 self.running = status != nil
+                if let status { self.notifier.see(status.devices) }
                 if self.forgetting && self.paired == false {
                     self.forgetting = false
                 }

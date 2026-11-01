@@ -39,6 +39,14 @@ struct Device: Decodable, Identifiable {
     var headline: String
     var detail: String
     var capabilities: [Capability]
+    /// Missing from a bridge older than alerts.
+    var alerts: [Alert]?
+}
+
+/// Something that needs a person, like a filter to replace.
+struct Alert: Decodable {
+    var id: String
+    var message: String
 }
 
 /// One thing a device can do or report. Which fields are set depends on

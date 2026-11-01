@@ -78,6 +78,7 @@ impl<L> Tv<L> {
                 )
                 .active(self.on),
             ],
+            alerts: Vec::new(),
         }
     }
 }

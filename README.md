@@ -87,6 +87,8 @@ A device is its id, name, kind (`tv`, `purifier`, `dishwasher`), connector (`fra
 
 **Names.** A device has one name. Rename it from the pencil that appears beside its name in the menu bar, with `hearth rename`, or in the Home app, and it changes everywhere. A second device of a model gets a name of its own, like `The Frame 2`.
 
+**Alerts.** The menu bar posts a Mac notification when a purifier's filter is down to 10% or PM2.5 rises above 35 µg/m³, and when a dishwasher finishes or runs low on salt or rinse aid. Each comes once while it holds; one that clears and comes back within half an hour is not repeated. `hearth devices` lists the alerts that hold now, and `--json` gives them to scripts. A device raises its own: `alerts` in its snapshot.
+
 **When something does not work**, `hearth doctor` checks the config, the bridge and its place in Home, the network, the macOS firewall, and each device, and says what to do about anything wrong. It only looks: a device the bridge cannot reach is dialled and hung up on, and nothing is sent to it. It exits with status 1 if a check failed.
 
 **Start over with Home.** If Home will not add the bridge, or says it already belongs to a home, choose Forget Home in the menu bar on the computer serving Home (or stop the bridge and run `hearth unpair`). The bridge comes back as a new accessory. Remove any old Hearth from Home.
