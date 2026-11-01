@@ -441,13 +441,41 @@ fn accepts(capability: &Value) -> String {
             })
             .unwrap_or_default()
     };
+    // Opaque ids, like a dishwasher's programme numbers, are listed by name,
+    // which `set` takes as well.
+    let options = || {
+        let items = capability["options"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let opaque = items.iter().any(|item| {
+            item["id"]
+                .as_str()
+                .is_some_and(|id| id.chars().all(|c| c.is_ascii_digit()))
+        });
+        if !opaque {
+            return ids("options");
+        }
+        items
+            .iter()
+            .filter_map(|item| item["name"].as_str())
+            .map(|name| {
+                if name.contains(' ') {
+                    format!("\"{name}\"")
+                } else {
+                    name.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
     match capability["kind"].as_str() {
         Some("power" | "switch") => "on | off".into(),
         Some("run") => match capability["blocked"].as_str() {
             Some(why) => why.to_owned(),
             None => "start | stop".into(),
         },
-        Some("choice") => ids("options"),
+        Some("choice") => options(),
         Some("keys") => format!("press: {}", ids("keys")),
         Some("level") => {
             let number = |key: &str| number_text(capability[key].as_f64().unwrap_or(0.0));

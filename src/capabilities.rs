@@ -384,11 +384,15 @@ pub fn snapshot(device: &str) -> Result<Snapshot> {
 
 /// Sends a request to a device and waits for it to act.
 pub async fn set(device: &str, capability: &str, value: Value) -> Result<()> {
-    let commands = with(|registry| {
-        find(&registry.devices, device).map(|index| registry.devices[index].commands.clone())
+    let (commands, value) = with(|registry| {
+        find(&registry.devices, device).map(|index| {
+            let entry = &registry.devices[index];
+            let value = option_id(&entry.snapshot, capability, value);
+            (entry.commands.clone(), value)
+        })
     })
-    .ok_or_else(|| anyhow!("the bridge is starting"))??
-    .ok_or_else(|| anyhow!("{device} is not ready yet"))?;
+    .ok_or_else(|| anyhow!("the bridge is starting"))??;
+    let commands = commands.ok_or_else(|| anyhow!("{device} is not ready yet"))?;
     let (done, answer) = oneshot::channel();
     let request = Set {
         capability: capability.into(),
@@ -400,6 +404,25 @@ pub async fn set(device: &str, capability: &str, value: Value) -> Result<()> {
         .await
         .map_err(|_| anyhow!("{device} stopped"))?;
     answer.await.map_err(|_| anyhow!("{device} stopped"))?
+}
+
+/// A choice's option given by its name, as people say it, becomes its id:
+/// "Eco 50" for a dishwasher's programme 8195. Anything else is left as is.
+fn option_id(snapshot: &Snapshot, capability: &str, value: Value) -> Value {
+    let Some(name) = value.as_str() else {
+        return value;
+    };
+    snapshot
+        .capabilities
+        .iter()
+        .find(|item| item.id == capability)
+        .and_then(|item| match &item.kind {
+            Kind::Choice { options } => options
+                .iter()
+                .find(|option| option.id != name && option.name.eq_ignore_ascii_case(name)),
+            _ => None,
+        })
+        .map_or(value.clone(), |option| json!(option.id))
 }
 
 /// A device by its id, name, connector (`dyson`), category (`tv`), or a part
@@ -431,5 +454,42 @@ fn find(devices: &[Entry], query: &str) -> Result<usize> {
                 .collect::<Vec<_>>()
                 .join(", ")
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_choice_takes_an_options_name_as_well_as_its_id() {
+        let snapshot = Snapshot {
+            id: "abc:1".into(),
+            kind: "abc",
+            category: "dishwasher",
+            name: "Washer".into(),
+            online: true,
+            headline: String::new(),
+            detail: String::new(),
+            capabilities: vec![Capability::choice(
+                "programme",
+                "Programme",
+                vec![Item::new("8195", "Eco 50"), Item::new("8196", "Quick 45")],
+                None,
+            )],
+            alerts: Vec::new(),
+        };
+        let id = |value: Value| option_id(&snapshot, "programme", value);
+        assert_eq!(id(json!("eco 50")), json!("8195"));
+        assert_eq!(id(json!("8196")), json!("8196"));
+        assert_eq!(
+            id(json!("Rinse")),
+            json!("Rinse"),
+            "left for the device to refuse"
+        );
+        assert_eq!(
+            option_id(&snapshot, "power", json!("Eco 50")),
+            json!("Eco 50")
+        );
     }
 }
