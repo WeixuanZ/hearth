@@ -3,12 +3,20 @@ import Charts
 import SwiftUI
 
 /// How far back a reading's history goes.
+/// Averages is today against the usual day, from the last thirty.
 enum HistorySpan: Int, CaseIterable, Identifiable {
     case day = 24
     case week = 168
+    case averages = 720
 
     var id: Int { rawValue }
-    var label: String { self == .day ? "24 hours" : "7 days" }
+    var label: String {
+        switch self {
+        case .day: return "24 hours"
+        case .week: return "7 days"
+        case .averages: return "Averages"
+        }
+    }
 }
 
 /// A reading's history, in the manner of Apple Weather's detail cards: the
@@ -19,6 +27,7 @@ struct HistoryCard: View {
     let reading: Capability
     @State private var span = HistorySpan.day
     @State private var replies: [HistorySpan: HistoryReply] = [:]
+    @State private var normals: NormalsReply?
     @State private var failure: String?
     /// The moment under the pointer, while scrubbing the day.
     @State private var scrub: HistorySample?
@@ -26,26 +35,31 @@ struct HistoryCard: View {
 
     init(
         device: String, reading: Capability, span: HistorySpan = .day,
-        preset: [HistorySpan: HistoryReply] = [:], now: Date = Date()
+        preset: [HistorySpan: HistoryReply] = [:], normals: NormalsReply? = nil, now: Date = Date()
     ) {
         self.device = device
         self.reading = reading
         self.now = now
         _span = State(initialValue: span)
         _replies = State(initialValue: preset)
+        _normals = State(initialValue: normals)
     }
 
     var body: some View {
         let reply = replies[span]
         let samples = reply?.series.first?.samples ?? []
         VStack(alignment: .leading, spacing: 12) {
-            header(samples)
+            if span != .averages {
+                header(samples)
+            }
             Picker("Span", selection: $span) {
                 ForEach(HistorySpan.allCases) { Text($0.label).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            if let reply, !samples.isEmpty {
+            if span == .averages, let normals {
+                AveragesView(reading: reading, reply: normals, now: now)
+            } else if span != .averages, let reply, !samples.isEmpty {
                 switch span {
                 case .day:
                     DayChart(
@@ -54,9 +68,11 @@ struct HistoryCard: View {
                         .frame(height: 150)
                 case .week:
                     WeekBars(reading: reading, samples: samples, now: now)
+                case .averages:
+                    EmptyView()
                 }
             } else {
-                Text(failure ?? (reply == nil ? "Loading…" : "Nothing measured in the last \(span.label)"))
+                Text(failure ?? (reply == nil && normals == nil ? "Loading…" : "Nothing measured in the last \(span.label)"))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 150)
@@ -103,11 +119,18 @@ struct HistoryCard: View {
     }
 
     private func load() async {
-        if replies[span] != nil { return }
-        let request: [String: Any] = ["op": "history", "device": device, "capability": reading.id, "hours": span.rawValue]
+        let averages = span == .averages
+        if averages ? normals != nil : replies[span] != nil { return }
+        let request: [String: Any] = averages
+            ? ["op": "normals", "device": device, "capability": reading.id]
+            : ["op": "history", "device": device, "capability": reading.id, "hours": span.rawValue]
         do {
             let data = try await Task.detached { try ControlSocket.request(request) }.value
-            replies[span] = try JSONDecoder().decode(HistoryReply.self, from: data)
+            if averages {
+                normals = try JSONDecoder().decode(NormalsReply.self, from: data)
+            } else {
+                replies[span] = try JSONDecoder().decode(HistoryReply.self, from: data)
+            }
             failure = nil
         } catch {
             failure = (error as? ControlSocket.Failure)?.message ?? "Couldn't load the history"
