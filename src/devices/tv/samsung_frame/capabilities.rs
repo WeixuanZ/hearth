@@ -2,7 +2,7 @@
 //! same state through `accessory`, and both turn into the same commands.
 
 use super::{Command, Tv};
-use crate::capabilities::{Capability, Item, Set, Snapshot};
+use crate::capabilities::{Capability, Item, Role, Set, Snapshot};
 use crate::config::Settings as _;
 use crate::connectors::samsung::protocol::Input;
 use anyhow::{anyhow, Result};
@@ -59,6 +59,7 @@ impl<L> Tv<L> {
                         .collect(),
                     input,
                 )
+                .role(Role::Input)
                 .active(showing),
                 Capability::level(
                     "brightness",
@@ -67,6 +68,7 @@ impl<L> Tv<L> {
                     "%",
                     self.brightness.map(|level| level as f32),
                 )
+                .role(Role::Brightness)
                 .active(self.on && self.art == Some(true)),
                 Capability::keys(
                     "remote",
@@ -76,6 +78,7 @@ impl<L> Tv<L> {
                         .map(|(id, name, _)| Item::new(*id, *name))
                         .collect(),
                 )
+                .role(Role::Remote)
                 .active(self.on),
             ],
             alerts: Vec::new(),

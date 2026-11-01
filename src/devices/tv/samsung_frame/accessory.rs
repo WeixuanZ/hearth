@@ -8,7 +8,7 @@
 use crate::config::Settings as _;
 use crate::connectors::samsung::protocol::Input;
 use crate::{
-    config::FrameDevice,
+    devices::tv::samsung_frame::FrameDevice,
     surfaces::homekit::characteristics::{
         configured_name, device_name, hook_bool, hook_i32, hook_u32, hook_u8, put,
     },

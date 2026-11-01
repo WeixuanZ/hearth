@@ -226,7 +226,7 @@ async fn answer(line: &str) -> Value {
             status
         }
         // On this computer: the device joins the group's config from here.
-        Request::Products => json!(setup::PRODUCTS),
+        Request::Products => json!(setup::products()),
         Request::Setup { product, answers } => setup::step(&product, answers)
             .await
             .unwrap_or_else(|error| json!({ "error": format!("{error:#}") })),

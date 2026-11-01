@@ -6,7 +6,8 @@ use super::{
 };
 use crate::{
     capabilities::Item,
-    config::{self, DysonDevice},
+    config,
+    devices::purifier::dyson::DysonDevice,
     setup::{answer, Answers, Field, Next, Step},
 };
 use anyhow::{anyhow, Result};
@@ -31,8 +32,10 @@ impl Setup {
         );
         (Self::Account, step)
     }
+}
 
-    pub async fn next(&mut self, answers: &Answers) -> Result<Next> {
+impl crate::driver::Setup for Setup {
+    async fn next(&mut self, answers: &Answers) -> Result<Next> {
         match self {
             Self::Account => {
                 let email = answer(answers, "email")?;
@@ -85,9 +88,9 @@ impl Setup {
 fn add(fan: &CloudDevice) -> Result<Next> {
     let name = product_name(&fan.model);
     let mut saved = config::load_or_new()?;
-    config::upsert_dyson(
+    config::upsert(
         &mut saved,
-        DysonDevice {
+        config::Device::new::<crate::devices::purifier::dyson::Dyson>(DysonDevice {
             aid: 0,
             name: name.clone(),
             serial: fan.serial.clone(),
@@ -97,7 +100,7 @@ fn add(fan: &CloudDevice) -> Result<Next> {
             host: String::new(),
             port: 1883,
             heating: true,
-        },
+        }),
     );
     config::save(&saved)?;
     Ok(Next::Done(format!("Added {name}.")))

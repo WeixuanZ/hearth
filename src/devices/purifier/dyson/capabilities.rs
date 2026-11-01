@@ -4,8 +4,8 @@
 use crate::config::Settings as _;
 use crate::connectors::dyson::protocol::{sweep, Intent, MachineState, SWEEPS};
 use crate::{
-    capabilities::{Alert, Capability, Item, Set, Snapshot},
-    config::DysonDevice,
+    capabilities::{Alert, Capability, Item, Measure, Role, Set, Snapshot},
+    devices::purifier::dyson::DysonDevice,
 };
 use anyhow::{anyhow, Result};
 
@@ -32,13 +32,13 @@ pub fn snapshot(device: &DysonDevice, state: &MachineState) -> Snapshot {
         })
         .map(|width| width.to_string());
     let sensing = state.sensing();
-    let reading = |id, name, unit, value: Option<f32>| {
-        Capability::reading(id, name, unit, value).active(sensing && value.is_some())
+    let measured = |measure, value: Option<f32>| {
+        Capability::measure(measure, value).active(sensing && value.is_some())
     };
 
     let mut capabilities = vec![
         Capability::power(state.power_on),
-        Capability::switch("auto", "Auto", state.auto),
+        Capability::switch("auto", "Auto", state.auto).role(Role::Auto),
         Capability::level(
             "speed",
             "Speed",
@@ -46,8 +46,9 @@ pub fn snapshot(device: &DysonDevice, state: &MachineState) -> Snapshot {
             "",
             state.speed.map(f32::from),
         )
+        .role(Role::FanSpeed)
         .active(!state.auto),
-        Capability::switch("oscillation", "Oscillation", state.oscillating),
+        Capability::switch("oscillation", "Oscillation", state.oscillating).role(Role::Oscillation),
         Capability::choice(
             "sweep",
             "Sweep",
@@ -62,22 +63,26 @@ pub fn snapshot(device: &DysonDevice, state: &MachineState) -> Snapshot {
         Capability::switch("monitoring", "Continuous monitoring", state.monitoring),
     ];
     if device.heating {
-        capabilities.push(Capability::switch("heat", "Heat", state.heat_on));
-        capabilities.push(Capability::level(
-            "heat_target",
-            "Heat to",
-            (1.0, 37.0, 1.0),
-            "°C",
-            state.heat_target_c.map(f32::round),
-        ));
+        capabilities.push(Capability::switch("heat", "Heat", state.heat_on).role(Role::Heat));
+        capabilities.push(
+            Capability::level(
+                "heat_target",
+                "Heat to",
+                (1.0, 37.0, 1.0),
+                "°C",
+                state.heat_target_c.map(f32::round),
+            )
+            .role(Role::HeatTarget),
+        );
     }
     capabilities.extend([
-        reading("temperature", "Temperature", "°C", state.temperature_c),
-        reading("humidity", "Humidity", "%", state.humidity),
-        reading("pm25", "PM2.5", "µg/m³", state.pm25),
-        reading("pm10", "PM10", "µg/m³", state.pm10),
-        reading("formaldehyde", "Formaldehyde", "mg/m³", state.hcho_mg_m3),
-        Capability::reading("filter", "Filter life", "%", state.hepa_life.map(f32::from)),
+        measured(Measure::Temperature, state.temperature_c),
+        measured(Measure::Humidity, state.humidity),
+        measured(Measure::Pm25, state.pm25),
+        measured(Measure::Pm10, state.pm10),
+        measured(Measure::Formaldehyde, state.hcho_mg_m3),
+        // The filter is known whether or not the sensors are measuring.
+        Capability::measure(Measure::FilterLife, state.hepa_life.map(f32::from)),
     ]);
 
     Snapshot {

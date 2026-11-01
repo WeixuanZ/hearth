@@ -4,6 +4,7 @@ mod cluster;
 mod config;
 mod connectors;
 mod devices;
+mod driver;
 mod run;
 mod series;
 mod setup;

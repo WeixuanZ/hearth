@@ -5,8 +5,9 @@ use crate::connectors::bosch::protocol::{
     feature_uid, format_remaining, label_of, option_switches, programs, Command, Machine, Reading,
 };
 use crate::{
-    capabilities::{Alert, Capability, Item, Set, Snapshot},
-    config::{BoschDevice, Settings as _},
+    capabilities::{Alert, Capability, Item, Role, Set, Snapshot},
+    config::Settings as _,
+    devices::dishwasher::bosch::BoschDevice,
 };
 use anyhow::{anyhow, Result};
 
@@ -47,6 +48,7 @@ pub fn snapshot(device: &BoschDevice, reading: &Reading, kept: Kept) -> Snapshot
                     .collect(),
                 chosen.map(|uid| uid.to_string()),
             )
+            .role(Role::Programme)
             .active(!running),
         );
     }
@@ -72,6 +74,12 @@ pub fn snapshot(device: &BoschDevice, reading: &Reading, kept: Kept) -> Snapshot
         capabilities.push(switch(option, running));
     }
     capabilities.extend(readings(machine));
+    // Known once the machine has said, which a connection that just opened
+    // has not.
+    let known = |value: bool| (reading.online && !machine.operation.is_empty()).then_some(value);
+    capabilities
+        .push(Capability::state("door", "Door open", known(machine.door_open)).role(Role::Contact));
+    capabilities.push(Capability::state("leak", "Leak", known(machine.leak)).role(Role::Leak));
 
     let programme = if machine.program.is_empty() {
         String::new()
@@ -317,7 +325,7 @@ mod tests {
     use crate::connectors::bosch::protocol::Machine;
 
     fn device() -> BoschDevice {
-        use crate::config::BoschFeature;
+        use crate::connectors::bosch::protocol::BoschFeature;
         use std::collections::BTreeMap;
         let mut features = BTreeMap::new();
         features.insert(
@@ -415,7 +423,8 @@ mod tests {
             .filter(|capability| capability.active)
             .map(|capability| capability.id)
             .collect();
-        assert_eq!(shown, Vec::<&str>::new());
+        // What it reports stays: its door and leak.
+        assert_eq!(shown, ["door", "leak"]);
         let run = serde_json::to_value(snap.capabilities.iter().find(|c| c.id == "run")).unwrap();
         assert_eq!(run["value"], true);
         assert_eq!(run["remaining"], 5400);
@@ -457,7 +466,7 @@ mod tests {
 
     #[test]
     fn a_running_programme_stops_only_where_the_machine_offers_it() {
-        use crate::config::BoschFeature;
+        use crate::connectors::bosch::protocol::BoschFeature;
         let mut device = device();
         let reading = Reading {
             online: true,

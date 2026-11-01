@@ -3,9 +3,11 @@
 
 mod accessory;
 mod capabilities;
+mod settings;
+
+pub use settings::DysonDevice;
 
 use crate::{
-    config::DysonDevice,
     connectors::dyson::{
         discover, mqtt,
         protocol::{
@@ -17,10 +19,7 @@ use crate::{
 };
 use accessory::{apply_purifier, build_purifier};
 use anyhow::{anyhow, Result};
-use hap::{
-    server::{IpServer, Server},
-    HapType,
-};
+use hap::{server::Server, HapType};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -30,15 +29,34 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
-pub async fn spawn(device: DysonDevice, server: IpServer) -> Result<()> {
+/// Dyson purifiers, over their own MQTT on the local network.
+pub struct Dyson;
+
+impl crate::driver::Driver for Dyson {
+    const KIND: &'static str = "dyson";
+    const NAME: &'static str = "Dyson purifier";
+    const CATEGORY: &'static str = "purifier";
+    type Settings = DysonDevice;
+    type Setup = crate::connectors::dyson::Setup;
+
+    fn setup() -> (Self::Setup, crate::setup::Step) {
+        Self::Setup::start()
+    }
+
+    async fn start(settings: DysonDevice, context: crate::driver::Context) -> Result<()> {
+        spawn(settings, context).await
+    }
+}
+
+async fn spawn(device: DysonDevice, context: crate::driver::Context) -> Result<()> {
+    let server = context.homekit().clone();
     let (intent_tx, intent_rx) = mpsc::channel::<Intent>(32);
     // The menu bar and the CLI ask through the registry, in the same intents
     // HomeKit sends.
     let snapshot = capabilities::snapshot(&device, &MachineState::default());
     let id = snapshot.id.clone();
-    crate::capabilities::publish(snapshot);
-    let (requests_tx, mut requests) = mpsc::channel::<crate::capabilities::Set>(16);
-    crate::capabilities::listen(&id, requests_tx);
+    context.publish(snapshot);
+    let mut requests = context.requests();
     let intents = intent_tx.clone();
     tokio::spawn(async move {
         while let Some(request) = requests.recv().await {

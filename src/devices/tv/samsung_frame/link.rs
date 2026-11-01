@@ -3,12 +3,13 @@
 //! same task against a fake TV.
 
 use crate::{
-    config::{self, FrameDevice},
     connectors::samsung::{
         ipc::IpControl,
         link,
         protocol::{ArtReply, DeviceInfo},
     },
+    devices::tv::samsung_frame::FrameDevice,
+    driver::Context,
 };
 use anyhow::{anyhow, Result};
 use std::{future::Future, time::Duration};
@@ -43,16 +44,18 @@ pub trait Link: Send + 'static {
 pub struct Network {
     remote: link::Remote,
     ip: Option<IpControl>,
+    context: Context,
 }
 
 impl Network {
-    pub fn new(device: &FrameDevice) -> Self {
+    pub fn new(device: &FrameDevice, context: Context) -> Self {
         let ip = (!device.ip_token.is_empty())
             .then(|| IpControl::new(&device.host, &device.ip_token).ok())
             .flatten();
         Self {
             remote: link::Remote::default(),
             ip,
+            context,
         }
     }
 
@@ -109,21 +112,10 @@ impl Link for Network {
     }
 
     fn save(&self, device: &FrameDevice) {
-        let Ok(mut config) = config::load() else {
-            return;
-        };
-        let saved = config.devices.iter_mut().find_map(|item| match item {
-            config::Device::Frame(tv) if tv.host == device.host => Some(tv),
-            _ => None,
+        self.context.remember(|saved: &mut FrameDevice| {
+            saved.token = device.token.clone();
+            saved.mac = device.mac.clone();
+            saved.model = device.model.clone();
         });
-        let Some(saved) = saved else {
-            return;
-        };
-        saved.token = device.token.clone();
-        saved.mac = device.mac.clone();
-        saved.model = device.model.clone();
-        if let Err(error) = config::save(&config) {
-            log::warn!("could not save the TV token: {error:#}");
-        }
     }
 }

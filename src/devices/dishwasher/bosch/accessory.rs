@@ -9,7 +9,8 @@ use crate::connectors::bosch::protocol::{
     label_of, option_switches, programs, salt_name, Command, Reading,
 };
 use crate::{
-    config::{BoschDevice, Settings as _},
+    config::Settings as _,
+    devices::dishwasher::bosch::BoschDevice,
     surfaces::homekit::characteristics::{configured_name, device_name, hook_bool, put},
 };
 use anyhow::{anyhow, Result};
@@ -435,7 +436,7 @@ async fn put_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BoschFeature;
+    use crate::connectors::bosch::protocol::BoschFeature;
     use crate::surfaces::homekit::characteristics::assert_unique_iids;
     use std::collections::BTreeMap;
 

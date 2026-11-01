@@ -19,8 +19,6 @@ use rand::RngCore;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
-use crate::config::BoschFeature;
-
 pub struct Seal {
     mac_key: [u8; 32],
     /// The IV mixed into every tag. It does not advance.
@@ -761,6 +759,14 @@ fn text_at<'a>(value: &'a Value, key: &str) -> &'a str {
 
 fn number_at(value: &Value, key: &str) -> Option<i64> {
     value.get(key).and_then(Value::as_i64)
+}
+
+/// One value a Bosch feature can take. The key is the number on the wire.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct BoschFeature {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub values: BTreeMap<String, String>,
 }
 
 #[cfg(test)]

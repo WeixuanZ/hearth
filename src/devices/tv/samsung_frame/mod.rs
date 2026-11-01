@@ -3,19 +3,18 @@
 
 mod accessory;
 mod capabilities;
+mod settings;
+
+pub use settings::FrameDevice;
 mod link;
 
 use crate::{
-    config::FrameDevice,
     connectors::samsung::protocol::{self, ArtReply, Input},
     surfaces::homekit::characteristics::follow_name,
 };
 use accessory::{apply, apply_art, build, build_art, View};
 use anyhow::{anyhow, Result};
-use hap::{
-    server::{IpServer, Server},
-    HapType,
-};
+use hap::{server::Server, HapType};
 use link::{Link, Network};
 use std::{
     sync::{
@@ -41,14 +40,33 @@ pub enum Command {
     Remote(&'static str),
 }
 
-pub async fn spawn(device: FrameDevice, server: IpServer) -> Result<()> {
+/// Samsung's The Frame televisions.
+pub struct Frame;
+
+impl crate::driver::Driver for Frame {
+    const KIND: &'static str = "frame";
+    const NAME: &'static str = "Samsung The Frame";
+    const CATEGORY: &'static str = "tv";
+    type Settings = FrameDevice;
+    type Setup = crate::connectors::samsung::Setup;
+
+    fn setup() -> (Self::Setup, crate::setup::Step) {
+        Self::Setup::start()
+    }
+
+    async fn start(settings: FrameDevice, context: crate::driver::Context) -> Result<()> {
+        spawn(settings, context).await
+    }
+}
+
+async fn spawn(device: FrameDevice, context: crate::driver::Context) -> Result<()> {
+    let server = context.homekit().clone();
     let (tx, rx) = mpsc::channel(32);
-    let tv = Tv::new(Network::new(&device), device);
+    let tv = Tv::new(Network::new(&device, context.clone()), device);
     let snapshot = tv.snapshot();
     let id = snapshot.id.clone();
-    crate::capabilities::publish(snapshot);
-    let (requests_tx, requests) = mpsc::channel(16);
-    crate::capabilities::listen(&id, requests_tx);
+    context.publish(snapshot);
+    let requests = context.requests();
     let (state_tx, mut state_rx) = watch::channel(tv.view());
     let suppress = Arc::new(AtomicBool::new(false));
     let accessory = server

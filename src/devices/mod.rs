@@ -6,15 +6,22 @@ pub mod dishwasher;
 pub mod purifier;
 pub mod tv;
 
-use crate::config::Device;
+use crate::{config::Device, driver};
 use anyhow::Result;
 use hap::server::IpServer;
 
-/// Starts a device's task, and adds its accessories to the bridge.
+/// Starts a device's task, through the driver for its kind. A kind this
+/// build does not know is left for a computer that does.
 pub async fn spawn(device: Device, server: IpServer) -> Result<()> {
-    match device {
-        Device::Dyson(device) => purifier::dyson::spawn(device, server).await,
-        Device::Frame(device) => tv::samsung_frame::spawn(device, server).await,
-        Device::Bosch(device) => dishwasher::bosch::spawn(device, server).await,
-    }
+    let Some(driver) = driver::find(device.kind()) else {
+        log::warn!(
+            "{} is a {} device, which this version of hearth does not know",
+            device.name(),
+            device.kind()
+        );
+        return Ok(());
+    };
+    driver
+        .start(&device, driver::Context::new(device.id(), server))
+        .await
 }

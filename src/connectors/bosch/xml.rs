@@ -9,7 +9,7 @@ use quick_xml::Reader;
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 
-use crate::config::BoschFeature;
+use crate::connectors::bosch::protocol::BoschFeature;
 
 pub fn features_from_zip(bytes: &[u8]) -> Result<BTreeMap<String, BoschFeature>> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;

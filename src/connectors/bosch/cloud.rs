@@ -6,7 +6,8 @@
 
 use super::protocol::label_of;
 use super::xml;
-use crate::config::{self, BoschDevice};
+use crate::config;
+use crate::devices::dishwasher::bosch::BoschDevice;
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use rand::RngCore;
@@ -112,7 +113,10 @@ impl Account {
         };
         let name = device.name.clone();
         let mut saved = config::load_or_new()?;
-        config::upsert_bosch(&mut saved, device);
+        config::upsert(
+            &mut saved,
+            config::Device::new::<crate::devices::dishwasher::bosch::Bosch>(device),
+        );
         config::save(&saved)?;
         Ok(name)
     }

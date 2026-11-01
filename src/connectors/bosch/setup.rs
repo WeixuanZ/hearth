@@ -35,8 +35,10 @@ impl Setup {
         );
         (Self::SignIn(sign_in), step)
     }
+}
 
-    pub async fn next(&mut self, answers: &Answers) -> Result<Next> {
+impl crate::driver::Setup for Setup {
+    async fn next(&mut self, answers: &Answers) -> Result<Next> {
         match self {
             Self::SignIn(sign_in) => {
                 let account = sign_in.finish(&answer(answers, "redirect")?).await?;

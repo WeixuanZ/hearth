@@ -11,7 +11,7 @@ use crate::connectors::dyson::protocol::{
     air_quality, percent_to_speed, speed_to_percent, sweep, Intent, MachineState, SWEEPS,
 };
 use crate::{
-    config::DysonDevice,
+    devices::purifier::dyson::DysonDevice,
     surfaces::homekit::characteristics::{
         configured_name, device_name, hook_bool, hook_f32, hook_u8, put,
     },
@@ -549,7 +549,7 @@ mod tests {
         let device = DysonDevice {
             aid: 3,
             name: "Purifier".into(),
-            serial: "ABC-DE-FGH1234A".into(),
+            serial: "ABC-XY-12345678".into(),
             model: "XY01".into(),
             product_type: "000X".into(),
             mqtt_password: "x".into(),
@@ -601,7 +601,7 @@ mod tests {
         let mut device = DysonDevice {
             aid: 3,
             name: "Purifier".into(),
-            serial: "ABC-DE-FGH1234A".into(),
+            serial: "ABC-XY-12345678".into(),
             model: "XY01".into(),
             product_type: "000X".into(),
             mqtt_password: "x".into(),
@@ -621,7 +621,7 @@ mod tests {
         let device = DysonDevice {
             aid: 3,
             name: "Purifier".into(),
-            serial: "ABC-DE-FGH1234A".into(),
+            serial: "ABC-XY-12345678".into(),
             model: "XY01".into(),
             product_type: "000X".into(),
             mqtt_password: "x".into(),

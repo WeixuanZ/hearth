@@ -6,6 +6,10 @@
 //! `save` dates whatever changed since the file on disk, so computers that
 //! share a bridge can `merge` their copies and keep the newer of each part.
 
+use crate::{
+    devices::purifier::dyson::{Dyson, DysonDevice},
+    driver::{self, Driver, Typed},
+};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, io::Write, path::PathBuf};
@@ -33,57 +37,25 @@ pub struct Config {
     pub removed: BTreeMap<String, u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-pub enum Device {
-    Dyson(DysonDevice),
-    Frame(FrameDevice),
-    Bosch(BoschDevice),
+/// A device in the config: its kind's own settings, read and written by the
+/// driver for that kind (see `driver`). A kind this build does not know, as
+/// from a newer computer in the group, is kept as it came.
+pub struct Device(Box<dyn Entry>);
+
+/// What a [`Device`] holds: one kind's settings, whichever kind.
+pub trait Entry: Send + Sync + std::fmt::Debug {
+    fn kind(&self) -> &str;
+    fn settings(&self) -> &dyn Settings;
+    fn settings_mut(&mut self) -> &mut dyn Settings;
+    /// Its settings as the config writes them, without `kind` and `id`.
+    fn table(&self) -> Result<toml::Table>;
+    fn clone_entry(&self) -> Box<dyn Entry>;
+    fn as_any(&self) -> &dyn std::any::Any;
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DysonDevice {
-    /// HomeKit accessory id. The fan and its switches are one accessory.
-    #[serde(default)]
-    pub aid: u64,
-    pub name: String,
-    pub serial: String,
-    pub model: String,
-    /// MQTT topic prefix. `auto` tries 527K, then 527E, then 527.
-    pub product_type: String,
-    pub mqtt_password: String,
-    #[serde(default)]
-    pub host: String,
-    #[serde(default = "default_mqtt_port")]
-    pub port: u16,
-    #[serde(default = "default_true")]
-    pub heating: bool,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct FrameDevice {
-    #[serde(default)]
-    pub aid: u64,
-    pub name: String,
-    /// Filled in from the TV. The 65" 2024 Frame reports a model like QE65LS03D.
-    #[serde(default)]
-    pub model: String,
-    pub host: String,
-    #[serde(default)]
-    pub mac: String,
-    /// Returned when you press Allow on the TV. Empty until `hearth frame pair`.
-    #[serde(default)]
-    pub token: String,
-    /// IP Control's token, from a second Allow. Empty if IP Remote is off.
-    #[serde(default)]
-    pub ip_token: String,
-    /// HomeKit accessory id of the art switch, a tile beside the TV.
-    #[serde(default)]
-    pub art_aid: u64,
-}
-
-/// What every kind of device's settings provide. A new kind implements
-/// this, adds a variant to [`Device`], and is started in `devices::spawn`.
+/// What every kind of device's settings provide. A new kind implements this
+/// for its settings, and is a `driver::Driver`.
 pub trait Settings {
     /// Stable while the bridge runs: the menu bar, the CLI and Home name it by this.
     fn id(&self) -> String;
@@ -100,145 +72,30 @@ pub trait Settings {
     }
 }
 
-impl Settings for DysonDevice {
-    fn id(&self) -> String {
-        format!("dyson:{}", self.serial)
-    }
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn name_mut(&mut self) -> &mut String {
-        &mut self.name
-    }
-    fn aids(&mut self) -> Vec<&mut u64> {
-        vec![&mut self.aid]
-    }
-    /// Empty means found on the network by its serial.
-    fn address(&self) -> Option<(String, u16)> {
-        (!self.host.is_empty()).then(|| (self.host.clone(), self.port))
-    }
-}
-
-impl Settings for FrameDevice {
-    fn id(&self) -> String {
-        format!("frame:{}", self.host)
-    }
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn name_mut(&mut self) -> &mut String {
-        &mut self.name
-    }
-    /// The TV, and art mode as a tile of its own.
-    fn aids(&mut self) -> Vec<&mut u64> {
-        vec![&mut self.aid, &mut self.art_aid]
-    }
-    /// The TV's own API, which answers even before it is paired.
-    fn address(&self) -> Option<(String, u16)> {
-        Some((self.host.clone(), 8001))
-    }
-    fn incomplete(&self) -> Option<&'static str> {
-        self.token
-            .is_empty()
-            .then_some("not paired with the TV. Run `hearth frame pair` while it is on")
-    }
-}
-
-/// One value a Bosch feature can take. The key is the number on the wire.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BoschFeature {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub values: BTreeMap<String, String>,
-}
-
-/// A dishwasher reached on the local network.
-/// The account password is not stored. `key` is the machine's own key.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BoschDevice {
-    #[serde(default)]
-    pub aid: u64,
-    /// Door, AquaStop and the end of a cycle. Separate accessories, so Home can notify.
-    #[serde(default)]
-    pub door_aid: u64,
-    #[serde(default)]
-    pub leak_aid: u64,
-    #[serde(default)]
-    pub cycle_aid: u64,
-    pub name: String,
-    #[serde(default = "default_brand")]
-    pub brand: String,
-    /// VIB, such as SPV2HKX42G.
-    #[serde(default)]
-    pub model: String,
-    pub ha_id: String,
-    /// mDNS name, or an address passed with `--host`.
-    #[serde(default)]
-    pub host: String,
-    pub key: String,
-    /// Empty means TLS-PSK on 443. Set means the older AES session on port 80.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub iv: String,
-    #[serde(default)]
-    pub features: BTreeMap<String, BoschFeature>,
-}
-
-fn default_brand() -> String {
-    "Bosch".into()
-}
-
-impl Settings for BoschDevice {
-    fn id(&self) -> String {
-        format!("bosch:{}", self.ha_id)
-    }
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn name_mut(&mut self) -> &mut String {
-        &mut self.name
-    }
-    fn aids(&mut self) -> Vec<&mut u64> {
-        vec![
-            &mut self.aid,
-            &mut self.door_aid,
-            &mut self.leak_aid,
-            &mut self.cycle_aid,
-        ]
-    }
-    /// The machine announces a bare name, which resolves with `.local`.
-    fn address(&self) -> Option<(String, u16)> {
-        let port = if self.iv.is_empty() { 443 } else { 80 };
-        let host = match self.host.contains('.') || self.host.contains(':') {
-            true => self.host.clone(),
-            false => format!("{}.local", self.host),
-        };
-        (!self.host.is_empty()).then_some((host, port))
-    }
-}
-
-fn default_mqtt_port() -> u16 {
-    1883
-}
-
-fn default_true() -> bool {
-    true
-}
-
 impl Device {
+    pub fn new<D: Driver>(settings: D::Settings) -> Self {
+        Self(Box::new(Typed::<D>(settings)))
+    }
+
+    pub fn kind(&self) -> &str {
+        self.0.kind()
+    }
+
+    /// Its settings, if it is of the kind whose settings are `S`.
+    pub fn get<S: 'static>(&self) -> Option<&S> {
+        self.0.as_any().downcast_ref()
+    }
+
+    pub fn get_mut<S: 'static>(&mut self) -> Option<&mut S> {
+        self.0.as_any_mut().downcast_mut()
+    }
+
     pub fn settings(&self) -> &dyn Settings {
-        match self {
-            Self::Dyson(device) => device,
-            Self::Frame(device) => device,
-            Self::Bosch(device) => device,
-        }
+        self.0.settings()
     }
 
     pub fn settings_mut(&mut self) -> &mut dyn Settings {
-        match self {
-            Self::Dyson(device) => device,
-            Self::Frame(device) => device,
-            Self::Bosch(device) => device,
-        }
+        self.0.settings_mut()
     }
 
     pub fn id(&self) -> String {
@@ -251,6 +108,143 @@ impl Device {
 
     pub fn set_name(&mut self, name: String) {
         *self.settings_mut().name_mut() = name;
+    }
+
+    fn written(&self) -> Result<toml::Table> {
+        let mut table = toml::Table::new();
+        table.insert("kind".into(), self.kind().into());
+        table.insert("id".into(), self.id().into());
+        table.extend(self.0.table()?);
+        Ok(table)
+    }
+}
+
+impl Clone for Device {
+    fn clone(&self) -> Self {
+        Self(self.0.clone_entry())
+    }
+}
+
+impl std::fmt::Debug for Device {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl PartialEq for Device {
+    fn eq(&self, other: &Self) -> bool {
+        matches!((self.written(), other.written()), (Ok(one), Ok(two)) if one == two)
+    }
+}
+
+impl Serialize for Device {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        self.written()
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Device {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let mut table = toml::Table::deserialize(deserializer)?;
+        let mut text = |key: &str| match table.remove(key) {
+            Some(toml::Value::String(text)) => Some(text),
+            _ => None,
+        };
+        let kind = text("kind").ok_or_else(|| serde::de::Error::custom("a device with no kind"))?;
+        let id = text("id");
+        match driver::find(&kind) {
+            Some(driver) => driver.read(table).map_err(serde::de::Error::custom),
+            None => Ok(Self(Box::new(Unknown::new(kind, id, table)))),
+        }
+    }
+}
+
+/// A device of a kind this build does not know, as it came: never started,
+/// but kept, with its name and Home ids, so a newer computer's devices pass
+/// through this one unharmed.
+#[derive(Debug, Clone)]
+struct Unknown {
+    kind: String,
+    id: String,
+    name: String,
+    aids: Vec<(String, u64)>,
+    table: toml::Table,
+}
+
+impl Unknown {
+    fn new(kind: String, id: Option<String>, table: toml::Table) -> Self {
+        let name = match table.get("name") {
+            Some(toml::Value::String(name)) => name.clone(),
+            _ => kind.clone(),
+        };
+        let aids = table
+            .iter()
+            .filter(|(key, _)| key.ends_with("aid"))
+            .filter_map(|(key, value)| {
+                Some((key.clone(), u64::try_from(value.as_integer()?).ok()?))
+            })
+            .collect();
+        Self {
+            id: id.unwrap_or_else(|| format!("{kind}:{name}")),
+            kind,
+            name,
+            aids,
+            table,
+        }
+    }
+}
+
+impl Settings for Unknown {
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn name_mut(&mut self) -> &mut String {
+        &mut self.name
+    }
+    fn aids(&mut self) -> Vec<&mut u64> {
+        self.aids.iter_mut().map(|(_, aid)| aid).collect()
+    }
+    fn address(&self) -> Option<(String, u16)> {
+        None
+    }
+}
+
+impl Entry for Unknown {
+    fn kind(&self) -> &str {
+        &self.kind
+    }
+    fn settings(&self) -> &dyn Settings {
+        self
+    }
+    fn settings_mut(&mut self) -> &mut dyn Settings {
+        self
+    }
+    fn table(&self) -> Result<toml::Table> {
+        let mut table = self.table.clone();
+        table.insert("name".into(), self.name.clone().into());
+        for (key, aid) in &self.aids {
+            table.insert(key.clone(), i64::try_from(*aid)?.into());
+        }
+        Ok(table)
+    }
+    fn clone_entry(&self) -> Box<dyn Entry> {
+        Box::new(self.clone())
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -467,7 +461,8 @@ fn from_legacy(value: &toml::Value) -> Config {
             }
         },
         bridge_id: serial.clone(),
-        devices: vec![Device::Dyson(DysonDevice {
+        // The first hearth knew only Dyson's purifiers, so a file from then is one.
+        devices: vec![Device::new::<Dyson>(DysonDevice {
             aid: 2,
             name: {
                 let name = text("name");
@@ -662,65 +657,24 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-pub fn upsert_dyson(config: &mut Config, device: DysonDevice) {
-    if let Some(Device::Dyson(existing)) = config
-        .devices
-        .iter_mut()
-        .find(|item| matches!(item, Device::Dyson(fan) if fan.serial == device.serial))
-    {
-        // A fresh login keeps the id and the name chosen since.
-        let (aid, name) = (existing.aid, std::mem::take(&mut existing.name));
+/// Adds `device`, or puts it in place of the one with its id, keeping the
+/// name given since and Home's accessory ids, so Home sees the same device.
+pub fn upsert(config: &mut Config, mut device: Device) {
+    let id = device.id();
+    if let Some(existing) = config.devices.iter_mut().find(|item| item.id() == id) {
+        let aids: Vec<u64> = existing
+            .settings_mut()
+            .aids()
+            .into_iter()
+            .map(|aid| *aid)
+            .collect();
+        for (slot, aid) in device.settings_mut().aids().into_iter().zip(aids) {
+            *slot = aid;
+        }
+        device.set_name(existing.name().to_owned());
         *existing = device;
-        existing.aid = aid;
-        existing.name = name;
         return;
     }
-    let mut device = Device::Dyson(device);
-    device.set_name(unique_name(config, device.name()));
-    config.devices.push(device);
-    assign_aids(&mut config.devices);
-}
-
-pub fn upsert_frame(config: &mut Config, device: FrameDevice) {
-    if let Some(Device::Frame(existing)) = config
-        .devices
-        .iter_mut()
-        .find(|item| matches!(item, Device::Frame(tv) if tv.host == device.host))
-    {
-        let (aid, art_aid) = (existing.aid, existing.art_aid);
-        *existing = device;
-        existing.aid = aid;
-        existing.art_aid = art_aid;
-        return;
-    }
-    let mut device = Device::Frame(device);
-    device.set_name(unique_name(config, device.name()));
-    config.devices.push(device);
-    assign_aids(&mut config.devices);
-}
-
-pub fn upsert_bosch(config: &mut Config, device: BoschDevice) {
-    if let Some(Device::Bosch(existing)) = config
-        .devices
-        .iter_mut()
-        .find(|item| matches!(item, Device::Bosch(machine) if machine.ha_id == device.ha_id))
-    {
-        let (aid, door_aid, leak_aid, cycle_aid, name) = (
-            existing.aid,
-            existing.door_aid,
-            existing.leak_aid,
-            existing.cycle_aid,
-            std::mem::take(&mut existing.name),
-        );
-        *existing = device;
-        existing.aid = aid;
-        existing.door_aid = door_aid;
-        existing.leak_aid = leak_aid;
-        existing.cycle_aid = cycle_aid;
-        existing.name = name;
-        return;
-    }
-    let mut device = Device::Bosch(device);
     device.set_name(unique_name(config, device.name()));
     config.devices.push(device);
     assign_aids(&mut config.devices);
@@ -799,6 +753,11 @@ impl OpenOptionsExt for fs::OpenOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connectors::bosch::protocol::BoschFeature;
+    use crate::devices::{
+        dishwasher::bosch::{Bosch, BoschDevice},
+        tv::samsung_frame::{Frame, FrameDevice},
+    };
 
     fn aid(device: &Device) -> u64 {
         *device.clone().settings_mut().aids()[0]
@@ -820,21 +779,19 @@ mod tests {
         let config = config_from_toml(text).unwrap();
         assert_eq!(config.bridge_id, "ABC-UK-1");
         assert_eq!(config.homekit_pin, "361-29-487");
-        match &config.devices[0] {
-            Device::Dyson(fan) => {
-                assert_eq!(fan.aid, 2);
-                assert_eq!(fan.serial, "ABC-UK-1");
-                assert_eq!(fan.name, "Living room");
-                assert!(fan.heating);
-            }
-            Device::Frame(_) | Device::Bosch(_) => panic!("legacy config is a fan"),
-        }
+        let fan = config.devices[0]
+            .get::<DysonDevice>()
+            .expect("legacy config is a fan");
+        assert_eq!(fan.aid, 2);
+        assert_eq!(fan.serial, "ABC-UK-1");
+        assert_eq!(fan.name, "Living room");
+        assert!(fan.heating);
     }
 
     #[test]
     fn a_new_device_does_not_reuse_the_fan_ids() {
         let mut devices = vec![
-            Device::Dyson(DysonDevice {
+            Device::new::<Dyson>(DysonDevice {
                 aid: 2,
                 name: "Purifier".into(),
                 serial: "ABC".into(),
@@ -845,7 +802,7 @@ mod tests {
                 port: 1883,
                 heating: true,
             }),
-            Device::Frame(FrameDevice {
+            Device::new::<Frame>(FrameDevice {
                 name: "The Frame".into(),
                 host: "192.168.1.40".into(),
                 ..Default::default()
@@ -853,7 +810,7 @@ mod tests {
         ];
         assert!(assign_aids(&mut devices));
         assert_eq!(aid(&devices[1]), 3);
-        let Device::Frame(frame) = &devices[1] else {
+        let Some(frame) = devices[1].get::<FrameDevice>() else {
             unreachable!()
         };
         assert_eq!(frame.art_aid, 4);
@@ -863,12 +820,12 @@ mod tests {
     #[test]
     fn an_art_switch_added_later_keeps_existing_ids() {
         let mut devices = vec![
-            Device::Frame(FrameDevice {
+            Device::new::<Frame>(FrameDevice {
                 aid: 2,
                 host: "10.0.0.2".into(),
                 ..Default::default()
             }),
-            Device::Dyson(DysonDevice {
+            Device::new::<Dyson>(DysonDevice {
                 aid: 3,
                 name: "Purifier".into(),
                 serial: "ABC".into(),
@@ -882,7 +839,7 @@ mod tests {
         ];
         assert!(assign_aids(&mut devices));
         assert_eq!((aid(&devices[0]), aid(&devices[1])), (2, 3));
-        let Device::Frame(frame) = &devices[0] else {
+        let Some(frame) = devices[0].get::<FrameDevice>() else {
             unreachable!()
         };
         assert_eq!(frame.art_aid, 4);
@@ -907,12 +864,12 @@ mod tests {
             bridge_id: "ABC".into(),
             ..Default::default()
         };
-        upsert_dyson(&mut config, fan("Study fan", "old"));
-        upsert_dyson(
+        upsert(&mut config, Device::new::<Dyson>(fan("Study fan", "old")));
+        upsert(
             &mut config,
-            fan(&crate::connectors::dyson::product_name("XY01"), "new"),
+            Device::new::<Dyson>(fan(&crate::connectors::dyson::product_name("XY01"), "new")),
         );
-        let Device::Dyson(saved) = &config.devices[0] else {
+        let Some(saved) = config.devices[0].get::<DysonDevice>() else {
             unreachable!()
         };
         assert_eq!((saved.name.as_str(), saved.aid), ("Study fan", 2));
@@ -933,7 +890,7 @@ mod tests {
             name: "Hearth".into(),
             homekit_pin: "000-00-000".into(),
             bridge_id: "ABC".into(),
-            devices: vec![Device::Frame(FrameDevice {
+            devices: vec![Device::new::<Frame>(FrameDevice {
                 aid: 2,
                 name: "Living room".into(),
                 host: "10.0.0.2".into(),
@@ -949,7 +906,7 @@ mod tests {
     }
 
     fn fan(serial: &str, name: &str) -> Device {
-        Device::Dyson(DysonDevice {
+        Device::new::<Dyson>(DysonDevice {
             aid: 2,
             name: name.into(),
             serial: serial.into(),
@@ -981,7 +938,7 @@ mod tests {
                 host: host.into(),
                 ..Default::default()
             };
-            upsert_frame(&mut config, tv);
+            upsert(&mut config, Device::new::<Frame>(tv));
         }
         let names: Vec<_> = config.devices.iter().map(Device::name).collect();
         assert_eq!(names, ["The Frame", "The Frame 2"]);
@@ -1097,9 +1054,38 @@ mod tests {
     }
 
     #[test]
+    fn a_kind_this_build_does_not_know_passes_through_unharmed() {
+        let text = r#"
+name = "Hearth"
+homekit_pin = "111-22-333"
+bridge_id = "abc"
+
+[[devices]]
+kind = "lamp"
+id = "lamp:1"
+name = "Desk lamp"
+aid = 9
+bulb = "warm"
+"#;
+        let mut config = config_from_toml(text).unwrap();
+        let lamp = &config.devices[0];
+        assert_eq!(
+            (lamp.kind(), lamp.id(), lamp.name()),
+            ("lamp", "lamp:1".into(), "Desk lamp")
+        );
+        // Its Home id is held, so a new device does not take it.
+        assert!(!assign_aids(&mut config.devices));
+        config.devices[0].set_name("Reading lamp".into());
+        let written = toml::to_string(&config).unwrap();
+        let again = config_from_toml(&written).unwrap();
+        assert_eq!(again.devices[0].name(), "Reading lamp");
+        assert!(written.contains("bulb = \"warm\"") && written.contains("aid = 9"));
+    }
+
+    #[test]
     fn a_dishwasher_keeps_its_sensor_ids_and_its_name() {
         let mut devices = vec![
-            Device::Dyson(DysonDevice {
+            Device::new::<Dyson>(DysonDevice {
                 aid: 2,
                 name: "Purifier".into(),
                 serial: "ABC".into(),
@@ -1110,10 +1096,10 @@ mod tests {
                 port: 1883,
                 heating: true,
             }),
-            Device::Bosch(washer()),
+            Device::new::<Bosch>(washer()),
         ];
         assert!(assign_aids(&mut devices));
-        let Device::Bosch(machine) = &devices[1] else {
+        let Some(machine) = devices[1].get::<BoschDevice>() else {
             unreachable!()
         };
         assert_eq!(
@@ -1125,13 +1111,13 @@ mod tests {
             ),
             (3, 4, 5, 6)
         );
-        devices.push(Device::Frame(FrameDevice {
+        devices.push(Device::new::<Frame>(FrameDevice {
             name: "The Frame".into(),
             host: "10.0.0.8".into(),
             ..Default::default()
         }));
         assert!(assign_aids(&mut devices));
-        let Device::Frame(frame) = &devices[2] else {
+        let Some(frame) = devices[2].get::<FrameDevice>() else {
             unreachable!()
         };
         assert_eq!(frame.aid, 7);
@@ -1142,12 +1128,12 @@ mod tests {
             bridge_id: "bridge".into(),
             ..Default::default()
         };
-        upsert_bosch(&mut config, washer());
+        upsert(&mut config, Device::new::<Bosch>(washer()));
         config.devices[0].set_name("Kitchen".into());
         let text = toml::to_string(&config).unwrap();
         assert!(!text.contains("iv ="));
         let loaded = config_from_toml(&text).unwrap();
-        let Device::Bosch(saved) = &loaded.devices[0] else {
+        let Some(saved) = loaded.devices[0].get::<BoschDevice>() else {
             unreachable!()
         };
         assert_eq!(saved.name, "Kitchen");
@@ -1161,8 +1147,8 @@ mod tests {
         again.key = "rotated".into();
         again.name = "Bosch Dishwasher".into();
         let mut config = loaded;
-        upsert_bosch(&mut config, again);
-        let Device::Bosch(saved) = &config.devices[0] else {
+        upsert(&mut config, Device::new::<Bosch>(again));
+        let Some(saved) = config.devices[0].get::<BoschDevice>() else {
             unreachable!()
         };
         assert_eq!(saved.name, "Kitchen");

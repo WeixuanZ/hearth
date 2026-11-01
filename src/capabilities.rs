@@ -29,6 +29,88 @@ pub struct Capability {
     /// False when the device is not measuring, or the control does nothing
     /// now. Surfaces grey it out.
     pub active: bool,
+    #[serde(skip_serializing_if = "Role::is_generic")]
+    pub role: Role,
+}
+
+/// What a capability is, for surfaces with concepts of their own, like Home
+/// and Matter: a TV's input, a room's temperature. A surface shows a generic
+/// one by its kind alone. The names follow Matter's clusters, so every
+/// ecosystem is derived from the same words.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    #[default]
+    Generic,
+    /// The source a screen shows.
+    Input,
+    /// A screen's remote: its keys.
+    Remote,
+    /// How bright a light or a screen is.
+    Brightness,
+    FanSpeed,
+    Oscillation,
+    /// The device runs itself, like a purifier on auto.
+    Auto,
+    Heat,
+    HeatTarget,
+    /// The programme a machine runs next.
+    Programme,
+    Temperature,
+    Humidity,
+    Pm25,
+    Pm10,
+    Formaldehyde,
+    /// What is left of a filter, in percent.
+    FilterLife,
+    /// Open or closed, like a door.
+    Contact,
+    Leak,
+}
+
+impl Role {
+    fn is_generic(&self) -> bool {
+        *self == Self::Generic
+    }
+}
+
+/// What a sensor measures. Each has one id, name and unit wherever it comes
+/// from, so its history, its tile and its place in Home read alike.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Measure {
+    Temperature,
+    Humidity,
+    Pm25,
+    Pm10,
+    Formaldehyde,
+    FilterLife,
+}
+
+impl Measure {
+    /// Its id, name and unit.
+    fn describe(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Temperature => ("temperature", "Temperature", "°C"),
+            Self::Humidity => ("humidity", "Humidity", "%"),
+            Self::Pm25 => ("pm25", "PM2.5", "µg/m³"),
+            Self::Pm10 => ("pm10", "PM10", "µg/m³"),
+            Self::Formaldehyde => ("formaldehyde", "Formaldehyde", "mg/m³"),
+            Self::FilterLife => ("filter", "Filter life", "%"),
+        }
+    }
+}
+
+impl From<Measure> for Role {
+    fn from(measure: Measure) -> Self {
+        match measure {
+            Measure::Temperature => Self::Temperature,
+            Measure::Humidity => Self::Humidity,
+            Measure::Pm25 => Self::Pm25,
+            Measure::Pm10 => Self::Pm10,
+            Measure::Formaldehyde => Self::Formaldehyde,
+            Measure::FilterLife => Self::FilterLife,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -67,6 +149,8 @@ pub enum Kind {
     Reading {
         unit: &'static str,
     },
+    /// A yes or no the device reports, like a door being open.
+    State,
     /// Momentary buttons, like a remote. Setting one presses it.
     Keys {
         keys: Vec<Item>,
@@ -144,6 +228,19 @@ impl Capability {
         Self::new(id, name, Kind::Reading { unit }, json!(value)).active(active)
     }
 
+    /// A reading of something every surface knows, with its own id, name
+    /// and unit. Inactive while not known.
+    pub fn measure(measure: Measure, value: Option<f32>) -> Self {
+        let (id, name, unit) = measure.describe();
+        Self::reading(id, name, unit, value).role(measure.into())
+    }
+
+    /// Inactive while not known.
+    pub fn state(id: &'static str, name: &str, value: Option<bool>) -> Self {
+        let active = value.is_some();
+        Self::new(id, name, Kind::State, json!(value)).active(active)
+    }
+
     pub fn keys(id: &'static str, name: &str, keys: Vec<Item>) -> Self {
         Self::new(id, name, Kind::Keys { keys }, Value::Null)
     }
@@ -155,7 +252,13 @@ impl Capability {
             kind,
             value,
             active: true,
+            role: Role::Generic,
         }
+    }
+
+    pub fn role(mut self, role: Role) -> Self {
+        self.role = role;
+        self
     }
 
     pub fn active(mut self, active: bool) -> Self {
