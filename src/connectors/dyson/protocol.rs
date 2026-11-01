@@ -299,6 +299,16 @@ pub fn apply_message(state: &mut MachineState, topic: &str, payload: &str) -> bo
     }
 }
 
+/// The state once the fan does what `fields` ask. Its own report follows
+/// and has the last word.
+pub fn assume(state: &mut MachineState, fields: &[(&str, String)]) {
+    let fields = fields
+        .iter()
+        .map(|(key, value)| (key.to_string(), Value::String(value.clone())))
+        .collect();
+    apply_machine_fields(state, &fields);
+}
+
 pub fn intent_fields(state: &MachineState, intent: &Intent) -> Vec<(&'static str, String)> {
     match intent {
         Intent::Power(true) => vec![("fpwr", "ON".into())],
@@ -425,6 +435,21 @@ pub fn command_topic(product_type: &str, serial: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn what_was_sent_is_assumed_until_the_fan_reports() {
+        let mut state = super::MachineState {
+            power_on: true,
+            heat_on: true,
+            ..Default::default()
+        };
+        let fields = super::intent_fields(&state, &super::Intent::Power(false));
+        super::assume(&mut state, &fields);
+        assert!(!state.power_on && !state.heat_on);
+        let fields = super::intent_fields(&state, &super::Intent::Power(true));
+        super::assume(&mut state, &fields);
+        assert!(state.power_on && !state.heat_on);
+    }
+
     use super::*;
 
     #[test]
