@@ -6,11 +6,7 @@
 //! brand, and each flow is written once. A step that fails can be answered
 //! again: a flow moves on only when a step succeeds.
 
-use crate::{
-    capabilities::Item,
-    config,
-    connectors::{bosch, dyson, samsung},
-};
+use crate::{capabilities::Item, config};
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -162,68 +158,31 @@ pub struct Product {
     pub category: &'static str,
 }
 
-pub const PRODUCTS: [Product; 3] = [
-    Product {
-        id: "dyson",
-        name: "Dyson purifier",
-        category: "purifier",
-    },
-    Product {
-        id: "frame",
-        name: "Samsung The Frame",
-        category: "tv",
-    },
-    Product {
-        id: "bosch",
-        name: "Bosch dishwasher",
-        category: "dishwasher",
-    },
-];
-
-/// One setup under way.
-pub enum Flow {
-    Dyson(dyson::Setup),
-    Frame(samsung::Setup),
-    Bosch(bosch::Setup),
+/// The devices that can be added, from the drivers.
+pub fn products() -> Vec<Product> {
+    crate::driver::DRIVERS
+        .iter()
+        .map(|driver| driver.product())
+        .collect()
 }
 
-impl Flow {
-    pub fn start(product: &str) -> Result<(Self, Step)> {
-        Ok(match product {
-            "dyson" => {
-                let (setup, step) = dyson::Setup::start();
-                (Self::Dyson(setup), step)
-            }
-            "frame" => {
-                let (setup, step) = samsung::Setup::start();
-                (Self::Frame(setup), step)
-            }
-            "bosch" => {
-                let (setup, step) = bosch::Setup::start();
-                (Self::Bosch(setup), step)
-            }
-            other => anyhow::bail!("no device called {other} can be added"),
-        })
-    }
-
-    pub async fn next(&mut self, answers: &Answers) -> Result<Next> {
-        match self {
-            Self::Dyson(setup) => setup.next(answers).await,
-            Self::Frame(setup) => setup.next(answers).await,
-            Self::Bosch(setup) => setup.next(answers).await,
-        }
-    }
+/// A setup for `product`, and its first step.
+fn start(product: &str) -> Result<(Box<dyn crate::driver::AnySetup>, Step)> {
+    crate::driver::find(product)
+        .map(|driver| driver.setup())
+        .ok_or_else(|| anyhow!("no device called {product} can be added"))
 }
 
 /// Setups under way for the control socket, one per product.
-static FLOWS: Mutex<BTreeMap<String, Flow>> = Mutex::new(BTreeMap::new());
+static FLOWS: Mutex<BTreeMap<String, Box<dyn crate::driver::AnySetup>>> =
+    Mutex::new(BTreeMap::new());
 
 /// One step of adding `product`, for the control socket. No answers starts
 /// it over; answers continue it, to `{"step": …}` or `{"done": "…"}`.
 pub async fn step(product: &str, answers: Option<Answers>) -> Result<Value> {
     let flows = || FLOWS.lock().unwrap_or_else(|poison| poison.into_inner());
     let Some(answers) = answers else {
-        let (flow, step) = Flow::start(product)?;
+        let (flow, step) = start(product)?;
         flows().insert(product.to_owned(), flow);
         return Ok(json!({ "step": step }));
     };
@@ -247,7 +206,7 @@ pub async fn step(product: &str, answers: Option<Answers>) -> Result<Value> {
 /// Runs a setup in the terminal. `given` answers questions first, as from
 /// the command's flags; the rest are asked.
 pub async fn in_terminal(product: &str, given: Answers) -> Result<()> {
-    let (mut flow, mut step) = Flow::start(product)?;
+    let (mut flow, mut step) = start(product)?;
     loop {
         println!("{}", step.title);
         if !step.note.is_empty() {

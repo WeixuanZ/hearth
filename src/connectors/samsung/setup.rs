@@ -41,8 +41,10 @@ impl Setup {
         );
         (Self::Start, step)
     }
+}
 
-    pub async fn next(&mut self, answers: &Answers) -> Result<Next> {
+impl crate::driver::Setup for Setup {
+    async fn next(&mut self, answers: &Answers) -> Result<Next> {
         match self {
             Self::Start => {
                 let name = given(answers, "name").unwrap_or_else(|| "The Frame".into());
@@ -85,9 +87,9 @@ impl Setup {
                 let ip = IpControl::pair(host).await;
                 let info = info.take();
                 let mut saved = config::load_or_new()?;
-                config::upsert_frame(
+                config::upsert(
                     &mut saved,
-                    FrameDevice {
+                    config::Device::new::<crate::devices::tv::samsung_frame::Frame>(FrameDevice {
                         name: name.clone(),
                         model: info
                             .as_ref()
@@ -98,7 +100,7 @@ impl Setup {
                         token: token.clone(),
                         ip_token: ip.as_ref().cloned().unwrap_or_default(),
                         ..Default::default()
-                    },
+                    }),
                 );
                 config::save(&saved)?;
                 Ok(Next::Done(match ip {

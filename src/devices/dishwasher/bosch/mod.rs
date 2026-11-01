@@ -25,10 +25,7 @@ use accessory::{
 };
 use anyhow::{anyhow, Result};
 use capabilities::{Ask, Kept};
-use hap::{
-    server::{IpServer, Server},
-    HapType,
-};
+use hap::{server::Server, HapType};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -38,13 +35,32 @@ use std::{
 };
 use tokio::sync::{mpsc, watch};
 
-pub async fn spawn(device: BoschDevice, server: IpServer) -> Result<()> {
+/// Bosch dishwashers, over Home Connect on the local network.
+pub struct Bosch;
+
+impl crate::driver::Driver for Bosch {
+    const KIND: &'static str = "bosch";
+    const NAME: &'static str = "Bosch dishwasher";
+    const CATEGORY: &'static str = "dishwasher";
+    type Settings = BoschDevice;
+    type Setup = crate::connectors::bosch::Setup;
+
+    fn setup() -> (Self::Setup, crate::setup::Step) {
+        Self::Setup::start()
+    }
+
+    async fn start(settings: BoschDevice, context: crate::driver::Context) -> Result<()> {
+        spawn(settings, context).await
+    }
+}
+
+async fn spawn(device: BoschDevice, context: crate::driver::Context) -> Result<()> {
+    let server = context.homekit().clone();
     let (commands_tx, commands_rx) = mpsc::channel(32);
     let snapshot = capabilities::snapshot(&device, &Reading::default(), Kept::default());
     let id = snapshot.id.clone();
-    crate::capabilities::publish(snapshot);
-    let (requests_tx, requests) = mpsc::channel(16);
-    crate::capabilities::listen(&id, requests_tx);
+    context.publish(snapshot);
+    let requests = context.requests();
     let (state_tx, state_rx) = watch::channel(Reading::default());
     // The programme the next start runs, chosen from the menu bar or CLI.
     let (chosen_tx, chosen_rx) = watch::channel(None);
