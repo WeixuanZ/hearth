@@ -511,6 +511,7 @@ fn value_text(capability: &Value) -> String {
     match capability["kind"].as_str() {
         _ if value.is_null() => "–".into(),
         Some("power" | "switch") => if value == true { "on" } else { "off" }.into(),
+        Some("state") => if value == true { "yes" } else { "no" }.into(),
         Some("run") if value == true => match capability["remaining"].as_u64() {
             Some(secs) => match (secs / 3600, secs % 3600 / 60) {
                 (0, minutes) => format!("running, {minutes} min left"),
@@ -606,7 +607,7 @@ fn accepts(capability: &Value) -> String {
                 number("step")
             )
         }
-        Some("reading") => "read only".into(),
+        Some("reading" | "state") => "read only".into(),
         _ => String::new(),
     }
 }

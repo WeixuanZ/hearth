@@ -81,6 +81,8 @@ pub fn snapshot(device: &DysonDevice, state: &MachineState) -> Snapshot {
         measured(Measure::Pm25, state.pm25),
         measured(Measure::Pm10, state.pm10),
         measured(Measure::Formaldehyde, state.hcho_mg_m3),
+        measured(Measure::Voc, state.voc_index),
+        measured(Measure::No2, state.no2_index),
         // The filter is known whether or not the sensors are measuring.
         Capability::measure(Measure::FilterLife, state.hepa_life.map(f32::from)),
     ]);
