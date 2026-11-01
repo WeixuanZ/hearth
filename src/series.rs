@@ -13,6 +13,11 @@
 //! night does not fill the disk and a gap longer than that means the sensor
 //! was off. A minute is appended once it ends, so the file only grows at the
 //! end; rows older than thirty days are dropped once a day.
+//!
+//! `format.json` beside the files says which layout they are in. A hearth
+//! that finds a newer one leaves the files alone and records nothing, and
+//! two computers share history only when their formats match. A change an
+//! older hearth would misread raises [`FORMAT`] and migrates in `Log::open`.
 
 use crate::config;
 use anyhow::{anyhow, Context, Result};
@@ -26,6 +31,11 @@ use std::{
     sync::{Mutex, Once},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+/// The layout of the files, as `format.json` records it. 1 is the layout
+/// above, which is also what a folder from before `format.json` holds.
+pub const FORMAT: u64 = 1;
+const MANIFEST: &str = "format.json";
 
 /// One sample per minute.
 pub const INTERVAL_SECS: u64 = 60;
@@ -87,15 +97,36 @@ pub fn observe(device: &str, readings: &[(&str, f64)]) {
 /// and each reading by name.
 pub type Rows = Vec<(u64, BTreeMap<String, i32>)>;
 
+/// A hash of each day of each device's history, by device.
+pub type DayHashes = BTreeMap<String, BTreeMap<u64, String>>;
+
 /// A hash of each day of each device's history, minutes that have ended
 /// only, so two computers can tell which days they hold differently.
-pub fn digest() -> BTreeMap<String, BTreeMap<u64, String>> {
-    lock().as_ref().map_or_else(BTreeMap::new, |log| {
+/// Marked with the format, so neither takes rows it would misread.
+pub fn digest() -> Value {
+    let devices: DayHashes = lock().as_ref().map_or_else(BTreeMap::new, |log| {
         log.devices
             .iter()
             .map(|(id, device)| (id.clone(), device.digest()))
             .collect()
-    })
+    });
+    json!({ "format": FORMAT, "devices": devices })
+}
+
+/// Another computer's [`digest`], if its files are in this format. One from
+/// before formats were marked is a bare map, in format 1.
+pub fn their_digest(reply: Value) -> Result<DayHashes> {
+    let (format, devices) = match reply.get("format") {
+        Some(format) => (format.as_u64(), reply["devices"].clone()),
+        None => (Some(1), reply),
+    };
+    if format != Some(FORMAT) {
+        anyhow::bail!(
+            "its readings are in format {}, ours in {FORMAT}",
+            format.map_or("unknown".into(), |format| format.to_string())
+        );
+    }
+    Ok(serde_json::from_value(devices)?)
 }
 
 /// A device's rows on the given days.
@@ -366,6 +397,31 @@ fn lock() -> std::sync::MutexGuard<'static, Option<Log>> {
     LOG.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
+/// Refuses a folder in a newer format, and marks one with none: that is a
+/// folder from before formats were recorded, which is format 1.
+fn check_format(dir: &Path) -> Result<()> {
+    let path = dir.join(MANIFEST);
+    let found = match fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str::<Value>(&text)?["format"]
+            .as_u64()
+            .context("format.json does not say a format")?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::write(&path, format!("{}\n", json!({ "format": FORMAT })))?;
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    match found {
+        FORMAT => Ok(()),
+        newer if newer > FORMAT => Err(anyhow!(
+            "{} holds readings in format {newer}, newer than this hearth reads ({FORMAT}). \
+             They are left as they are; update hearth to keep recording",
+            dir.display()
+        )),
+        older => Err(anyhow!("no migration from readings format {older}")),
+    }
+}
+
 fn default_dir() -> Result<PathBuf> {
     Ok(config::config_dir()?.join("series"))
 }
@@ -405,6 +461,7 @@ impl Log {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
         }
+        check_format(&dir)?;
         let mut log = Self {
             dir,
             devices: BTreeMap::new(),
@@ -928,6 +985,34 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let log = Log::open(dir.clone()).unwrap();
         (log, dir)
+    }
+
+    #[test]
+    fn a_folder_records_its_format_and_a_newer_one_is_left_alone() {
+        let (_, dir) = temp_log();
+        let manifest = dir.join(MANIFEST);
+        let written: Value = serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+        assert_eq!(written["format"], FORMAT);
+
+        fs::write(&manifest, json!({ "format": FORMAT + 1 }).to_string()).unwrap();
+        fs::write(dir.join("abc%3A1.csv"), "time,temperature\n60,20\n").unwrap();
+        let refused = Log::open(dir.clone()).err().unwrap().to_string();
+        assert!(refused.contains("newer"));
+        assert_eq!(
+            fs::read_to_string(dir.join("abc%3A1.csv")).unwrap(),
+            "time,temperature\n60,20\n"
+        );
+    }
+
+    #[test]
+    fn history_is_shared_only_in_the_same_format() {
+        let days = json!({ "abc:1": { "19000": "hash" } });
+        let ours = their_digest(json!({ "format": FORMAT, "devices": days })).unwrap();
+        assert_eq!(ours["abc:1"][&19000], "hash");
+        // Before formats were marked: a bare map, which is format 1.
+        assert_eq!(their_digest(days.clone()).unwrap(), ours);
+        let newer = json!({ "format": FORMAT + 1, "devices": days });
+        assert!(their_digest(newer).is_err());
     }
 
     #[test]

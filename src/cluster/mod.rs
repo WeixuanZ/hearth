@@ -359,9 +359,8 @@ async fn catch_up(peer: &Heard, key: &GroupKey, config: &mut Config, files: &Fil
 /// from each, once a minute; merges converge, see `series::merge`.
 async fn share_history(peer: &Heard, key: &GroupKey, config: &Config) -> Result<()> {
     let addr = SocketAddr::new(peer.addr, peer.hello.port);
-    let theirs: BTreeMap<String, BTreeMap<u64, String>> =
-        serde_json::from_value(ask(addr, key, &Request::HistoryDigest).await?)?;
-    let ours = series::digest();
+    let theirs = series::their_digest(ask(addr, key, &Request::HistoryDigest).await?)?;
+    let ours = series::their_digest(series::digest())?;
     for (device, days) in theirs {
         if config.removed.contains_key(&device) {
             continue;
@@ -532,7 +531,7 @@ async fn answer(mut stream: TcpStream) -> Result<()> {
                     files: Files::read()?.encoded(),
                 })?,
                 Request::Control { request } => control::here(request).await,
-                Request::HistoryDigest => json!(series::digest()),
+                Request::HistoryDigest => series::digest(),
                 Request::HistoryRows { device, days } => json!(series::rows(&device, &days)),
             };
             let sealed = crypto::seal(
