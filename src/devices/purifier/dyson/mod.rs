@@ -178,7 +178,13 @@ async fn drive(
             }
             intent = intent_rx.recv() => {
                 let Some(intent) = intent else { break };
-                publish(&command_tx, &serial, prefix.as_deref(), &state, &intent).await;
+                // Shown at once. The fan confirms a moment later, and until
+                // then the menu bar would put a switch back where it was.
+                if let Some(fields) = publish(&command_tx, &serial, prefix.as_deref(), &state, &intent).await {
+                    protocol::assume(&mut state, &fields);
+                    state_tx.send(state.clone()).ok();
+                    crate::capabilities::publish(capabilities::snapshot(&device, &state));
+                }
             }
             _ = poll.tick() => {
                 let targets: Vec<String> = match &prefix {
@@ -207,17 +213,18 @@ async fn publish(
     prefix: Option<&str>,
     state: &MachineState,
     intent: &Intent,
-) {
+) -> Option<Vec<(&'static str, String)>> {
     let Some(prefix) = prefix else {
         log::warn!("not sending a command until the fan has identified its topic");
-        return;
+        return None;
     };
     let fields = intent_fields(state, intent);
     log::info!("fan: {intent:?} -> {fields:?}");
-    let _ = commands
+    let sent = commands
         .send(mqtt::Publish {
             topic: command_topic(prefix, serial),
             payload: protocol::state_set_payload(&fields),
         })
         .await;
+    sent.is_ok().then_some(fields)
 }
