@@ -341,7 +341,7 @@ pub(super) async fn apply_leak(accessory: &mut dyn HapAccessory, reading: &Readi
     Ok(())
 }
 
-/// `motion` is true only after the cycle has been seen unfinished, then finished.
+/// `motion` is the finish `devices::cycle` saw: a run that ended unstopped.
 /// The first reading must not notify, or starting the bridge would.
 pub(super) async fn apply_cycle(
     accessory: &mut dyn HapAccessory,

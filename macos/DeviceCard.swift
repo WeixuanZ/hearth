@@ -130,6 +130,10 @@ struct DeviceCard: View {
 
     @ViewBuilder
     private var summary: some View {
+        if let run = all("run").first {
+            RunSummary(run: run)
+                .padding(.leading, 24)
+        }
         let readings = Array(all("reading").filter(\.active).prefix(3))
         if !readings.isEmpty {
             Readings(device: device, readings: readings, grid: false)
@@ -139,11 +143,15 @@ struct DeviceCard: View {
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(device.capabilities.filter { ["switch", "choice", "level"].contains($0.kind) }) {
-                capability in
-                ControlRow(model: model, device: device, capability: capability)
-                    .disabled(!capability.active || !device.online)
-                    .opacity(capability.active ? 1 : 0.45)
+            if let run = all("run").first {
+                RunSection(model: model, device: device, run: run)
+            } else {
+                ForEach(device.capabilities.filter { ["switch", "choice", "level"].contains($0.kind) }) {
+                    capability in
+                    ControlRow(model: model, device: device, capability: capability)
+                        .disabled(!capability.active || !device.online)
+                        .opacity(capability.active ? 1 : 0.45)
+                }
             }
             ForEach(all("keys")) { keys in
                 RemotePad(model: model, device: device, keys: keys)
@@ -183,7 +191,7 @@ extension BridgeModel {
 }
 
 /// One switch, choice or level.
-private struct ControlRow: View {
+struct ControlRow: View {
     @ObservedObject var model: BridgeModel
     let device: Device
     let capability: Capability

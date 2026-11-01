@@ -14,6 +14,7 @@ use crate::{
         link,
         protocol::{Command, Reading},
     },
+    devices::cycle::{Cycle, Seen},
     surfaces::homekit::characteristics::{follow_label, follow_name},
 };
 use accessory::{
@@ -21,6 +22,7 @@ use accessory::{
     build_main,
 };
 use anyhow::{anyhow, Result};
+use capabilities::{Ask, Kept};
 use hap::{
     server::{IpServer, Server},
     HapType,
@@ -36,23 +38,33 @@ use tokio::sync::{mpsc, watch};
 
 pub async fn spawn(device: BoschDevice, server: IpServer) -> Result<()> {
     let (commands_tx, commands_rx) = mpsc::channel(32);
-    let snapshot = capabilities::snapshot(&device, &Reading::default());
+    let snapshot = capabilities::snapshot(&device, &Reading::default(), Kept::default());
     let id = snapshot.id.clone();
     crate::capabilities::publish(snapshot);
     let (requests_tx, mut requests) = mpsc::channel(16);
     crate::capabilities::listen(&id, requests_tx);
     let (state_tx, state_rx) = watch::channel(Reading::default());
+    // The programme the next start runs, chosen from the menu bar or CLI.
+    let (chosen_tx, chosen_rx) = watch::channel(None);
     let commands = commands_tx.clone();
     let asked = device.clone();
     let known = state_rx.clone();
     tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
             let reading = known.borrow().clone();
-            let result = match capabilities::command(&asked, &reading, &request) {
-                Ok(command) => commands
+            let kept = Kept {
+                chosen: *chosen_tx.borrow(),
+                ..Kept::default()
+            };
+            let result = match capabilities::command(&asked, &reading, kept, &request) {
+                Ok(Ask::Send(command)) => commands
                     .send(command)
                     .await
                     .map_err(|_| anyhow!("the dishwasher stopped")),
+                Ok(Ask::Choose(uid)) => {
+                    chosen_tx.send_replace(Some(uid));
+                    Ok(())
+                }
                 Err(error) => Err(error),
             };
             request.finish(result);
@@ -75,32 +87,41 @@ pub async fn spawn(device: BoschDevice, server: IpServer) -> Result<()> {
         .await
         .map_err(|error| anyhow!("{error}"))?;
     follow_label(&id, leak.clone(), HapType::LeakSensor, "AquaStop");
-    let cycle = server
+    let sensor = server
         .add_accessory(build_cycle(&device).await?)
         .await
         .map_err(|error| anyhow!("{error}"))?;
-    follow_label(&id, cycle.clone(), HapType::MotionSensor, "cycle");
+    follow_label(&id, sensor.clone(), HapType::MotionSensor, "cycle");
 
     let shown = device.clone();
     tokio::spawn(async move {
         let updates = async move {
             let mut states = state_rx;
-            let mut saw_unfinished = false;
-            let mut motion = false;
+            let mut chosen = chosen_rx;
+            let mut cycle = Cycle::default();
             loop {
-                let current = states.borrow().clone();
-                if current.online && !current.machine.finished {
-                    saw_unfinished = true;
+                let current = states.borrow_and_update().clone();
+                // Only a machine whose state has arrived: a session starts
+                // empty, which is not the end of a run.
+                let machine = &current.machine;
+                if current.online && !machine.operation.is_empty() {
+                    cycle.see(Seen {
+                        running: machine.running(),
+                        stopping: machine.stopping(),
+                        flagged: machine.finished,
+                        opened: machine.door_open,
+                    });
                 }
-                if current.online {
-                    motion = saw_unfinished && current.machine.finished;
-                }
+                let kept = Kept {
+                    chosen: *chosen.borrow_and_update(),
+                    finished: cycle.finished(),
+                };
                 suppress.store(true, Ordering::SeqCst);
                 let result = async {
                     apply_main(main.lock().await.as_mut(), &shown, &current).await?;
                     apply_door(door.lock().await.as_mut(), &current).await?;
                     apply_leak(leak.lock().await.as_mut(), &current).await?;
-                    apply_cycle(cycle.lock().await.as_mut(), &current, motion).await?;
+                    apply_cycle(sensor.lock().await.as_mut(), &current, kept.finished).await?;
                     Ok::<(), anyhow::Error>(())
                 }
                 .await;
@@ -108,8 +129,12 @@ pub async fn spawn(device: BoschDevice, server: IpServer) -> Result<()> {
                 if let Err(error) = result {
                     log::warn!("dishwasher HomeKit update failed: {error:#}");
                 }
-                crate::capabilities::publish(capabilities::snapshot(&shown, &current));
-                if states.changed().await.is_err() {
+                crate::capabilities::publish(capabilities::snapshot(&shown, &current, kept));
+                let changed = tokio::select! {
+                    changed = states.changed() => changed,
+                    changed = chosen.changed() => changed,
+                };
+                if changed.is_err() {
                     break;
                 }
             }

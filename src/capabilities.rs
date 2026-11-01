@@ -33,6 +33,21 @@ pub struct Capability {
 pub enum Kind {
     /// The device's main on and off.
     Power,
+    /// Starts and stops a programme, for a machine that runs one rather
+    /// than switching on, like a dishwasher. The value is whether one runs.
+    /// The controls before it set the run up; those after it are for while
+    /// it runs, like silence for half an hour.
+    Run {
+        /// Why it cannot start or stop now, for whoever would press it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        blocked: Option<String>,
+        /// Seconds left of the programme running, when the machine says.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        remaining: Option<u32>,
+        /// How far through it is, 0 to 100.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        progress: Option<f32>,
+    },
     Switch,
     /// One of a few options, like an input.
     Choice {
@@ -73,6 +88,23 @@ impl Item {
 impl Capability {
     pub fn power(on: bool) -> Self {
         Self::new("power", "Power", Kind::Power, json!(on))
+    }
+
+    /// Active unless `blocked` says why not. `remaining` and `progress`
+    /// are for while it runs.
+    pub fn run(
+        running: bool,
+        blocked: Option<String>,
+        remaining: Option<u32>,
+        progress: Option<f32>,
+    ) -> Self {
+        let active = blocked.is_none();
+        let kind = Kind::Run {
+            blocked,
+            remaining: remaining.filter(|_| running),
+            progress: progress.filter(|_| running),
+        };
+        Self::new("run", "Programme", kind, json!(running)).active(active)
     }
 
     pub fn switch(id: &'static str, name: &str, on: bool) -> Self {
