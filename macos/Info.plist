@@ -39,5 +39,12 @@
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Hearth talks to your devices on this network, and Apple Home and your other Macs reach it here.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_hap._tcp</string>
+		<string>_dyson_mqtt._tcp</string>
+	</array>
 </dict>
 </plist>

@@ -27,7 +27,7 @@ As many of each as you have. In Apple Home they become purifiers, televisions ea
 
 ## Install
 
-**Mac.** Download `Hearth-<version>-macos-arm64.zip` (Apple silicon) or `-x86_64.zip` (Intel) from the latest release, move `Hearth.app` to Applications, and open it. It lives in the menu bar and keeps itself up to date. Or build it: `cargo build --release && macos/build.sh && open macos/Hearth.app`.
+**Mac.** Download `Hearth-<version>-macos-arm64.zip` (Apple silicon) or `-x86_64.zip` (Intel) from the latest release, move `Hearth.app` to Applications, and open it. It lives in the menu bar and keeps itself up to date. Or build it: `cargo build --release && macos/build.sh && open macos/Hearth.app`. The first time, macOS asks whether Hearth may use the local network: allow it, or it cannot reach the devices (System Settings › Privacy & Security › Local Network; `hearth doctor` says so when it is off). A build signed ad hoc is new to macOS each time, so it asks again; `scripts/signing-identity.sh` makes a signing identity of your Mac's own, once, so builds keep the permission.
 
 **Command line**, on Linux or a Mac:
 
