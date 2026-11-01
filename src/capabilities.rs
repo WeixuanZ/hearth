@@ -63,6 +63,12 @@ pub enum Role {
     Formaldehyde,
     /// What is left of a filter, in percent.
     FilterLife,
+    /// Volatile organic compounds, as an index.
+    Voc,
+    /// Nitrogen dioxide, as an index.
+    No2,
+    /// Something the device uses up is low, like a dishwasher's salt.
+    Supply,
     /// Open or closed, like a door.
     Contact,
     Leak,
@@ -84,6 +90,8 @@ pub enum Measure {
     Pm10,
     Formaldehyde,
     FilterLife,
+    Voc,
+    No2,
 }
 
 impl Measure {
@@ -96,6 +104,8 @@ impl Measure {
             Self::Pm10 => ("pm10", "PM10", "µg/m³"),
             Self::Formaldehyde => ("formaldehyde", "Formaldehyde", "mg/m³"),
             Self::FilterLife => ("filter", "Filter life", "%"),
+            Self::Voc => ("voc", "VOC index", ""),
+            Self::No2 => ("no2", "NO₂ index", ""),
         }
     }
 }
@@ -109,6 +119,8 @@ impl From<Measure> for Role {
             Measure::Pm10 => Self::Pm10,
             Measure::Formaldehyde => Self::Formaldehyde,
             Measure::FilterLife => Self::FilterLife,
+            Measure::Voc => Self::Voc,
+            Measure::No2 => Self::No2,
         }
     }
 }
@@ -161,6 +173,10 @@ pub enum Kind {
 pub struct Item {
     pub id: String,
     pub name: String,
+    /// A number that stays the option's for good, for an ecosystem that
+    /// names options by number: Home stores a TV's input that way.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
 }
 
 impl Item {
@@ -168,7 +184,13 @@ impl Item {
         Self {
             id: id.into(),
             name: name.into(),
+            number: None,
         }
+    }
+
+    pub fn numbered(mut self, number: u32) -> Self {
+        self.number = Some(number);
+        self
     }
 }
 

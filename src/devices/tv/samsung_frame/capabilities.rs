@@ -55,7 +55,10 @@ impl<L> Tv<L> {
                     "Input",
                     Input::ALL
                         .iter()
-                        .map(|input| Item::new(input.source().to_lowercase(), input.label()))
+                        .map(|input| {
+                            Item::new(input.source().to_lowercase(), input.label())
+                                .numbered(*input as u32)
+                        })
                         .collect(),
                     input,
                 )

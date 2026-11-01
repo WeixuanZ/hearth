@@ -80,6 +80,18 @@ pub fn snapshot(device: &BoschDevice, reading: &Reading, kept: Kept) -> Snapshot
     capabilities
         .push(Capability::state("door", "Door open", known(machine.door_open)).role(Role::Contact));
     capabilities.push(Capability::state("leak", "Leak", known(machine.leak)).role(Role::Leak));
+    // Only what this machine reports: not every one tracks its rinse aid.
+    let reports =
+        |part: fn(&str) -> bool| device.features.values().any(|feature| part(&feature.name));
+    if reports(crate::connectors::bosch::protocol::salt_name) {
+        capabilities
+            .push(Capability::state("salt", "Salt low", machine.salt_low).role(Role::Supply));
+    }
+    if reports(|name| name.contains("RinseAid")) {
+        capabilities.push(
+            Capability::state("rinse_aid", "Rinse aid low", machine.rinse_low).role(Role::Supply),
+        );
+    }
 
     let programme = if machine.program.is_empty() {
         String::new()
