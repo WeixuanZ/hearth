@@ -28,8 +28,9 @@ final class BridgeModel: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             self?.refresh()
         }
-        // After an update, the new app starts the bridge the old one stopped.
-        if CommandLine.arguments.contains(Updater.restartFlag) {
+        // After an update, the new app starts the bridge the old one stopped;
+        // and when asked to, every time Hearth opens, as at login.
+        if CommandLine.arguments.contains(Updater.restartFlag) || Launch.startsBridge {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
                 if self?.running == false { self?.start() }
             }

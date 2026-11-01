@@ -7,7 +7,7 @@ struct HearthBar: App {
 
     var body: some Scene {
         MenuBarExtra {
-            Panel(model: app.model, updater: app.updater, setup: app.setup)
+            Panel(model: app.model, updater: app.updater, setup: app.setup, launch: app.launch)
         } label: {
             Image(systemName: "flame")
         }
@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = BridgeModel()
     let updater = Updater()
     let setup = SetupSession()
+    let launch = Launch()
 
     func application(_ application: NSApplication, open urls: [URL]) {
         urls.forEach(setup.receive)

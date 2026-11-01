@@ -112,7 +112,7 @@ The menu bar checks GitHub for a newer release and offers **Update to vX.Y.Z**. 
 
 ## Keep it running
 
-**Mac.** The menu bar's Start, which logs to `~/.config/hearth/hearth.log`, or a launch agent (edit the paths in `contrib/com.weixuan.hearth.plist`, then `launchctl load` it). Not both. A computer that sleeps hands Home to another in the group; with only one, keep it awake.
+**Mac.** The first time the menu bar opens it asks whether Hearth should start with your Mac. Yes makes it a login item and has it start the bridge whenever it opens, so a restart does not take the devices out of Home. Both are in the menu bar's settings (the gear), and the login item also in System Settings › General › Login Items. The bridge logs to `~/.config/hearth/hearth.log`. Without the menu bar, a launch agent does the same (edit the paths in `contrib/com.weixuan.hearth.plist`, then `launchctl load` it). Not both. A computer that sleeps hands Home to another in the group; with only one, keep it awake.
 
 **Linux.** A user service:
 

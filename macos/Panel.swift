@@ -5,10 +5,15 @@ struct Panel: View {
     @ObservedObject var model: BridgeModel
     @ObservedObject var updater: Updater
     @ObservedObject var setup: SetupSession
+    @ObservedObject var launch: Launch
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            if !launch.decided {
+                LaunchCard(launch: launch)
+                    .padding(.top, 14)
+            }
             if let group = model.status?.group, model.running, GroupCard.shows(group) {
                 GroupCard(model: model, group: group)
                     .padding(.top, 14)
@@ -79,7 +84,7 @@ struct Panel: View {
                 .font(.system(size: 13, weight: .medium))
             Text(model.missingBinary
                 ? "Build it with cargo install, then open this again."
-                : "Start it here, or leave the launch agent in charge.")
+                : "Start it here. Settings can start it whenever Hearth opens.")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -116,6 +121,7 @@ struct Panel: View {
                 }
                 update
                 Spacer()
+                SettingsMenu(launch: launch)
                 Text("v\(updater.version)")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
