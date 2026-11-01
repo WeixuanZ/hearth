@@ -242,6 +242,69 @@ pub fn milli_of(value: f64) -> Option<i32> {
     Some(scaled as i32)
 }
 
+/// One hour of a reading's usual day: the range most days stayed within
+/// then, from their tenth to their ninetieth percentile, and their mean.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Normal {
+    pub hour: u32,
+    pub low: f64,
+    pub mean: f64,
+    pub high: f64,
+}
+
+/// The usual day of a reading, from the days before `today` (its first
+/// second, Unix). `hour_of` gives a moment's hour on the local clock. An
+/// hour measured on fewer than three days is left out, as is today. Also
+/// returns how many days it drew on.
+pub fn normals(
+    samples: &[(u64, i32)],
+    today: u64,
+    hour_of: impl Fn(u64) -> u32,
+) -> (Vec<Normal>, usize) {
+    const DAY: u64 = 24 * 60 * 60;
+    // An hour of one day: the mean of what was stored in it.
+    let mut hours: BTreeMap<(u64, u32), (f64, u32)> = BTreeMap::new();
+    for &(time, milli) in samples.iter().filter(|(time, _)| *time < today) {
+        let day = (today - 1 - time) / DAY;
+        let slot = hours.entry((day, hour_of(time))).or_default();
+        slot.0 += f64::from(milli) / 1000.0;
+        slot.1 += 1;
+    }
+    let days = hours
+        .keys()
+        .map(|(day, _)| day)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    let mut by_hour: BTreeMap<u32, Vec<f64>> = BTreeMap::new();
+    for ((_, hour), (sum, count)) in hours {
+        by_hour
+            .entry(hour)
+            .or_default()
+            .push(sum / f64::from(count));
+    }
+    let normals = by_hour
+        .into_iter()
+        .filter(|(_, values)| values.len() >= 3)
+        .map(|(hour, mut values)| {
+            values.sort_by(f64::total_cmp);
+            Normal {
+                hour,
+                low: percentile(&values, 0.1),
+                mean: values.iter().sum::<f64>() / values.len() as f64,
+                high: percentile(&values, 0.9),
+            }
+        })
+        .collect();
+    (normals, days)
+}
+
+/// Linear between the two nearest of `sorted`.
+fn percentile(sorted: &[f64], share: f64) -> f64 {
+    let at = share * (sorted.len() - 1) as f64;
+    let (below, above) = (at.floor() as usize, at.ceil() as usize);
+    sorted[below] + (sorted[above] - sorted[below]) * (at - at.floor())
+}
+
 /// One reading, borrowed, for [`document`].
 pub struct SeriesOut<'a> {
     pub capability: &'a str,
@@ -825,6 +888,32 @@ fn atomic_write(path: &Path, body: &str) -> Result<()> {
     }
     fs::rename(&temporary, path).with_context(|| format!("could not save {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod normal_tests {
+    use super::*;
+
+    #[test]
+    fn a_usual_day_is_each_hours_range_across_the_days_before_today() {
+        const DAY: u64 = 86_400;
+        let today = 10 * DAY;
+        let hour_of = |time: u64| (time % DAY / 3600) as u32;
+        // Five days at 9:00 read 18 to 22 °C, two days measured 15:00, and
+        // today, which is not part of the usual day, reads 30 °C.
+        let mut samples: Vec<(u64, i32)> = (1..=5)
+            .map(|ago| (today - ago * DAY + 9 * 3600, 17_000 + ago as i32 * 1000))
+            .collect();
+        samples.extend((1..=2).map(|ago| (today - ago * DAY + 15 * 3600, 25_000)));
+        samples.push((today + 9 * 3600, 30_000));
+        let (normals, days) = normals(&samples, today, hour_of);
+        assert_eq!(days, 5);
+        assert_eq!(normals.len(), 1, "15:00 has too few days");
+        let nine = &normals[0];
+        assert_eq!(nine.hour, 9);
+        assert!((nine.mean - 20.0).abs() < 1e-9);
+        assert!((nine.low - 18.4).abs() < 1e-9 && (nine.high - 21.6).abs() < 1e-9);
+    }
 }
 
 #[cfg(test)]

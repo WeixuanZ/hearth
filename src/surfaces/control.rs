@@ -18,6 +18,8 @@
 //!   → {"step":{title, note, fields, link, wait}}, until {"done":"Added …"}
 //! {"op":"history","device":"purifier","capability":"temperature","hours":24}
 //!   → readings for that long, one point a minute at most
+//! {"op":"normals","device":"purifier","capability":"temperature"}
+//!   → its usual day from the last 30, an hour at a time, and today so far
 //! ```
 //!
 //! On a computer that is not serving Home, device requests go on to the one
@@ -70,6 +72,10 @@ enum Request {
         capability: Option<String>,
         #[serde(default)]
         hours: Option<u64>,
+    },
+    Normals {
+        device: String,
+        capability: String,
     },
     Products,
     Setup {
@@ -188,6 +194,8 @@ pub async fn here(value: Value) -> Value {
             hours,
         }) => history(&device, capability.as_deref(), hours.unwrap_or(24))
             .unwrap_or_else(|error| json!({ "error": format!("{error:#}") })),
+        Ok(Request::Normals { device, capability }) => normals(&device, &capability)
+            .unwrap_or_else(|error| json!({ "error": format!("{error:#}") })),
         Ok(_) => json!({ "error": "not a device request" }),
         Err(error) => json!({ "error": format!("bad request: {error}") }),
     }
@@ -253,6 +261,49 @@ fn history(device: &str, capability: Option<&str>, hours: u64) -> Result<Value> 
         since,
         &views,
     ))
+}
+
+/// A reading's usual day, from the last thirty, and today so far beside it.
+fn normals(device: &str, capability: &str) -> Result<Value> {
+    use chrono::{Local, TimeZone, Timelike};
+    let snapshot = capabilities::snapshot(device)?;
+    let unit = snapshot
+        .capabilities
+        .iter()
+        .find_map(|reading| match reading.kind {
+            Kind::Reading { unit } if reading.id == capability => Some(unit),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("{} has no reading {capability}", snapshot.name))?;
+    let now = series::unix_now();
+    let today = Local::now()
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|midnight| Local.from_local_datetime(&midnight).earliest())
+        .map_or(now - now % 86_400, |midnight| {
+            midnight.timestamp().max(0) as u64
+        });
+    let samples = series::samples(&snapshot.id, capability, series::window(720, now).1);
+    let hour_of = |time: u64| {
+        Local
+            .timestamp_opt(time as i64, 0)
+            .single()
+            .map_or(0, |moment| moment.hour())
+    };
+    let (normals, days) = series::normals(&samples, today, hour_of);
+    let today: Vec<_> = samples
+        .iter()
+        .filter(|(time, _)| *time >= today)
+        .map(|&(time, milli)| json!({ "t": time, "v": f64::from(milli) / 1000.0 }))
+        .collect();
+    Ok(json!({
+        "device": snapshot.id,
+        "capability": capability,
+        "unit": unit,
+        "days": days,
+        "normals": normals,
+        "today": today,
+    }))
 }
 
 /// Whether a bridge is answering on the socket.
