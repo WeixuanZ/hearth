@@ -1,12 +1,13 @@
 #!/bin/sh
 # Builds the menu bar app, macos/Hearth.app. Run it on a Mac.
+#   APP         where to build it. Defaults to macos/Hearth.app.
 #   ARCH        arm64 or x86_64. Defaults to this Mac's.
 #   HEARTH_BIN  the hearth binary to bundle. Defaults to target/release/hearth,
 #               then the hearth on PATH.
 set -eu
 cd "$(dirname "$0")"
 root=$(cd .. && pwd)
-app="$root/macos/Hearth.app"
+app="${APP:-$root/macos/Hearth.app}"
 arch="${ARCH:-$(uname -m)}"
 
 rm -rf "$app"
