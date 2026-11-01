@@ -2,6 +2,27 @@ import Darwin
 import Foundation
 
 /// The bridge's state, as `hearth devices --json` prints it.
+/// A line of the bridge's stream: a device as it now is, or one removed.
+/// Other changes are for watchers that keep less than the whole device.
+struct StateChange: Decodable {
+    var event: String
+    var device: DeviceOrId
+
+    enum DeviceOrId: Decodable {
+        case device(Device)
+        case id(String)
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            if let device = try? container.decode(Device.self) {
+                self = .device(device)
+            } else {
+                self = .id(try container.decode(String.self))
+            }
+        }
+    }
+}
+
 struct Status: Decodable {
     var pid: Int
     var name: String
@@ -140,12 +161,48 @@ enum ControlSocket {
     /// Sends one request and waits for its reply, `wait` seconds at most:
     /// longer for a step that waits on a person, like Allow on a TV.
     static func request(_ body: [String: Any], wait: Int = 5) throws -> Data {
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw Failure(message: "no socket") }
+        let fd = try open(body)
         defer { close(fd) }
-
         var timeout = timeval(tv_sec: wait, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+        var reply = Data()
+        var chunk = [UInt8](repeating: 0, count: 64 * 1024)
+        while !reply.contains(UInt8(ascii: "\n")) {
+            let count = read(fd, &chunk, chunk.count)
+            guard count > 0 else { break }
+            reply.append(contentsOf: chunk[0..<count])
+        }
+        if let object = try? JSONSerialization.jsonObject(with: reply) as? [String: Any],
+           let message = object["error"] as? String
+        {
+            throw Failure(message: message)
+        }
+        return reply
+    }
+
+    /// Sends `body` and hands over each line the bridge sends back, until it
+    /// hangs up. Blocks, so it belongs on a thread of its own.
+    static func subscribe(_ body: [String: Any], line: (Data) -> Void) throws {
+        let fd = try open(body)
+        defer { close(fd) }
+        var pending = Data()
+        var chunk = [UInt8](repeating: 0, count: 64 * 1024)
+        while true {
+            let count = read(fd, &chunk, chunk.count)
+            guard count > 0 else { return }
+            pending.append(contentsOf: chunk[0..<count])
+            while let end = pending.firstIndex(of: UInt8(ascii: "\n")) {
+                line(pending[pending.startIndex..<end])
+                pending.removeSubrange(pending.startIndex...end)
+            }
+        }
+    }
+
+    /// A connection to the bridge, with `body` sent on it.
+    private static func open(_ body: [String: Any]) throws -> Int32 {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw Failure(message: "no socket") }
 
         var address = sockaddr_un()
         address.sun_family = sa_family_t(AF_UNIX)
@@ -161,25 +218,18 @@ enum ControlSocket {
                 connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
             }
         }
-        guard connected == 0 else { throw Failure(message: "the bridge is not running") }
+        guard connected == 0 else {
+            close(fd)
+            throw Failure(message: "the bridge is not running")
+        }
 
         var line = try JSONSerialization.data(withJSONObject: body)
         line.append(UInt8(ascii: "\n"))
         let sent = line.withUnsafeBytes { write(fd, $0.baseAddress, line.count) }
-        guard sent == line.count else { throw Failure(message: "could not send") }
-
-        var reply = Data()
-        var chunk = [UInt8](repeating: 0, count: 64 * 1024)
-        while !reply.contains(UInt8(ascii: "\n")) {
-            let count = read(fd, &chunk, chunk.count)
-            guard count > 0 else { break }
-            reply.append(contentsOf: chunk[0..<count])
+        guard sent == line.count else {
+            close(fd)
+            throw Failure(message: "could not send")
         }
-        if let object = try? JSONSerialization.jsonObject(with: reply) as? [String: Any],
-           let message = object["error"] as? String
-        {
-            throw Failure(message: message)
-        }
-        return reply
+        return fd
     }
 }
