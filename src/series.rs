@@ -74,7 +74,41 @@ pub fn start() {
                 service(false);
             })
             .ok();
+        // Readings come from the devices' state, as they publish it.
+        let mut state = crate::bus::watch();
+        tokio::spawn(async move {
+            let mut seen = crate::bus::Devices::new();
+            loop {
+                let devices = state.borrow_and_update().clone();
+                for (id, device) in devices.iter() {
+                    if !seen
+                        .get(id)
+                        .is_some_and(|was| std::sync::Arc::ptr_eq(was, device))
+                    {
+                        observe_snapshot(device);
+                    }
+                }
+                seen = (*devices).clone();
+                if state.changed().await.is_err() {
+                    break;
+                }
+            }
+        });
     });
+}
+
+/// A snapshot's active readings, as [`observe`] takes them.
+fn observe_snapshot(snapshot: &crate::capabilities::Snapshot) {
+    let readings: Vec<(&str, f64)> = snapshot
+        .capabilities
+        .iter()
+        .filter(|capability| {
+            matches!(capability.kind, crate::capabilities::Kind::Reading { .. })
+                && capability.active
+        })
+        .filter_map(|capability| Some((capability.id, capability.value.as_f64()?)))
+        .collect();
+    observe(&snapshot.id, &readings);
 }
 
 /// Remembers the latest value of each active reading. Does nothing until
