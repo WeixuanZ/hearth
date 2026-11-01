@@ -36,7 +36,14 @@ else
   echo "No hearth binary bundled. The app will use ~/.cargo/bin/hearth if it is installed."
 fi
 
-# Apple silicon will not run unsigned code, so sign ad hoc.
-codesign --force --deep -s - "$app"
+# A signing identity of this Mac's own (scripts/signing-identity.sh) keeps
+# what macOS has allowed Hearth, like the local network, across rebuilds;
+# an ad hoc signature is new each build. Apple silicon will not run unsigned
+# code, so without one it is signed ad hoc. SIGN_IDENTITY picks another.
+identity="${SIGN_IDENTITY:-}"
+if [ -z "$identity" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q '"Hearth Local"'; then
+  identity="Hearth Local"
+fi
+codesign --force --deep -s "${identity:--}" "$app"
 
 echo "Built $app ($arch)"

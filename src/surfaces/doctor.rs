@@ -244,6 +244,14 @@ fn device_finding(
         .unwrap_or_default();
     match seen.map(|seen| seen["online"].as_bool() == Some(true)) {
         Some(true) => Finding::new(name, Verdict::Ok, headline),
+        // It answers this computer, so it is the bridge that is kept from it:
+        // on a Mac, Local Network privacy, after a new build of the app.
+        Some(false) if reached == Some(true) => Finding::new(
+            name,
+            Verdict::Warn,
+            format!("answers here, but the bridge cannot reach it ({})", headline.to_lowercase()),
+        )
+        .fix("If the bridge runs from the menu bar, allow Hearth in System Settings › Privacy & Security › Local Network"),
         Some(false) => Finding::new(
             name,
             Verdict::Warn,
@@ -335,10 +343,12 @@ mod tests {
             (silent.verdict, silent.detail.as_str()),
             (Verdict::Fail, "10.0.0.2:8001 did not answer")
         );
-        assert_eq!(
-            judge(None, Some(true), Some(&offline)).verdict,
-            Verdict::Warn
-        );
+        // Answers here, not the bridge: Local Network privacy, said so.
+        let blocked = judge(None, Some(true), Some(&offline));
+        assert_eq!(blocked.verdict, Verdict::Warn);
+        assert!(blocked.fix.unwrap().contains("Local Network"));
+        let quiet = device_finding("TV", None, None, None, Some(&offline));
+        assert!(quiet.fix.unwrap().contains("connecting"));
         assert_eq!(
             judge(Some("not paired"), Some(true), Some(&online)).verdict,
             Verdict::Warn
