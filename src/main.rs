@@ -1,3 +1,4 @@
+mod bus;
 mod capabilities;
 mod cluster;
 mod config;
@@ -38,6 +39,7 @@ const EXAMPLES: &[(&str, &str)] = &[
         "Renames it in Home too",
     ),
     ("hearth doctor", "What stands between Home and the devices"),
+    ("hearth events", "Follow changes as they happen"),
 ];
 
 const NOTES: &str = "\
@@ -98,6 +100,12 @@ enum Command {
         /// The usual day instead, from the last 30: each hour's range and mean, with today.
         #[arg(long, requires = "capability", conflicts_with = "hours")]
         usual: bool,
+    },
+    /// Follow what happens as it happens: each change, and alerts raised and cleared.
+    Events {
+        /// Only topics starting with this, like hearth/bosch: for one device.
+        #[arg(long, default_value = "")]
+        topic: String,
     },
     /// Change a capability, like power, an input or a speed.
     Set {
@@ -244,6 +252,7 @@ async fn main() -> Result<()> {
             capability,
             value,
         } => cli::set(&device, &capability, &value, cli.json).await?,
+        Command::Events { topic } => cli::events(&topic, cli.json).await?,
         Command::Run => run::run().await?,
         Command::Doctor => surfaces::doctor::run(cli.json).await?,
         Command::Mcp => surfaces::mcp::serve(command()).await?,

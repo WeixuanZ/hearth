@@ -155,6 +155,63 @@ pub async fn usual(device: &str, capability: &str, as_json: bool) -> Result<()> 
     Ok(())
 }
 
+/// Events as they happen, until the bridge stops or this is interrupted:
+/// each change, and alerts as they are raised and cleared.
+pub async fn events(topic: &str, as_json: bool) -> Result<()> {
+    let mut events = control::Subscription::open(topic).await?;
+    let style = Style::detect();
+    let mut names = std::collections::HashMap::new();
+    while let Some(event) = events.next().await? {
+        if as_json {
+            println!("{event}");
+            continue;
+        }
+        let device = event["device"].as_str().unwrap_or_default().to_owned();
+        let time = Local::now().format("%H:%M:%S").to_string();
+        let name = |names: &std::collections::HashMap<String, String>| {
+            names
+                .get(&device)
+                .cloned()
+                .unwrap_or_else(|| device.clone())
+        };
+        match event["event"].as_str() {
+            // A device's whole state; remembered for its name.
+            Some("device") => {
+                let snapshot = &event["device"];
+                if let (Some(id), Some(name)) = (snapshot["id"].as_str(), snapshot["name"].as_str())
+                {
+                    names.insert(id.to_owned(), name.to_owned());
+                }
+            }
+            Some("changed") => println!(
+                "{}  {}  {} {}",
+                style.dim(&time),
+                style.bold(&name(&names)),
+                event["capability"].as_str().unwrap_or_default(),
+                event["value"]
+            ),
+            Some("raised") => println!(
+                "{}  {}  {} {}",
+                style.dim(&time),
+                style.bold(&name(&names)),
+                style.wrap("33", "!"),
+                event["alert"]["message"].as_str().unwrap_or_default()
+            ),
+            Some("cleared") => println!(
+                "{}  {}  {}",
+                style.dim(&time),
+                style.bold(&name(&names)),
+                style.dim(&format!(
+                    "{} cleared",
+                    event["alert"].as_str().unwrap_or_default()
+                ))
+            ),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 pub async fn set(device: &str, capability: &str, value: &str, as_json: bool) -> Result<()> {
     let value = parse_value(value);
     control::request(

@@ -198,12 +198,14 @@ flowchart TB
 - **Connectors** know how to talk to a maker: login, pairing, discovery and message formats. They know nothing about Home or the menu bar.
 - **Devices** know what a product does. Each runs as one task that owns its state and its connection, turns requests into the connector's commands, and turns its state into a capability snapshot and HomeKit accessories. Rules between controls, like heat needing the fan on, live here, so every surface gets them.
 - **Capabilities** are the shared vocabulary. A capability has an id, a name, a kind (`power`, `switch`, `choice`, `level`, `reading` or `keys`) with its options or range, a value, and whether it is active. The registry holds every device's latest snapshot and the channel to its task.
+- **State is watched, not called.** Every device's latest snapshot is one value in `bus`, which anything can watch: it sees the state at once, then each new one, and a slow watcher skips ahead rather than missing anything. History records from it, and `{"op":"subscribe"}` on the socket (and `hearth events`) streams what changed, named by topic, `hearth/<device>/<capability>`. Nothing a device publishes is wired to who listens.
 - **Surfaces** never know a brand. HomeKit, the socket and the CLI send requests to the same device task, so they always agree. The menu bar draws controls from capability kinds alone.
 - **The group** decides which computer serves. Serving runs on a Tokio runtime of its own, so a computer that steps down ends every device connection at once.
 
 ```text
 src/
   capabilities.rs         the vocabulary, device snapshots, and the registry
+  bus.rs                  every device's state as one watched value, and what changed
   series.rs               readings over time, as CSV
   config.rs               config.toml: Settings for each kind, dates, merging two copies
   connectors/dyson/       MyDyson login, MQTT, the fan's messages

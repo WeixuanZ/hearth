@@ -20,6 +20,10 @@
 //!   → readings for that long, one point a minute at most
 //! {"op":"normals","device":"purifier","capability":"temperature"}
 //!   → its usual day from the last 30, an hour at a time, and today so far
+//! {"op":"subscribe","topic":"hearth/bosch:"}
+//!   → every device as it is, then each event as it happens, a line each:
+//!     {"event":"changed","topic":"hearth/<device>/<capability>",…}, or
+//!     device, raised, cleared. topic, a prefix, is optional
 //! ```
 //!
 //! On a computer that is not serving Home, device requests go on to the one
@@ -38,6 +42,7 @@
 //! control the devices. State is served from memory, so a reply is immediate.
 
 use crate::{
+    bus,
     capabilities::{self, Capability, Kind},
     cluster, config, series, setup,
 };
@@ -76,6 +81,11 @@ enum Request {
     Normals {
         device: String,
         capability: String,
+    },
+    /// Events as they happen, on this connection, until it closes.
+    Subscribe {
+        #[serde(default)]
+        topic: Option<String>,
     },
     Products,
     Setup {
@@ -130,11 +140,68 @@ async fn connection(stream: UnixStream) -> Result<()> {
     let (read, mut write) = stream.into_split();
     let mut lines = BufReader::new(read).lines();
     while let Some(line) = lines.next_line().await? {
+        if let Ok(Request::Subscribe { topic }) = serde_json::from_str(&line) {
+            return stream_events(&mut write, topic.unwrap_or_default()).await;
+        }
         let mut reply = answer(&line).await.to_string();
         reply.push('\n');
         write.write_all(reply.as_bytes()).await?;
     }
     Ok(())
+}
+
+/// Every device as it now is, then each change as it happens, a JSON line
+/// each, until the other side hangs up. Only topics starting with `topic`.
+/// Devices are on the computer serving Home; elsewhere the stream is quiet.
+async fn stream_events(write: &mut tokio::net::unix::OwnedWriteHalf, topic: String) -> Result<()> {
+    let mut state = bus::watch();
+    let mut before = bus::Devices::new();
+    loop {
+        let now = state.borrow_and_update().clone();
+        for change in bus::changes(&before, &now) {
+            if change.topic().starts_with(&topic) {
+                let mut line = serde_json::to_string(&change)?;
+                line.push('\n');
+                write.write_all(line.as_bytes()).await?;
+            }
+        }
+        before = (*now).clone();
+        if state.changed().await.is_err() {
+            return Ok(());
+        }
+    }
+}
+
+/// Events from the running bridge, as they happen. Dropping it ends the
+/// subscription.
+pub struct Subscription {
+    lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    /// Held open: the bridge ends the stream when this side closes.
+    _write: tokio::net::unix::OwnedWriteHalf,
+}
+
+impl Subscription {
+    /// Events whose topic starts with `topic`; every event for "".
+    pub async fn open(topic: &str) -> Result<Self> {
+        let stream = UnixStream::connect(path()?).await.map_err(|_| {
+            anyhow!("the bridge is not running. Start it with `hearth run` or the menu bar")
+        })?;
+        let (read, mut write) = stream.into_split();
+        let body = json!({ "op": "subscribe", "topic": topic });
+        write.write_all(format!("{body}\n").as_bytes()).await?;
+        Ok(Self {
+            lines: BufReader::new(read).lines(),
+            _write: write,
+        })
+    }
+
+    /// The next event, or none once the bridge stops.
+    pub async fn next(&mut self) -> Result<Option<Value>> {
+        match self.lines.next_line().await? {
+            Some(line) => Ok(Some(serde_json::from_str(&line)?)),
+            None => Ok(None),
+        }
+    }
 }
 
 async fn answer(line: &str) -> Value {
@@ -330,5 +397,64 @@ pub async fn request(body: Value) -> Result<Value> {
     match reply.get("error").and_then(Value::as_str) {
         Some(error) => Err(anyhow!("{error}")),
         None => Ok(reply),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capabilities::{Capability, Snapshot};
+
+    fn device(on: bool) -> Snapshot {
+        Snapshot {
+            id: "bus-test:1".into(),
+            kind: "test",
+            category: "purifier",
+            name: "Fan".into(),
+            online: true,
+            headline: String::new(),
+            detail: String::new(),
+            capabilities: vec![Capability::power(on)],
+            alerts: Vec::new(),
+        }
+    }
+
+    async fn next(
+        lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    ) -> Value {
+        let line = lines.next_line().await.unwrap().unwrap();
+        serde_json::from_str(&line).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_subscriber_hears_the_device_then_each_change() {
+        capabilities::begin(&config::Config::default());
+        let (client, server) = UnixStream::pair().unwrap();
+        tokio::spawn(connection(server));
+        let (read, mut write) = client.into_split();
+        let mut lines = BufReader::new(read).lines();
+        write
+            .write_all(b"{\"op\":\"subscribe\",\"topic\":\"hearth/bus-test:1/\"}\n")
+            .await
+            .unwrap();
+        capabilities::publish(device(false));
+        // Whether it came in the first look or as it happened, it is whole.
+        let first = next(&mut lines).await;
+        assert_eq!(first["event"], "device");
+        assert_eq!(first["device"]["id"], "bus-test:1");
+
+        capabilities::publish(device(true));
+        // Read on to the change: the device as it now is, then what changed.
+        let mut before = first;
+        let changed = loop {
+            let event = next(&mut lines).await;
+            if event["event"] == "changed" && event["value"] == true {
+                break event;
+            }
+            before = event;
+        };
+        assert_eq!(changed["topic"], "hearth/bus-test:1/power");
+        assert_eq!(before["event"], "device");
+        assert_eq!(before["device"]["capabilities"][0]["value"], true);
     }
 }

@@ -5,7 +5,10 @@
 //! all read the same snapshots and send to the same channels, so they agree,
 //! and a new device needs no new UI: its capabilities are the UI.
 
-use crate::config::{self, Config};
+use crate::{
+    bus,
+    config::{self, Config},
+};
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -294,18 +297,13 @@ pub fn begin(config: &Config) {
 /// Stops the registry, when this computer stops serving Home.
 pub fn end() {
     *REGISTRY.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
+    bus::clear();
 }
 
-/// Adds a device, or replaces its snapshot. The name stays the registry's.
+/// Adds a device, or replaces its snapshot, and puts it where every surface
+/// watches (see `bus`). The name stays the registry's.
 pub fn publish(mut snapshot: Snapshot) {
-    let readings: Vec<(&str, f64)> = snapshot
-        .capabilities
-        .iter()
-        .filter(|capability| matches!(capability.kind, Kind::Reading { .. }) && capability.active)
-        .filter_map(|capability| Some((capability.id, capability.value.as_f64()?)))
-        .collect();
-    crate::series::observe(&snapshot.id, &readings);
-    with(|registry| {
+    let stored = with(|registry| {
         match registry
             .devices
             .iter_mut()
@@ -314,14 +312,21 @@ pub fn publish(mut snapshot: Snapshot) {
             Some(entry) => {
                 snapshot.name = entry.name.borrow().clone();
                 entry.snapshot = snapshot;
+                entry.snapshot.clone()
             }
-            None => registry.devices.push(Entry {
-                name: watch::Sender::new(snapshot.name.clone()),
-                snapshot,
-                commands: None,
-            }),
+            None => {
+                registry.devices.push(Entry {
+                    name: watch::Sender::new(snapshot.name.clone()),
+                    snapshot: snapshot.clone(),
+                    commands: None,
+                });
+                snapshot
+            }
         }
     });
+    if let Some(stored) = stored {
+        bus::put(stored);
+    }
 }
 
 /// A device's name as it changes, for a surface that shows it, like Home.
@@ -350,6 +355,7 @@ pub fn rename(device: &str, to: &str) -> Result<()> {
         config::save(&config)?;
         entry.snapshot.name = to.to_owned();
         entry.name.send_replace(to.to_owned());
+        bus::put(entry.snapshot.clone());
         Ok(())
     })
     .ok_or_else(|| anyhow!("the bridge is starting"))?
