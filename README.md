@@ -60,6 +60,13 @@ downloads the latest release for this machine (Linux x86_64 or aarch64, macOS Ap
   </picture>
 </p>
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screens/programme-dark.png">
+    <img src="docs/screens/programme-light.png" alt="A dishwasher running its programme, the time left at the centre with Stop below, beside a reading's Averages: today against its usual range" width="760">
+  </picture>
+</p>
+
 A device with a remote, like the Frame, gets a pad in its card, and while the card is open the keyboard drives it: arrows, Return to select, Escape to go back.
 
 **CLI.** Talks to the running bridge, so it shares the devices' connections and answers in milliseconds, from any computer in the group.
