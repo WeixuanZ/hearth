@@ -69,6 +69,7 @@ hearth devices                    # every device, each capability, what it accep
 hearth get tv                     # one device
 hearth get purifier temperature
 hearth history purifier temperature
+hearth history purifier temperature --usual   # its usual day, hour by hour
 hearth history purifier --hours 168
 hearth set tv power on
 hearth set tv input hdmi2
@@ -88,7 +89,7 @@ A device is its id, name, kind (`tv`, `purifier`, `dishwasher`), connector (`fra
 
 **Scripts and agents.** Add `--json` to any command. `hearth devices --json` lists every capability with its kind, value, accepted options or range, and whether it is active, which is enough to drive any device without knowing its brand. Errors go to stderr with exit status 1. Programs can also talk to the [control socket](#control-socket) directly.
 
-**AI agents.** `hearth mcp` serves the devices over the [Model Context Protocol](https://modelcontextprotocol.io), so an agent like Claude can list them, read and change capabilities, and read their history and usual day. Add it to Claude Code with `claude mcp add hearth -- hearth mcp`, or to any MCP client as the command `hearth mcp`. It asks the running bridge, so an agent can do what the CLI can and no more: a dishwasher still needs Remote Start, and the Home pairing code is not shown.
+**AI agents.** `hearth mcp` serves the CLI over the [Model Context Protocol](https://modelcontextprotocol.io), so an agent like Claude can list the devices, read and change them, and read their history and usual day. Its tools are made from the CLI itself: each command is a tool, its arguments the input and its help their descriptions, and a call runs the command with `--json`. A new command reaches agents with nothing else to write. Commands an agent must not run (the bridge, the pairing code, unpairing, removing, the group, signing in) are withheld, and the Home pairing code never appears in a reply. Add it to Claude Code with `claude mcp add hearth -- hearth mcp`, or to any MCP client as the command `hearth mcp`.
 
 **Names.** A device has one name. Rename it from the pencil that appears beside its name in the menu bar, with `hearth rename`, or in the Home app, and it changes everywhere. A second device of a model gets a name of its own, like `The Frame 2`.
 

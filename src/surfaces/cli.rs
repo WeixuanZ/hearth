@@ -92,6 +92,69 @@ pub async fn history(
     }
 }
 
+/// A reading's usual day, from the last thirty: each hour's range and mean,
+/// and today's value beside it. Asks the bridge, which holds the record.
+pub async fn usual(device: &str, capability: &str, as_json: bool) -> Result<()> {
+    let value = control::request(json!({
+        "op": "normals",
+        "device": device,
+        "capability": capability,
+    }))
+    .await?;
+    if as_json {
+        return print_json(&value);
+    }
+    let style = Style::detect();
+    let unit = value["unit"].as_str().unwrap_or("");
+    let days = value["days"].as_u64().unwrap_or(0);
+    let normals = value["normals"].as_array().cloned().unwrap_or_default();
+    if normals.is_empty() {
+        println!("A usual day needs three days of readings; there are {days}.");
+        return Ok(());
+    }
+    // Today's last value in each hour, on the local clock.
+    let mut today = std::collections::BTreeMap::new();
+    for sample in value["today"].as_array().into_iter().flatten() {
+        let (Some(time), Some(reading)) = (sample["t"].as_i64(), sample["v"].as_f64()) else {
+            continue;
+        };
+        if let Some(moment) = DateTime::from_timestamp(time, 0) {
+            today.insert(
+                moment.with_timezone(&Local).format("%H").to_string(),
+                reading,
+            );
+        }
+    }
+    let text = |number: f64| {
+        format!("{} {unit}", number_text(number))
+            .trim_end()
+            .to_owned()
+    };
+    println!(
+        "{}",
+        style.bold(&format!("Usual {capability}, from the last {days} days"))
+    );
+    println!(
+        "{}",
+        style.dim("hour   usual range          mean        today")
+    );
+    for hour in normals {
+        let at = format!("{:02}", hour["hour"].as_u64().unwrap_or(0));
+        let range = format!(
+            "{} to {}",
+            text(hour["low"].as_f64().unwrap_or(0.0)),
+            text(hour["high"].as_f64().unwrap_or(0.0))
+        );
+        let mean = text(hour["mean"].as_f64().unwrap_or(0.0));
+        let now = today
+            .get(&at)
+            .map(|reading| text(*reading))
+            .unwrap_or_default();
+        println!("{at}     {range:<20} {mean:<11} {now}");
+    }
+    Ok(())
+}
+
 pub async fn set(device: &str, capability: &str, value: &str, as_json: bool) -> Result<()> {
     let value = parse_value(value);
     control::request(
