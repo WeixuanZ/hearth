@@ -22,6 +22,7 @@ cargo test --workspace
 cargo clippy --all-targets -- -D warnings
 cargo fmt -p hearth
 macos/build.sh            # the menu bar app, on a Mac
+scripts/ci.sh             # everything CI runs, the Linux jobs in Docker
 ```
 
 The [README](README.md#development) explains the architecture, and
