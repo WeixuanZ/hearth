@@ -23,6 +23,10 @@ app() {
 }
 
 in_linux() {
+  if ! docker info >/dev/null 2>&1; then
+    echo "Docker is not running. Start Docker Desktop, or run just the Mac jobs: scripts/ci.sh rust app" >&2
+    exit 1
+  fi
   docker build -q -t hearth-ci -f scripts/ci.Dockerfile scripts >/dev/null
   docker run --rm \
     -v "$PWD":/src -w /src \
