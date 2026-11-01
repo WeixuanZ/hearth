@@ -192,6 +192,11 @@ pub struct Machine {
 impl Machine {
     /// Running a programme, or about to: the only time its remaining time
     /// and progress mean anything. Otherwise they are the last programme's.
+    /// Being stopped: the end that follows is not a finish.
+    pub fn stopping(&self) -> bool {
+        self.operation.ends_with("Aborting")
+    }
+
     pub fn running(&self) -> bool {
         self.operation.ends_with("Run") || self.operation.ends_with("DelayedStart")
     }
@@ -426,8 +431,14 @@ pub fn format_remaining(seconds: u64) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Power(bool),
-    Option { key: String, on: bool },
+    Option {
+        key: String,
+        on: bool,
+    },
+    /// Starts this programme.
     Program(u32),
+    /// Ends the programme running.
+    Abort,
 }
 
 /// One Home Connect session: ids, the service list, and the replies we owe.
@@ -631,6 +642,10 @@ impl Talk {
             Command::Program(uid) => (
                 "/ro/activeProgram",
                 json!([{ "program": uid, "options": [] }]),
+            ),
+            Command::Abort => (
+                "/ro/values",
+                json!([{ "uid": feature_uid(features, "AbortProgram")?, "value": true }]),
             ),
         };
         Some(self.post(resource, data))
@@ -902,6 +917,18 @@ mod tests {
         let program = talk.submit(&features, Command::Program(30)).unwrap();
         assert!(program.contains(r#""program":30"#));
         assert!(program.find(r#""program""#).unwrap() < program.find(r#""options""#).unwrap());
+        // A machine that does not list the abort command is sent nothing.
+        assert!(talk.submit(&features, Command::Abort).is_none());
+        features.insert(
+            "600".into(),
+            BoschFeature {
+                name: "BSH.Common.Command.AbortProgram".into(),
+                values: BTreeMap::new(),
+            },
+        );
+        let abort = talk.submit(&features, Command::Abort).unwrap();
+        assert!(abort.contains(r#""resource":"/ro/values""#));
+        assert!(abort.contains(r#""uid":600,"value":true"#));
     }
 
     #[test]

@@ -63,6 +63,10 @@ struct Capability: Decodable, Identifiable {
     var max: Double?
     var step: Double?
     var unit: String?
+    /// A run's: why it cannot start or stop now, seconds left, percent done.
+    var blocked: String?
+    var remaining: Double?
+    var progress: Double?
 }
 
 struct Option: Decodable, Identifiable, Hashable {

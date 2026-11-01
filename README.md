@@ -74,6 +74,8 @@ hearth set tv power on
 hearth set tv input hdmi2
 hearth set tv remote select
 hearth set purifier speed 4
+hearth set dishwasher programme "Eco 50"
+hearth set dishwasher run start
 hearth set purifier sweep 90
 hearth rename tv "Living room TV"
 hearth remove "The Frame 2"
@@ -140,7 +142,8 @@ sudo loginctl enable-linger "$USER"   # keep it up while logged out
 - **Dyson address.** Set `host` on the fan in the config if it does not announce itself on the network.
 - **Frame art mode** is on only while the TV is: asking for art mode turns the TV on, and turning it off ends art mode. It is a tile of its own, because Home shows a TV only as power and an input picker. An input with nothing plugged in is refused. Without IP Control, inputs fall back to remote keys, which newer firmware ignores.
 - **Frame remote.** Arrows, select, back and volume are in Control Center's remote, which keeps one connection to the TV open, so keys land at once.
-- **Dishwasher.** Home has no dishwasher, and it only pushes a notification for a few kinds of sensor. The door is a contact sensor ("was opened" or "was closed"). AquaStop is a leak sensor. The end of a cycle is a motion sensor: the alert says "detected motion", which means the programme finished, and only after a cycle has been seen running, so starting the bridge does not notify. Salt and rinse aid are noted on the device, not pushed. Remaining time, progress, energy and water are readings. Programmes are one choice, in the machine's own order, up to 16, and in Home each is a switch. Power and a programme start only work while the dishwasher is allowing remote start.
+- **Dishwasher: start and stop.** A machine that runs programmes is started and stopped, not switched on and off. In the menu bar its card lists the programme and options, then **Start**. Start counts down three seconds before anything is sent; press it again to take it back. While a programme runs, the time left is the centre of the card, the settings fold into one line, the options for a running programme (like silence for 30 minutes) appear, and **Stop** counts down the same way. Choosing a programme sends nothing; Start sends the one chosen. Starting needs Remote Start pressed on the dishwasher, and the card says so. This dishwasher has no remote pause: opening the door pauses it. From the CLI: `hearth set dishwasher run start` or `stop`.
+- **Dishwasher in Home.** Home has no dishwasher, and it only pushes a notification for a few kinds of sensor. The door is a contact sensor ("was opened" or "was closed"). AquaStop is a leak sensor. The end of a programme is a motion sensor named after the dishwasher with "cycle": the alert says "detected motion", which means the programme finished. To get it on your iPhone, open the sensor in Home, then Settings, and turn on Activity Notifications. A finish is a run seen ending without being stopped, so starting the bridge or stopping a programme does not notify; it holds until the door is opened or the next run starts. Programmes are switches in Home, which start the programme at once.
 
 ## Development
 
@@ -315,7 +318,7 @@ The status has a `group`: this computer's `role` (`serving`, `standby`, `joining
 1. **Connector.** Under `src/connectors/<maker>/`: the protocol, and a `Setup` in `setup.rs` with the steps that add the device (what to ask, a page to open, waiting on the device), listed in `setup::PRODUCTS` and `setup::Flow`. The menu bar and `hearth add` show them without knowing the brand.
 2. **Settings.** In `src/config.rs`: a struct for what the device needs, implementing `Settings` (its id, its name, the HomeKit accessory ids it owns, the address `hearth doctor` dials, and any setup left to do), and a variant of `Device`. Ids, merging between computers and renames then work for it.
 3. **Device.** Under `src/devices/<kind>/<model>/`: a task that keeps the device's state and connection (see `devices::tv::samsung_frame::spawn`), started from `devices::spawn`.
-4. **Capabilities.** In `capabilities.rs` next to it: a `snapshot` from state, and a function from a request to the device's command. Publish with `capabilities::publish`; take requests from `capabilities::listen`.
+4. **Capabilities.** In `capabilities.rs` next to it: a `snapshot` from state, and a function from a request to the device's command. Publish with `capabilities::publish`; take requests from `capabilities::listen`. A machine that runs programmes, like a washing machine, publishes a `run` in place of `power`: the controls before it set a run up, those after it are for while it runs, and `devices::cycle` says when a run finished, for an alert and a sensor Home notifies on. The menu bar's start, countdown and time left then come for free.
 5. **HomeKit.** In `accessory.rs`: the accessories, with fixed iids per service (tests check they are unique), and the same commands as the capabilities. Give the main service `device_name`, and call `follow_name` once the accessory is added, so renames reach Home and come back from it. Other services take `configured_name`, for names Home can change.
 
 The menu bar, the CLI, the socket and the group need no changes.

@@ -9,8 +9,8 @@ use std::io::IsTerminal;
 /// A typed value from the command line: on/off, a number, or an option id.
 pub fn parse_value(text: &str) -> Value {
     match text.to_lowercase().as_str() {
-        "on" | "true" | "yes" => json!(true),
-        "off" | "false" | "no" => json!(false),
+        "on" | "true" | "yes" | "start" => json!(true),
+        "off" | "false" | "no" | "stop" => json!(false),
         _ => text
             .parse::<f64>()
             .map_or_else(|_| json!(text), |number| json!(number)),
@@ -391,6 +391,14 @@ fn value_text(capability: &Value) -> String {
     match capability["kind"].as_str() {
         _ if value.is_null() => "–".into(),
         Some("power" | "switch") => if value == true { "on" } else { "off" }.into(),
+        Some("run") if value == true => match capability["remaining"].as_u64() {
+            Some(secs) => match (secs / 3600, secs % 3600 / 60) {
+                (0, minutes) => format!("running, {minutes} min left"),
+                (hours, minutes) => format!("running, {hours} h {minutes} min left"),
+            },
+            None => "running".into(),
+        },
+        Some("run") => "stopped".into(),
         Some("choice") => capability["options"]
             .as_array()
             .and_then(|options| options.iter().find(|option| option["id"] == *value))
@@ -435,6 +443,10 @@ fn accepts(capability: &Value) -> String {
     };
     match capability["kind"].as_str() {
         Some("power" | "switch") => "on | off".into(),
+        Some("run") => match capability["blocked"].as_str() {
+            Some(why) => why.to_owned(),
+            None => "start | stop".into(),
+        },
         Some("choice") => ids("options"),
         Some("keys") => format!("press: {}", ids("keys")),
         Some("level") => {

@@ -1,6 +1,7 @@
 //! Each kind of device, one module per model: its task, its HomeKit
 //! accessories, its capabilities.
 
+pub mod cycle;
 pub mod dishwasher;
 pub mod purifier;
 pub mod tv;
