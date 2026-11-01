@@ -6,7 +6,8 @@
 
 use super::protocol::label_of;
 use super::xml;
-use crate::config::{self, BoschDevice};
+use crate::config;
+use crate::devices::dishwasher::bosch::BoschDevice;
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use rand::RngCore;

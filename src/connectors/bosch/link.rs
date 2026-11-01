@@ -5,7 +5,7 @@
 //! The key material saved at pairing says which.
 
 use super::protocol::{decode_key, Command, Machine, Reading, Seal, Talk};
-use crate::config::BoschDevice;
+use crate::devices::dishwasher::bosch::BoschDevice;
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use openssl::ssl::{Ssl, SslContext, SslMethod, SslVerifyMode, SslVersion};

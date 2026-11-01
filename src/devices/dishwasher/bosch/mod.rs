@@ -7,9 +7,11 @@
 
 mod accessory;
 mod capabilities;
+mod settings;
+
+pub use settings::BoschDevice;
 
 use crate::{
-    config::BoschDevice,
     connectors::bosch::{
         link,
         protocol::{Command, Reading},
@@ -206,7 +208,10 @@ async fn drive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{capabilities::Set, config::BoschFeature, connectors::bosch::protocol::Machine};
+    use crate::{
+        capabilities::Set, connectors::bosch::protocol::BoschFeature,
+        connectors::bosch::protocol::Machine,
+    };
     use serde_json::json;
     use std::collections::BTreeMap;
 

@@ -5,7 +5,7 @@ use crate::config::Settings as _;
 use crate::connectors::dyson::protocol::{sweep, Intent, MachineState, SWEEPS};
 use crate::{
     capabilities::{Alert, Capability, Item, Measure, Role, Set, Snapshot},
-    config::DysonDevice,
+    devices::purifier::dyson::DysonDevice,
 };
 use anyhow::{anyhow, Result};
 

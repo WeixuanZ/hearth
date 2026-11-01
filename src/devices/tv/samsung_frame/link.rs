@@ -3,12 +3,13 @@
 //! same task against a fake TV.
 
 use crate::{
-    config::{self, FrameDevice},
+    config,
     connectors::samsung::{
         ipc::IpControl,
         link,
         protocol::{ArtReply, DeviceInfo},
     },
+    devices::tv::samsung_frame::FrameDevice,
 };
 use anyhow::{anyhow, Result};
 use std::{future::Future, time::Duration};

@@ -3,9 +3,11 @@
 
 mod accessory;
 mod capabilities;
+mod settings;
+
+pub use settings::DysonDevice;
 
 use crate::{
-    config::DysonDevice,
     connectors::dyson::{
         discover, mqtt,
         protocol::{

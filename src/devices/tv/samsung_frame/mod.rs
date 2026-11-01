@@ -3,10 +3,12 @@
 
 mod accessory;
 mod capabilities;
+mod settings;
+
+pub use settings::FrameDevice;
 mod link;
 
 use crate::{
-    config::FrameDevice,
     connectors::samsung::protocol::{self, ArtReply, Input},
     surfaces::homekit::characteristics::follow_name,
 };

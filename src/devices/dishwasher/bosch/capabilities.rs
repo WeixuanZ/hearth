@@ -6,7 +6,8 @@ use crate::connectors::bosch::protocol::{
 };
 use crate::{
     capabilities::{Alert, Capability, Item, Role, Set, Snapshot},
-    config::{BoschDevice, Settings as _},
+    config::Settings as _,
+    devices::dishwasher::bosch::BoschDevice,
 };
 use anyhow::{anyhow, Result};
 
@@ -324,7 +325,7 @@ mod tests {
     use crate::connectors::bosch::protocol::Machine;
 
     fn device() -> BoschDevice {
-        use crate::config::BoschFeature;
+        use crate::connectors::bosch::protocol::BoschFeature;
         use std::collections::BTreeMap;
         let mut features = BTreeMap::new();
         features.insert(
@@ -465,7 +466,7 @@ mod tests {
 
     #[test]
     fn a_running_programme_stops_only_where_the_machine_offers_it() {
-        use crate::config::BoschFeature;
+        use crate::connectors::bosch::protocol::BoschFeature;
         let mut device = device();
         let reading = Reading {
             online: true,

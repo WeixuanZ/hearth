@@ -2,7 +2,8 @@
 
 use super::{discover, ipc::IpControl, link, protocol::DeviceInfo};
 use crate::{
-    config::{self, FrameDevice},
+    config,
+    devices::tv::samsung_frame::FrameDevice,
     setup::{given, Answers, Field, Next, Step},
 };
 use anyhow::{anyhow, Result};

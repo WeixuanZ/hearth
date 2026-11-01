@@ -6,6 +6,9 @@
 //! `save` dates whatever changed since the file on disk, so computers that
 //! share a bridge can `merge` their copies and keep the newer of each part.
 
+use crate::devices::{
+    dishwasher::bosch::BoschDevice, purifier::dyson::DysonDevice, tv::samsung_frame::FrameDevice,
+};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, io::Write, path::PathBuf};
@@ -41,47 +44,6 @@ pub enum Device {
     Bosch(BoschDevice),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DysonDevice {
-    /// HomeKit accessory id. The fan and its switches are one accessory.
-    #[serde(default)]
-    pub aid: u64,
-    pub name: String,
-    pub serial: String,
-    pub model: String,
-    /// MQTT topic prefix. `auto` tries 527K, then 527E, then 527.
-    pub product_type: String,
-    pub mqtt_password: String,
-    #[serde(default)]
-    pub host: String,
-    #[serde(default = "default_mqtt_port")]
-    pub port: u16,
-    #[serde(default = "default_true")]
-    pub heating: bool,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct FrameDevice {
-    #[serde(default)]
-    pub aid: u64,
-    pub name: String,
-    /// Filled in from the TV. The 65" 2024 Frame reports a model like QE65LS03D.
-    #[serde(default)]
-    pub model: String,
-    pub host: String,
-    #[serde(default)]
-    pub mac: String,
-    /// Returned when you press Allow on the TV. Empty until `hearth frame pair`.
-    #[serde(default)]
-    pub token: String,
-    /// IP Control's token, from a second Allow. Empty if IP Remote is off.
-    #[serde(default)]
-    pub ip_token: String,
-    /// HomeKit accessory id of the art switch, a tile beside the TV.
-    #[serde(default)]
-    pub art_aid: u64,
-}
-
 /// What every kind of device's settings provide. A new kind implements
 /// this, adds a variant to [`Device`], and is started in `devices::spawn`.
 pub trait Settings {
@@ -98,130 +60,6 @@ pub trait Settings {
     fn incomplete(&self) -> Option<&'static str> {
         None
     }
-}
-
-impl Settings for DysonDevice {
-    fn id(&self) -> String {
-        format!("dyson:{}", self.serial)
-    }
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn name_mut(&mut self) -> &mut String {
-        &mut self.name
-    }
-    fn aids(&mut self) -> Vec<&mut u64> {
-        vec![&mut self.aid]
-    }
-    /// Empty means found on the network by its serial.
-    fn address(&self) -> Option<(String, u16)> {
-        (!self.host.is_empty()).then(|| (self.host.clone(), self.port))
-    }
-}
-
-impl Settings for FrameDevice {
-    fn id(&self) -> String {
-        format!("frame:{}", self.host)
-    }
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn name_mut(&mut self) -> &mut String {
-        &mut self.name
-    }
-    /// The TV, and art mode as a tile of its own.
-    fn aids(&mut self) -> Vec<&mut u64> {
-        vec![&mut self.aid, &mut self.art_aid]
-    }
-    /// The TV's own API, which answers even before it is paired.
-    fn address(&self) -> Option<(String, u16)> {
-        Some((self.host.clone(), 8001))
-    }
-    fn incomplete(&self) -> Option<&'static str> {
-        self.token
-            .is_empty()
-            .then_some("not paired with the TV. Run `hearth frame pair` while it is on")
-    }
-}
-
-/// One value a Bosch feature can take. The key is the number on the wire.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BoschFeature {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub values: BTreeMap<String, String>,
-}
-
-/// A dishwasher reached on the local network.
-/// The account password is not stored. `key` is the machine's own key.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BoschDevice {
-    #[serde(default)]
-    pub aid: u64,
-    /// Door, AquaStop and the end of a cycle. Separate accessories, so Home can notify.
-    #[serde(default)]
-    pub door_aid: u64,
-    #[serde(default)]
-    pub leak_aid: u64,
-    #[serde(default)]
-    pub cycle_aid: u64,
-    pub name: String,
-    #[serde(default = "default_brand")]
-    pub brand: String,
-    /// VIB, such as SPV2HKX42G.
-    #[serde(default)]
-    pub model: String,
-    pub ha_id: String,
-    /// mDNS name, or an address passed with `--host`.
-    #[serde(default)]
-    pub host: String,
-    pub key: String,
-    /// Empty means TLS-PSK on 443. Set means the older AES session on port 80.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub iv: String,
-    #[serde(default)]
-    pub features: BTreeMap<String, BoschFeature>,
-}
-
-fn default_brand() -> String {
-    "Bosch".into()
-}
-
-impl Settings for BoschDevice {
-    fn id(&self) -> String {
-        format!("bosch:{}", self.ha_id)
-    }
-    fn name(&self) -> &str {
-        &self.name
-    }
-    fn name_mut(&mut self) -> &mut String {
-        &mut self.name
-    }
-    fn aids(&mut self) -> Vec<&mut u64> {
-        vec![
-            &mut self.aid,
-            &mut self.door_aid,
-            &mut self.leak_aid,
-            &mut self.cycle_aid,
-        ]
-    }
-    /// The machine announces a bare name, which resolves with `.local`.
-    fn address(&self) -> Option<(String, u16)> {
-        let port = if self.iv.is_empty() { 443 } else { 80 };
-        let host = match self.host.contains('.') || self.host.contains(':') {
-            true => self.host.clone(),
-            false => format!("{}.local", self.host),
-        };
-        (!self.host.is_empty()).then_some((host, port))
-    }
-}
-
-fn default_mqtt_port() -> u16 {
-    1883
-}
-
-fn default_true() -> bool {
-    true
 }
 
 impl Device {
@@ -799,6 +637,7 @@ impl OpenOptionsExt for fs::OpenOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connectors::bosch::protocol::BoschFeature;
 
     fn aid(device: &Device) -> u64 {
         *device.clone().settings_mut().aids()[0]

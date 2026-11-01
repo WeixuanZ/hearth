@@ -6,7 +6,8 @@ use super::{
 };
 use crate::{
     capabilities::Item,
-    config::{self, DysonDevice},
+    config,
+    devices::purifier::dyson::DysonDevice,
     setup::{answer, Answers, Field, Next, Step},
 };
 use anyhow::{anyhow, Result};
