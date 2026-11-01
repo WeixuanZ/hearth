@@ -9,37 +9,63 @@ mod setup;
 mod surfaces;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use std::io::{self, BufRead, Write};
 use surfaces::cli;
 
-const EXAMPLES: &str = "\
-Examples:
-  hearth devices                     List devices and what each accepts
-  hearth get tv                      Show the TV
-  hearth set tv power on
-  hearth set tv input hdmi2
-  hearth set tv remote select
-  hearth set purifier speed 4
-  hearth set purifier sweep 90
-  hearth set dishwasher programme 30
-  hearth get purifier temperature --json
-  hearth history purifier temperature
-  hearth history purifier --hours 168 --json
-  hearth rename tv \"Living room TV\"  Renames it in Home too
-  hearth group                       Which computer serves Home
+/// Shown under `hearth --help`, and each parsed by a test, so none goes stale.
+const EXAMPLES: &[(&str, &str)] = &[
+    ("hearth devices", "List devices and what each accepts"),
+    ("hearth get tv", "Show the TV"),
+    ("hearth set tv power on", ""),
+    ("hearth set tv input hdmi2", ""),
+    ("hearth set tv remote select", "Press a key"),
+    ("hearth set purifier speed 4", ""),
+    (
+        "hearth set dishwasher programme \"Eco 50\"",
+        "Choose, sends nothing",
+    ),
+    ("hearth set dishwasher run start", "Start it, or stop"),
+    ("hearth get purifier temperature --json", ""),
+    ("hearth history purifier temperature", ""),
+    ("hearth history purifier --hours 168 --json", ""),
+    (
+        "hearth history purifier temperature --usual",
+        "Its usual day",
+    ),
+    (
+        "hearth rename tv \"Living room TV\"",
+        "Renames it in Home too",
+    ),
+    ("hearth doctor", "What stands between Home and the devices"),
+];
 
+const NOTES: &str = "\
 A device is its id, name, connector (dyson, frame, bosch), kind (purifier, tv,
-dishwasher), or a part of its name. A value is on or off, a number, or an
-option id listed by `hearth devices`. devices, get, set and history talk to the
-running bridge. history also reads the saved files when the bridge is stopped.";
+dishwasher), or a part of its name. A value is on or off, start or stop, a
+number, or an option id listed by `hearth devices`. Most commands talk to the
+running bridge; history also reads the saved files when it is stopped.";
+
+/// The CLI as clap sees it, with the examples. `hearth mcp` builds its tools
+/// from this too.
+fn command() -> clap::Command {
+    let width = EXAMPLES
+        .iter()
+        .map(|(line, _)| line.len())
+        .max()
+        .unwrap_or(0);
+    let examples: String = EXAMPLES
+        .iter()
+        .map(|(line, note)| format!("  {line:width$}  {note}").trim_end().to_owned() + "\n")
+        .collect();
+    Cli::command().after_help(format!("Examples:\n{examples}\n{NOTES}"))
+}
 
 #[derive(Parser)]
 #[command(
     name = "hearth",
     version,
-    about = "Put devices that are not HomeKit into Apple Home",
-    after_help = EXAMPLES
+    about = "Put devices that are not HomeKit into Apple Home"
 )]
 struct Cli {
     /// Print JSON, for scripts and agents.
@@ -69,6 +95,9 @@ enum Command {
         /// How far back to look, up to 720 (30 days).
         #[arg(long, default_value_t = 24, value_parser = clap::value_parser!(u64).range(1..=720))]
         hours: u64,
+        /// The usual day instead, from the last 30: each hour's range and mean, with today.
+        #[arg(long, requires = "capability", conflicts_with = "hours")]
+        usual: bool,
     },
     /// Change a capability, like power, an input or a speed.
     Set {
@@ -192,7 +221,7 @@ async fn main() -> Result<()> {
     }
     env_logger::init();
 
-    let cli = Cli::parse();
+    let cli = Cli::from_arg_matches(&command().get_matches()).unwrap_or_else(|error| error.exit());
     match cli.command {
         Command::Devices => cli::devices(cli.json).await?,
         Command::Get { device, capability } => {
@@ -200,8 +229,15 @@ async fn main() -> Result<()> {
         }
         Command::History {
             device,
+            capability: Some(capability),
+            usual: true,
+            ..
+        } => cli::usual(&device, &capability, cli.json).await?,
+        Command::History {
+            device,
             capability,
             hours,
+            ..
         } => cli::history(&device, capability.as_deref(), hours, cli.json).await?,
         Command::Set {
             device,
@@ -210,7 +246,7 @@ async fn main() -> Result<()> {
         } => cli::set(&device, &capability, &value, cli.json).await?,
         Command::Run => run::run().await?,
         Command::Doctor => surfaces::doctor::run(cli.json).await?,
-        Command::Mcp => surfaces::mcp::serve().await?,
+        Command::Mcp => surfaces::mcp::serve(command()).await?,
         Command::Pin => println!("{}", config::load()?.homekit_pin),
         Command::Rename { device, name } => cli::rename(&device, &name, cli.json).await?,
         Command::Remove { device } => {
@@ -296,4 +332,55 @@ pub fn prompt(label: &str) -> Result<String> {
         anyhow::bail!("that was empty");
     }
     Ok(line)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Words as a shell splits them, double quotes holding spaces.
+    fn words(line: &str) -> Vec<String> {
+        let mut words = vec![String::new()];
+        let mut quoted = false;
+        for character in line.chars() {
+            match character {
+                '"' => quoted = !quoted,
+                ' ' if !quoted => words.push(String::new()),
+                other => words.last_mut().unwrap().push(other),
+            }
+        }
+        words.retain(|word| !word.is_empty());
+        words
+    }
+
+    fn parses(line: &str) {
+        if let Err(error) = command().try_get_matches_from(words(line)) {
+            panic!("`{line}` does not parse: {error}");
+        }
+    }
+
+    #[test]
+    fn every_example_is_a_command_that_parses() {
+        command().debug_assert();
+        EXAMPLES.iter().for_each(|(line, _)| parses(line));
+    }
+
+    #[test]
+    fn every_command_in_the_readme_parses() {
+        let readme = include_str!("../README.md");
+        let mut in_code = false;
+        let lines: Vec<&str> = readme
+            .lines()
+            .map(str::trim)
+            .filter(|line| {
+                if line.starts_with("```") {
+                    in_code = !in_code;
+                }
+                in_code && line.starts_with("hearth ")
+            })
+            .map(|line| line.split(" #").next().unwrap_or(line).trim())
+            .collect();
+        assert!(lines.len() > 10, "the README's examples were not found");
+        lines.into_iter().for_each(parses);
+    }
 }
