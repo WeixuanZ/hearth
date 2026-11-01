@@ -15,6 +15,10 @@ final class BridgeModel: ObservableObject {
     @Published var problem: String?
 
     private let queue = DispatchQueue(label: "hearth.control")
+    /// Devices arrive as they change, from the bridge's stream. While it is
+    /// up, the rest of the status (the group, Home) is asked for less often.
+    private var streaming = false
+    private var lastAsked = Date.distantPast
     private let notifier = Notifier()
     private var timer: Timer?
 
@@ -26,8 +30,12 @@ final class BridgeModel: ObservableObject {
     init() {
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            self?.refresh()
+            guard let self else { return }
+            if !self.streaming || Date().timeIntervalSince(self.lastAsked) >= 5 {
+                self.refresh()
+            }
         }
+        follow()
         // After an update, the new app starts the bridge the old one stopped;
         // and when asked to, every time Hearth opens, as at login.
         if CommandLine.arguments.contains(Updater.restartFlag) || Launch.startsBridge {
@@ -37,8 +45,44 @@ final class BridgeModel: ObservableObject {
         }
     }
 
+    /// Follows the bridge's stream of changes on a thread of its own, coming
+    /// back to it when the bridge restarts.
+    private func follow() {
+        Thread.detachNewThread { [weak self] in
+            while self != nil {
+                try? ControlSocket.subscribe(["op": "subscribe"]) { line in
+                    guard let change = try? JSONDecoder().decode(StateChange.self, from: line) else {
+                        return
+                    }
+                    DispatchQueue.main.async { self?.apply(change) }
+                }
+                DispatchQueue.main.async { self?.streaming = false }
+                Thread.sleep(forTimeInterval: 3)
+            }
+        }
+    }
+
+    private func apply(_ change: StateChange) {
+        streaming = true
+        guard var devices = status?.devices else { return }
+        switch change.device {
+        case .device(let device):
+            if let index = devices.firstIndex(where: { $0.id == device.id }) {
+                devices[index] = device
+            } else {
+                devices.append(device)
+            }
+        case .id(let id) where change.event == "removed":
+            devices.removeAll { $0.id == id }
+        case .id:
+            return
+        }
+        status?.devices = devices
+    }
+
     /// Reads the bridge's state off the main thread, so the panel never waits.
     func refresh() {
+        lastAsked = Date()
         queue.async { [weak self] in
             let status = (try? ControlSocket.request(["op": "status"]))
                 .flatMap { try? JSONDecoder().decode(Status.self, from: $0) }
