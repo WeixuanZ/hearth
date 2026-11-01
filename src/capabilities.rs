@@ -249,6 +249,17 @@ impl Set {
             done,
         }
     }
+
+    /// A request, and where its answer arrives.
+    pub fn asked(capability: &str, value: Value) -> (Self, oneshot::Receiver<Result<()>>) {
+        let (done, answer) = oneshot::channel();
+        let request = Self {
+            capability: capability.into(),
+            value,
+            done,
+        };
+        (request, answer)
+    }
 }
 
 struct Entry {

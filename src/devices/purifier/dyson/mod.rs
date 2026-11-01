@@ -153,7 +153,27 @@ async fn drive(
         }
     });
 
-    let types = product_types(&device);
+    fan(
+        &device,
+        &state_tx,
+        &mut intent_rx,
+        &mut event_rx,
+        &command_tx,
+    )
+    .await
+}
+
+/// The fan as hearth keeps it: state from what it reports on `events`,
+/// intents sent to it on `commands`, and its state asked for every half a
+/// minute. The MQTT session is on the other side of the channels, or a test.
+async fn fan(
+    device: &DysonDevice,
+    state_tx: &watch::Sender<MachineState>,
+    intent_rx: &mut mpsc::Receiver<Intent>,
+    event_rx: &mut mpsc::Receiver<mqtt::Incoming>,
+    command_tx: &mpsc::Sender<mqtt::Publish>,
+) -> Result<()> {
+    let types = product_types(device);
     let serial = device.serial.clone();
     let mut state = MachineState::default();
     let mut prefix = if types.len() == 1 {
@@ -173,17 +193,17 @@ async fn drive(
                         prefix = state.topic_prefix.clone();
                     }
                     state_tx.send(state.clone()).ok();
-                    crate::capabilities::publish(capabilities::snapshot(&device, &state));
+                    crate::capabilities::publish(capabilities::snapshot(device, &state));
                 }
             }
             intent = intent_rx.recv() => {
                 let Some(intent) = intent else { break };
                 // Shown at once. The fan confirms a moment later, and until
                 // then the menu bar would put a switch back where it was.
-                if let Some(fields) = publish(&command_tx, &serial, prefix.as_deref(), &state, &intent).await {
+                if let Some(fields) = publish(command_tx, &serial, prefix.as_deref(), &state, &intent).await {
                     protocol::assume(&mut state, &fields);
                     state_tx.send(state.clone()).ok();
-                    crate::capabilities::publish(capabilities::snapshot(&device, &state));
+                    crate::capabilities::publish(capabilities::snapshot(device, &state));
                 }
             }
             _ = poll.tick() => {
@@ -204,6 +224,7 @@ async fn drive(
             }
         }
     }
+
     Ok(())
 }
 
@@ -227,4 +248,122 @@ async fn publish(
         })
         .await;
     sent.is_ok().then_some(fields)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const SERIAL: &str = "ABC-XY-12345678";
+
+    /// The fan's side of the session: what hearth sends it, and what it says.
+    struct Fake {
+        sent: mpsc::Receiver<mqtt::Publish>,
+        says: mpsc::Sender<mqtt::Incoming>,
+        intents: mpsc::Sender<Intent>,
+        states: watch::Receiver<MachineState>,
+    }
+
+    impl Fake {
+        /// Starts hearth's side against this fan, which has said nothing yet.
+        fn start() -> Self {
+            let device = DysonDevice {
+                aid: 2,
+                name: "Purifier".into(),
+                serial: SERIAL.into(),
+                model: "HP09".into(),
+                product_type: "527K".into(),
+                mqtt_password: "secret".into(),
+                host: "10.0.0.7".into(),
+                port: 1883,
+                heating: true,
+            };
+            let (state_tx, states) = watch::channel(MachineState::default());
+            let (intents, mut intent_rx) = mpsc::channel(4);
+            let (says, mut event_rx) = mpsc::channel(4);
+            let (command_tx, sent) = mpsc::channel(16);
+            tokio::spawn(async move {
+                fan(
+                    &device,
+                    &state_tx,
+                    &mut intent_rx,
+                    &mut event_rx,
+                    &command_tx,
+                )
+                .await
+            });
+            Self {
+                sent,
+                says,
+                intents,
+                states,
+            }
+        }
+
+        async fn say(&self, message: serde_json::Value) {
+            let topic = status_topic("527K", SERIAL);
+            let payload = message.to_string();
+            self.says
+                .send(mqtt::Incoming { topic, payload })
+                .await
+                .unwrap();
+        }
+
+        /// The next thing hearth sent that is not a request for the state.
+        async fn next_command(&mut self) -> mqtt::Publish {
+            loop {
+                let sent = self.sent.recv().await.unwrap();
+                if !sent.payload.contains("REQUEST-") {
+                    return sent;
+                }
+            }
+        }
+
+        async fn power(&mut self) -> bool {
+            self.states.changed().await.unwrap();
+            self.states.borrow().power_on
+        }
+    }
+
+    #[tokio::test]
+    async fn it_asks_the_fan_for_its_state_at_once() {
+        let mut fake = Fake::start();
+        let first = fake.sent.recv().await.unwrap();
+        assert_eq!(first.topic, command_topic("527K", SERIAL));
+        assert!(first.payload.contains("REQUEST-CURRENT-STATE"));
+    }
+
+    #[tokio::test]
+    async fn a_command_shows_at_once_and_the_fans_report_has_the_last_word() {
+        let mut fake = Fake::start();
+        fake.say(json!({ "msg": "CURRENT-STATE", "product-state": { "fpwr": "OFF" } }))
+            .await;
+        assert!(!fake.power().await);
+
+        fake.intents.send(Intent::Power(true)).await.unwrap();
+        let command = fake.next_command().await;
+        assert_eq!(command.topic, command_topic("527K", SERIAL));
+        assert!(command.payload.contains(r#""fpwr":"ON""#));
+        assert!(fake.power().await, "shown before the fan confirms");
+
+        // The fan refused: its report puts the switch back.
+        fake.say(json!({ "msg": "STATE-CHANGE", "product-state": { "fpwr": ["ON", "OFF"] } }))
+            .await;
+        assert!(!fake.power().await);
+    }
+
+    #[tokio::test]
+    async fn turning_off_while_heating_ends_heat_too() {
+        let mut fake = Fake::start();
+        fake.say(
+            json!({ "msg": "CURRENT-STATE", "product-state": { "fpwr": "ON", "hmod": "HEAT" } }),
+        )
+        .await;
+        assert!(fake.power().await);
+        fake.intents.send(Intent::Power(false)).await.unwrap();
+        let command = fake.next_command().await;
+        assert!(command.payload.contains(r#""fpwr":"OFF""#));
+        assert!(command.payload.contains(r#""hmod":"OFF""#));
+    }
 }
