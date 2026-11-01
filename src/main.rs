@@ -84,6 +84,8 @@ enum Command {
     Run,
     /// Check what Home and the devices need: the bridge, the network, the firewall, each device.
     Doctor,
+    /// Serve the devices to AI agents over MCP, on stdin and stdout.
+    Mcp,
     /// Print the Apple Home pairing code.
     Pin,
     /// Rename a device, in the menu bar, the CLI and Home.
@@ -208,6 +210,7 @@ async fn main() -> Result<()> {
         } => cli::set(&device, &capability, &value, cli.json).await?,
         Command::Run => run::run().await?,
         Command::Doctor => surfaces::doctor::run(cli.json).await?,
+        Command::Mcp => surfaces::mcp::serve().await?,
         Command::Pin => println!("{}", config::load()?.homekit_pin),
         Command::Rename { device, name } => cli::rename(&device, &name, cli.json).await?,
         Command::Remove { device } => {

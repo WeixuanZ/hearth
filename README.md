@@ -81,11 +81,14 @@ hearth rename tv "Living room TV"
 hearth remove "The Frame 2"
 hearth group                      # which computer serves Home
 hearth doctor                     # what stands between Home and the devices
+hearth mcp                        # the devices as tools for AI agents
 ```
 
 A device is its id, name, kind (`tv`, `purifier`, `dishwasher`), connector (`frame`, `dyson`, `bosch`), or a part of its name; with two TVs, `tv` asks which. A value is `on`/`off`, a number, or an option id from `hearth devices`.
 
 **Scripts and agents.** Add `--json` to any command. `hearth devices --json` lists every capability with its kind, value, accepted options or range, and whether it is active, which is enough to drive any device without knowing its brand. Errors go to stderr with exit status 1. Programs can also talk to the [control socket](#control-socket) directly.
+
+**AI agents.** `hearth mcp` serves the devices over the [Model Context Protocol](https://modelcontextprotocol.io), so an agent like Claude can list them, read and change capabilities, and read their history and usual day. Add it to Claude Code with `claude mcp add hearth -- hearth mcp`, or to any MCP client as the command `hearth mcp`. It asks the running bridge, so an agent can do what the CLI can and no more: a dishwasher still needs Remote Start, and the Home pairing code is not shown.
 
 **Names.** A device has one name. Rename it from the pencil that appears beside its name in the menu bar, with `hearth rename`, or in the Home app, and it changes everywhere. A second device of a model gets a name of its own, like `The Frame 2`.
 

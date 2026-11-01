@@ -6,3 +6,4 @@ pub mod cli;
 pub mod control;
 pub mod doctor;
 pub mod homekit;
+pub mod mcp;
