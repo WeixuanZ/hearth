@@ -2,4 +2,5 @@
 
 pub mod bosch;
 pub mod dyson;
+pub mod mqtt;
 pub mod samsung;

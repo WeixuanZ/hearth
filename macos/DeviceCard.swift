@@ -176,6 +176,9 @@ func categorySymbol(_ category: String) -> String {
     case "purifier": return "fanblades"
     case "tv": return "tv"
     case "dishwasher": return "dishwasher"
+    case "light": return "lightbulb"
+    case "sensor": return "thermometer.medium"
+    case "switch": return "switch.2"
     default: return "circle.dashed"
     }
 }

@@ -1,7 +1,8 @@
-//! A small MQTT 3.1 client.
+//! A small MQTT 3.1 client, for Dyson fans and for any broker.
 //!
-//! Dyson fans speak protocol level 3 (`MQIsdp`), not MQTT 3.1.1. Most modern
-//! client libraries only offer 3.1.1 and 5, and the fan refuses those.
+//! It speaks protocol level 3 (`MQIsdp`), not MQTT 3.1.1: Dyson fans refuse
+//! the newer levels, which most client libraries offer alone. Brokers like
+//! Mosquitto accept level 3 too.
 
 use anyhow::{anyhow, Context, Result};
 use std::time::Duration;
@@ -140,13 +141,15 @@ pub struct Broker<'a> {
 }
 
 /// Hold one connection open: subscribed to `topics`, with `hello` sent once
-/// subscribed. Returns when the socket dies; the caller reconnects.
+/// subscribed, and `connected` called once the broker has taken it. Returns
+/// when the socket dies; the caller reconnects.
 pub async fn session(
     broker: &Broker<'_>,
     topics: &[String],
     hello: &[Publish],
     commands: &mut mpsc::Receiver<Publish>,
     events: &mpsc::Sender<Incoming>,
+    connected: impl FnOnce(),
 ) -> Result<()> {
     let Broker {
         host,
@@ -184,6 +187,7 @@ pub async fn session(
         ));
     }
 
+    connected();
     let mut packet_id = 1u16;
     {
         let mut write = writer.lock().await;
@@ -285,5 +289,48 @@ mod tests {
         assert_eq!(id, Some(7));
         assert_eq!(incoming.topic, "527K/SN/command");
         assert!(incoming.payload.contains("STATE-SET"));
+    }
+
+    /// Against a real broker, given as HEARTH_TEST_BROKER=host:port: what
+    /// the session says on subscribing comes back to it through the broker.
+    #[tokio::test]
+    #[ignore = "needs a broker, as HEARTH_TEST_BROKER=host:port"]
+    async fn a_real_broker_echoes_what_it_is_told() {
+        let broker = std::env::var("HEARTH_TEST_BROKER").unwrap();
+        let (host, port) = broker.rsplit_once(':').unwrap();
+        let broker = Broker {
+            host,
+            port: port.parse().unwrap(),
+            username: "",
+            password: "",
+        };
+        let topics = ["hearth-test/state".to_owned()];
+        let hello = [Publish {
+            topic: "hearth-test/state".into(),
+            payload: r#"{"state":"ON"}"#.into(),
+        }];
+        let (_commands_tx, mut commands) = mpsc::channel(1);
+        let (events, mut heard) = mpsc::channel(4);
+        let (taken, was_taken) = tokio::sync::oneshot::channel();
+        let session = session(
+            &broker,
+            &topics,
+            &hello,
+            &mut commands,
+            &events,
+            move || {
+                let _ = taken.send(());
+            },
+        );
+        tokio::select! {
+            result = session => panic!("the session ended: {result:?}"),
+            incoming = heard.recv() => {
+                let incoming = incoming.unwrap();
+                assert_eq!(incoming.topic, "hearth-test/state");
+                assert_eq!(incoming.payload, r#"{"state":"ON"}"#);
+            }
+            () = tokio::time::sleep(Duration::from_secs(10)) => panic!("nothing came back"),
+        }
+        assert!(was_taken.await.is_ok());
     }
 }

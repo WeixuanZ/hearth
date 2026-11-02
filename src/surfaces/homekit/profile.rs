@@ -21,9 +21,9 @@ use hap::{
         air_quality_sensor::AirQualitySensorService, contact_sensor::ContactSensorService,
         filter_maintenance::FilterMaintenanceService, heater_cooler::HeaterCoolerService,
         humidity_sensor::HumiditySensorService, input_source::InputSourceService,
-        leak_sensor::LeakSensorService, motion_sensor::MotionSensorService,
-        speaker::SpeakerService, switch::SwitchService, television::TelevisionService,
-        temperature_sensor::TemperatureSensorService, HapService,
+        leak_sensor::LeakSensorService, lightbulb::LightbulbService,
+        motion_sensor::MotionSensorService, speaker::SpeakerService, switch::SwitchService,
+        television::TelevisionService, temperature_sensor::TemperatureSensorService, HapService,
     },
     HapType,
 };
@@ -50,6 +50,8 @@ pub async fn make(snapshot: &Snapshot, ids: &mut Ids, writes: mpsc::Sender<Asks>
     match snapshot.category {
         "tv" => maker.tv().await?,
         "purifier" => maker.purifier().await?,
+        "light" => maker.light().await?,
+        "sensor" => maker.sensor().await?,
         _ => maker.machine().await?,
     }
     Ok(Made {
@@ -833,7 +835,12 @@ impl Maker<'_> {
         let mut all: Vec<Box<dyn HapService>> = vec![Box::new(info), Box::new(tile)];
         all.extend(services);
         self.accessory(aid, all, HapType::Switch, None);
+        self.notifying_tiles().await
+    }
 
+    /// The sensors Home notifies for, as tiles of their own: a door, a
+    /// leak, a run that finished.
+    async fn notifying_tiles(&mut self) -> Result<()> {
         for capability in self.device.capabilities.clone() {
             match capability.role {
                 Role::Contact => {
@@ -849,6 +856,73 @@ impl Maker<'_> {
             }
         }
         Ok(())
+    }
+
+    /// A light: on and off, and how bright, where it says, as Home's 0 to
+    /// 100 over its own range.
+    async fn light(&mut self) -> Result<()> {
+        let aid = self.aid("main");
+        let mut light = LightbulbService::new(self.iid("main", "light"), aid);
+        light.set_primary(true);
+        light.characteristic_value_active_transition_count = None;
+        light.characteristic_value_transition_control = None;
+        light.supported_characteristic_value_transition_configuration = None;
+        light.color_temperature = None;
+        light.hue = None;
+        light.saturation = None;
+        self.wiring.read(aid, &light.power_state, |snapshot| {
+            Some(json!(on(snapshot, "power")))
+        });
+        self.wiring.write(&mut light.power_state, |on: bool| {
+            vec![("power", json!(on))]
+        });
+        let level = self.role(Role::Brightness);
+        match (level, light.brightness.as_mut()) {
+            (Some(level), Some(brightness)) => {
+                let Kind::Level { min, max, .. } = level.kind else {
+                    unreachable!("a brightness is a level")
+                };
+                let (id, span) = (level.id, (max - min).max(f32::EPSILON));
+                self.wiring.read(aid, brightness, move |snapshot| {
+                    number(snapshot, id)
+                        .map(|value| json!(((value as f32 - min) / span * 100.0).round() as i32))
+                });
+                self.wiring.write(brightness, move |percent: i32| {
+                    vec![(id, json!(min + percent as f32 / 100.0 * span))]
+                });
+            }
+            _ => light.brightness = None,
+        }
+        fixed(light.name.as_mut(), json!(self.device.name)).await?;
+        let switches = self.linked_switches(aid, &[Role::Brightness]).await?;
+        light.set_linked_services(switches.iter().map(|switch| switch.get_id()).collect());
+        let info = self.information_named(aid, &self.device.name.clone(), "", true, true)?;
+        let mut all: Vec<Box<dyn HapService>> = vec![Box::new(info), Box::new(light)];
+        all.extend(switches);
+        // A light has no Configured Name of its own: renames go on the
+        // accessory's information.
+        self.accessory(aid, all, HapType::AccessoryInformation, None);
+        self.notifying_tiles().await
+    }
+
+    /// Something that only measures: its temperature, humidity and air
+    /// quality as Home's sensors. One that measures nothing Home shows is a
+    /// machine.
+    async fn sensor(&mut self) -> Result<()> {
+        let aid = self.aid("main");
+        let mut services: Vec<Box<dyn HapService>> = Vec::new();
+        services.extend(self.climate().await?);
+        services.extend(self.humidity().await?);
+        services.extend(self.air().await?);
+        let Some(first) = services.first_mut() else {
+            return self.machine().await;
+        };
+        first.set_primary(true);
+        let info = self.information_named(aid, &self.device.name.clone(), "", true, true)?;
+        let mut all: Vec<Box<dyn HapService>> = vec![Box::new(info)];
+        all.extend(services);
+        self.accessory(aid, all, HapType::AccessoryInformation, None);
+        self.notifying_tiles().await
     }
 
     /// A sensor as a tile of its own, which Home will notify for.

@@ -37,7 +37,7 @@ pub struct Capability {
 /// and Matter: a TV's input, a room's temperature. A surface shows a generic
 /// one by its kind alone. The names follow Matter's clusters, so every
 /// ecosystem is derived from the same words.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     #[default]
@@ -78,6 +78,21 @@ impl Role {
     fn is_generic(&self) -> bool {
         *self == Self::Generic
     }
+}
+
+/// `text` for as long as hearth runs, for an id or a unit that comes from
+/// the config rather than the code, like a configured MQTT device's. Each
+/// distinct text is kept once.
+pub fn intern(text: &str) -> &'static str {
+    static KEPT: Mutex<std::collections::BTreeSet<&'static str>> =
+        Mutex::new(std::collections::BTreeSet::new());
+    let mut kept = KEPT.lock().unwrap_or_else(|poison| poison.into_inner());
+    if let Some(found) = kept.get(text) {
+        return found;
+    }
+    let leaked: &'static str = Box::leak(text.to_owned().into_boxed_str());
+    kept.insert(leaked);
+    leaked
 }
 
 /// What a sensor measures. Each has one id, name and unit wherever it comes
