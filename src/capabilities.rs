@@ -12,7 +12,7 @@ use crate::{
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot, watch};
 
 /// One thing a device can do or report.
@@ -336,7 +336,7 @@ impl Capability {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Snapshot {
     pub id: String,
-    /// The connector, like `dyson`.
+    /// Its driver's kind, like `dyson-hot-cool`.
     pub kind: &'static str,
     /// What it is, like `tv`. Picks the icon, and names it in the CLI.
     pub category: &'static str,
@@ -445,17 +445,65 @@ impl Set {
     }
 }
 
+/// A device the bridge serves. Its state is not kept here but on the bus,
+/// the one place every surface reads it from.
 struct Entry {
-    snapshot: Snapshot,
-    commands: Option<mpsc::Sender<Set>>,
+    id: String,
     /// The device's name, which `rename` changes for every surface at once.
     name: watch::Sender<String>,
+    commands: Option<mpsc::Sender<Set>>,
 }
 
 struct Registry {
     name: String,
     pin: String,
     devices: Vec<Entry>,
+}
+
+impl Registry {
+    fn entry(&mut self, id: &str) -> Option<&mut Entry> {
+        self.devices.iter_mut().find(|entry| entry.id == id)
+    }
+
+    /// Every device's latest snapshot, in the order they came.
+    fn snapshots(&self) -> Vec<Arc<Snapshot>> {
+        let devices = bus::watch().borrow().clone();
+        self.devices
+            .iter()
+            .filter_map(|entry| devices.get(&entry.id).cloned())
+            .collect()
+    }
+
+    /// A device by its id, name, connector (`dyson`), category (`tv`), or a
+    /// part of its name that only it has. Case does not matter.
+    fn find(&self, query: &str) -> Result<Arc<Snapshot>> {
+        let query = query.to_lowercase();
+        let all = self.snapshots();
+        let exact = |snapshot: &Snapshot| {
+            snapshot.id.to_lowercase() == query
+                || snapshot.name.to_lowercase() == query
+                || snapshot.kind == query
+                || snapshot.category == query
+        };
+        let mut matches: Vec<&Arc<Snapshot>> = all.iter().filter(|one| exact(one)).collect();
+        if matches.is_empty() {
+            matches = all
+                .iter()
+                .filter(|one| one.name.to_lowercase().contains(&query))
+                .collect();
+        }
+        match matches.as_slice() {
+            [one] => Ok(Arc::clone(one)),
+            [] => Err(anyhow!("no device matches {query}. Run `hearth devices`")),
+            many => Err(anyhow!(
+                "{query} matches {}. Be more specific",
+                many.iter()
+                    .map(|one| one.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
 }
 
 static REGISTRY: Mutex<Option<Registry>> = Mutex::new(None);
@@ -480,62 +528,48 @@ pub fn end() {
     bus::clear();
 }
 
-/// Adds a device, or replaces its snapshot, and puts it where every surface
-/// watches (see `bus`). The name stays the registry's.
+/// Puts a device's snapshot where every surface watches (see `bus`),
+/// adding the device the first time. The name stays the registry's.
 pub fn publish(mut snapshot: Snapshot) {
-    let stored = with(|registry| {
-        match registry
-            .devices
-            .iter_mut()
-            .find(|entry| entry.snapshot.id == snapshot.id)
-        {
-            Some(entry) => {
-                snapshot.name = entry.name.borrow().clone();
-                entry.snapshot = snapshot;
-                entry.snapshot.clone()
-            }
-            None => {
-                registry.devices.push(Entry {
-                    name: watch::Sender::new(snapshot.name.clone()),
-                    snapshot: snapshot.clone(),
-                    commands: None,
-                });
-                snapshot
-            }
+    let named = with(|registry| {
+        match registry.entry(&snapshot.id) {
+            Some(entry) => snapshot.name = entry.name.borrow().clone(),
+            None => registry.devices.push(Entry {
+                id: snapshot.id.clone(),
+                name: watch::Sender::new(snapshot.name.clone()),
+                commands: None,
+            }),
         }
+        snapshot
     });
-    if let Some(stored) = stored {
-        bus::put(stored);
+    if let Some(snapshot) = named {
+        bus::put(snapshot);
     }
 }
 
 /// A device's name as it changes, for a surface that shows it, like Home.
 pub fn name(id: &str) -> Option<watch::Receiver<String>> {
-    with(|registry| {
-        let entry = registry
-            .devices
-            .iter()
-            .find(|entry| entry.snapshot.id == id)?;
-        Some(entry.name.subscribe())
-    })
-    .flatten()
+    with(|registry| Some(registry.entry(id)?.name.subscribe())).flatten()
 }
 
 /// Renames a device everywhere: the config, the menu bar, the CLI and Home.
 pub fn rename(device: &str, to: &str) -> Result<()> {
     let to = to.trim();
     with(|registry| {
-        let index = find(&registry.devices, device)?;
-        let entry = &mut registry.devices[index];
-        if entry.snapshot.name == to {
+        let snapshot = registry.find(device)?;
+        if snapshot.name == to {
             return Ok(());
         }
         let mut config = config::load()?;
-        config::rename(&mut config, &entry.snapshot.id, to)?;
+        config::rename(&mut config, &snapshot.id, to)?;
         config::save(&config)?;
-        entry.snapshot.name = to.to_owned();
-        entry.name.send_replace(to.to_owned());
-        bus::put(entry.snapshot.clone());
+        if let Some(entry) = registry.entry(&snapshot.id) {
+            entry.name.send_replace(to.to_owned());
+        }
+        bus::put(Snapshot {
+            name: to.to_owned(),
+            ..(*snapshot).clone()
+        });
         Ok(())
     })
     .ok_or_else(|| anyhow!("the bridge is starting"))?
@@ -544,11 +578,7 @@ pub fn rename(device: &str, to: &str) -> Result<()> {
 /// Where `set` sends a device's requests.
 pub fn listen(id: &str, commands: mpsc::Sender<Set>) {
     with(|registry| {
-        if let Some(entry) = registry
-            .devices
-            .iter_mut()
-            .find(|entry| entry.snapshot.id == id)
-        {
+        if let Some(entry) = registry.entry(id) {
             entry.commands = Some(commands);
         }
     });
@@ -561,7 +591,7 @@ pub fn status() -> Option<Value> {
             "name": registry.name,
             "pin": registry.pin,
             "paired": config::paired(),
-            "devices": registry.devices.iter().map(|entry| &entry.snapshot).collect::<Vec<_>>(),
+            "devices": registry.snapshots(),
         })
     })
 }
@@ -573,20 +603,19 @@ pub fn get(device: &str) -> Result<Value> {
 
 /// One device's snapshot.
 pub fn snapshot(device: &str) -> Result<Snapshot> {
-    with(|registry| {
-        find(&registry.devices, device).map(|index| registry.devices[index].snapshot.clone())
-    })
-    .ok_or_else(|| anyhow!("the bridge is starting"))?
+    with(|registry| registry.find(device).map(|snapshot| (*snapshot).clone()))
+        .ok_or_else(|| anyhow!("the bridge is starting"))?
 }
 
 /// Sends a request to a device and waits for it to act.
 pub async fn set(device: &str, capability: &str, value: Value) -> Result<()> {
     let (commands, value) = with(|registry| {
-        find(&registry.devices, device).map(|index| {
-            let entry = &registry.devices[index];
-            let value = option_id(&entry.snapshot, capability, value);
-            (entry.commands.clone(), value)
-        })
+        let snapshot = registry.find(device)?;
+        let value = option_id(&snapshot, capability, value);
+        let commands = registry
+            .entry(&snapshot.id)
+            .and_then(|entry| entry.commands.clone());
+        Ok::<_, anyhow::Error>((commands, value))
     })
     .ok_or_else(|| anyhow!("the bridge is starting"))??;
     let commands = commands.ok_or_else(|| anyhow!("{device} is not ready yet"))?;
@@ -620,38 +649,6 @@ fn option_id(snapshot: &Snapshot, capability: &str, value: Value) -> Value {
             _ => None,
         })
         .map_or(value.clone(), |option| json!(option.id))
-}
-
-/// A device by its id, name, connector (`dyson`), category (`tv`), or a part
-/// of its name that only it has. Case does not matter.
-fn find(devices: &[Entry], query: &str) -> Result<usize> {
-    let query = query.to_lowercase();
-    let exact = |snapshot: &Snapshot| {
-        snapshot.id.to_lowercase() == query
-            || snapshot.name.to_lowercase() == query
-            || snapshot.kind == query
-            || snapshot.category == query
-    };
-    let matching = |test: &dyn Fn(&Snapshot) -> bool| -> Vec<usize> {
-        (0..devices.len())
-            .filter(|&index| test(&devices[index].snapshot))
-            .collect()
-    };
-    let mut matches = matching(&exact);
-    if matches.is_empty() {
-        matches = matching(&|snapshot| snapshot.name.to_lowercase().contains(&query));
-    }
-    match matches.as_slice() {
-        [index] => Ok(*index),
-        [] => Err(anyhow!("no device matches {query}. Run `hearth devices`")),
-        many => Err(anyhow!(
-            "{query} matches {}. Be more specific",
-            many.iter()
-                .map(|&index| devices[index].snapshot.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
-    }
 }
 
 #[cfg(test)]

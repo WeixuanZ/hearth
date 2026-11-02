@@ -1,11 +1,11 @@
 //! The purifier as capabilities, for the menu bar and the CLI. HomeKit shows
 //! the same state through `accessory`, and both send the same intents.
 
+use super::protocol::{sweep, Intent, MachineState, SWEEPS};
 use crate::config::Settings as _;
-use crate::connectors::dyson::protocol::{sweep, Intent, MachineState, SWEEPS};
 use crate::{
     capabilities::{About, Alert, Capability, Item, Measure, Role, Set, Snapshot},
-    devices::purifier::dyson::DysonDevice,
+    devices::purifier::dyson_hot_cool::DysonHotCoolDevice,
 };
 use anyhow::{anyhow, Result};
 
@@ -14,7 +14,7 @@ const FILTER_LOW: u8 = 10;
 /// PM2.5 in µg/m³ above which air counts as unhealthy for sensitive groups.
 const PM25_HIGH: f32 = 35.0;
 
-pub fn snapshot(device: &DysonDevice, state: &MachineState) -> Snapshot {
+pub fn snapshot(device: &DysonHotCoolDevice, state: &MachineState) -> Snapshot {
     let online = state.connected;
     let headline = match (online, state.power_on) {
         (false, _) => "Looking".into(),
@@ -89,7 +89,7 @@ pub fn snapshot(device: &DysonDevice, state: &MachineState) -> Snapshot {
 
     Snapshot {
         id: device.id(),
-        kind: "dyson",
+        kind: <super::DysonHotCool as crate::driver::Driver>::KIND,
         category: "purifier",
         name: device.name.clone(),
         online,
@@ -154,7 +154,7 @@ mod tests {
     use super::*;
 
     fn alerts(state: MachineState) -> Vec<&'static str> {
-        let device = DysonDevice {
+        let device = DysonHotCoolDevice {
             aid: 2,
             name: "Purifier".into(),
             serial: "ABC-XY-12345678".into(),

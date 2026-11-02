@@ -1,13 +1,13 @@
 //! Adding a Dyson purifier: a MyDyson sign-in with an emailed code, once.
 
-use super::{
+use crate::connectors::dyson::{
     cloud::{self, Challenge, CloudDevice},
     product_name,
 };
 use crate::{
     capabilities::Item,
     config,
-    devices::purifier::dyson::DysonDevice,
+    devices::purifier::dyson_hot_cool::DysonHotCoolDevice,
     setup::{answer, Answers, Field, Next, Step},
 };
 use anyhow::{anyhow, Result};
@@ -90,17 +90,19 @@ fn add(fan: &CloudDevice) -> Result<Next> {
     let mut saved = config::load_or_new()?;
     config::upsert(
         &mut saved,
-        config::Device::new::<crate::devices::purifier::dyson::Dyson>(DysonDevice {
-            aid: 0,
-            name: name.clone(),
-            serial: fan.serial.clone(),
-            model: fan.model.clone(),
-            product_type: fan.product_type.clone(),
-            mqtt_password: fan.mqtt_password.clone(),
-            host: String::new(),
-            port: 1883,
-            heating: true,
-        }),
+        config::Device::new::<crate::devices::purifier::dyson_hot_cool::DysonHotCool>(
+            DysonHotCoolDevice {
+                aid: 0,
+                name: name.clone(),
+                serial: fan.serial.clone(),
+                model: fan.model.clone(),
+                product_type: fan.product_type.clone(),
+                mqtt_password: fan.mqtt_password.clone(),
+                host: String::new(),
+                port: 1883,
+                heating: true,
+            },
+        ),
     );
     config::save(&saved)?;
     Ok(Next::Done(format!("Added {name}.")))

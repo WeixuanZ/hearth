@@ -160,8 +160,8 @@ pub struct Product {
 
 /// The devices that can be added, from the drivers.
 pub fn products() -> Vec<Product> {
-    crate::driver::DRIVERS
-        .iter()
+    crate::driver::all()
+        .into_iter()
         .map(|driver| driver.product())
         .collect()
 }
@@ -170,7 +170,12 @@ pub fn products() -> Vec<Product> {
 fn start(product: &str) -> Result<(Box<dyn crate::driver::AnySetup>, Step)> {
     crate::driver::find(product)
         .map(|driver| driver.setup())
-        .ok_or_else(|| anyhow!("no device called {product} can be added"))
+        .ok_or_else(|| {
+            anyhow!(
+                "no device called {product} can be added. These can: {}",
+                kinds()
+            )
+        })
 }
 
 /// Setups under way for the control socket, one per product.
@@ -180,6 +185,8 @@ static FLOWS: Mutex<BTreeMap<String, Box<dyn crate::driver::AnySetup>>> =
 /// One step of adding `product`, for the control socket. No answers starts
 /// it over; answers continue it, to `{"step": …}` or `{"done": "…"}`.
 pub async fn step(product: &str, answers: Option<Answers>) -> Result<Value> {
+    // By the driver's own kind, so an older name reaches the same setup.
+    let product = crate::driver::find(product).map_or(product, |driver| driver.product().id);
     let flows = || FLOWS.lock().unwrap_or_else(|poison| poison.into_inner());
     let Some(answers) = answers else {
         let (flow, step) = start(product)?;
@@ -205,7 +212,20 @@ pub async fn step(product: &str, answers: Option<Answers>) -> Result<Value> {
 
 /// Runs a setup in the terminal. `given` answers questions first, as from
 /// the command's flags; the rest are asked.
+/// The kinds that can be added, as `hearth add` takes them.
+fn kinds() -> String {
+    let all: Vec<String> = products()
+        .into_iter()
+        .map(|product| format!("{} ({})", product.id, product.name))
+        .collect();
+    all.join(", ")
+}
+
 pub async fn in_terminal(product: &str, given: Answers) -> Result<()> {
+    if product == "list" {
+        println!("{}", kinds().replace(", ", "\n"));
+        return Ok(());
+    }
     let (mut flow, mut step) = start(product)?;
     loop {
         println!("{}", step.title);
@@ -294,15 +314,14 @@ mod tests {
 
     #[tokio::test]
     async fn the_socket_starts_a_setup_and_refuses_one_never_started() {
-        let started = step("bosch", None).await.unwrap();
-        assert!(started["step"]["link"]
-            .as_str()
-            .unwrap()
-            .starts_with("https://"));
-        assert_eq!(started["step"]["callback"], "redirect");
+        let error = step("test-lamp", Some(Answers::new())).await.unwrap_err();
+        assert!(error.to_string().contains("not started"), "{error}");
         assert!(step("toaster", None).await.is_err());
-        let error = step("frame", Some(Answers::new())).await.unwrap_err();
-        assert!(error.to_string().contains("not started"));
+        // Started by an older name, answered by the new: the same setup.
+        let started = step("test-light", None).await.unwrap();
+        assert!(started.get("step").is_some());
+        let refused = step("test-lamp", Some(Answers::new())).await.unwrap_err();
+        assert!(refused.to_string().contains("not added"), "{refused}");
         assert_eq!(
             given(&Answers::from([("a".into(), "  ".into())]), "a"),
             None

@@ -1,9 +1,9 @@
 //! Adding a Samsung TV: Allow on the TV, twice. Nothing leaves the network.
 
-use super::{discover, ipc::IpControl, link, protocol::DeviceInfo};
+use crate::connectors::samsung::{discover, ipc::IpControl, link, protocol::DeviceInfo};
 use crate::{
     config,
-    devices::tv::samsung_frame::FrameDevice,
+    devices::tv::samsung_frame::SamsungFrameDevice,
     setup::{given, Answers, Field, Next, Step},
 };
 use anyhow::{anyhow, Result};
@@ -89,18 +89,20 @@ impl crate::driver::Setup for Setup {
                 let mut saved = config::load_or_new()?;
                 config::upsert(
                     &mut saved,
-                    config::Device::new::<crate::devices::tv::samsung_frame::Frame>(FrameDevice {
-                        name: name.clone(),
-                        model: info
-                            .as_ref()
-                            .map(|info| info.model.clone())
-                            .unwrap_or_default(),
-                        host: host.clone(),
-                        mac: info.map(|info| info.mac).unwrap_or_default(),
-                        token: token.clone(),
-                        ip_token: ip.as_ref().cloned().unwrap_or_default(),
-                        ..Default::default()
-                    }),
+                    config::Device::new::<crate::devices::tv::samsung_frame::SamsungFrame>(
+                        SamsungFrameDevice {
+                            name: name.clone(),
+                            model: info
+                                .as_ref()
+                                .map(|info| info.model.clone())
+                                .unwrap_or_default(),
+                            host: host.clone(),
+                            mac: info.map(|info| info.mac).unwrap_or_default(),
+                            token: token.clone(),
+                            ip_token: ip.as_ref().cloned().unwrap_or_default(),
+                            ..Default::default()
+                        },
+                    ),
                 );
                 config::save(&saved)?;
                 Ok(Next::Done(match ip {

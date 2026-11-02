@@ -40,9 +40,9 @@ downloads the latest release for this machine (Linux x86_64 or aarch64, macOS Ap
 
 ## Set up
 
-**Add a device from the menu bar**: the `+` beside Start, then choose it and follow its steps. Or in the terminal, `hearth add dyson`, `hearth add frame` or `hearth add bosch`, which asks the same steps. A device added on any computer in the group reaches all of them.
+**Add a device from the menu bar**: the `+` beside Start, then choose it and follow its steps. Or in the terminal, `hearth add` with its kind (`hearth add list` shows them), which asks the same steps. A device added on any computer in the group reaches all of them.
 
-**A Dyson purifier.** You sign in to MyDyson once, with your password and the code Dyson emails; hearth keeps only the fan's local password. It is the one time hearth talks to Dyson. In the terminal the flags answer the questions: `hearth dyson login --email you@example.com --country GB`.
+**A Dyson purifier.** You sign in to MyDyson once, with your password and the code Dyson emails; hearth keeps only the fan's local password. It is the one time hearth talks to Dyson. In the terminal, answers can be given up front: `hearth add dyson email=you@example.com country=GB`.
 
 **A Samsung Frame.** Turn the TV on, out of art mode. On the TV, turn on device connection and Power On with Mobile (Settings → General → External Device Manager, and Connection), and IP Remote (Settings → General → Network → Expert Settings). Then press Allow twice: once for the remote, once for IP Control, which picks inputs and powers the TV fully off. Nothing leaves your network.
 
@@ -124,7 +124,7 @@ hearth doctor                     # what stands between Home and the devices
 hearth mcp                        # the devices as tools for AI agents
 ```
 
-A device is its id, name, kind (`tv`, `purifier`, `dishwasher`), connector (`frame`, `dyson`, `bosch`), or a part of its name; with two TVs, `tv` asks which. A value is `on`/`off`, a number, or an option id from `hearth devices`.
+A device is its id, its name or a part of it, its category (`tv`, `purifier`, `dishwasher`), or its kind (`hearth add list`); with two TVs, `tv` asks which. A value is `on`/`off`, a number, or an option id from `hearth devices`.
 
 **Scripts and agents.** Add `--json` to any command. `hearth devices --json` lists every capability with its kind, value, accepted options or range, and whether it is active, which is enough to drive any device without knowing its brand. Errors go to stderr with exit status 1. Programs can also talk to the [control socket](#control-socket) directly.
 
@@ -227,8 +227,8 @@ flowchart TB
   socket -. on standby, forwards to the serving computer .-> group
 ```
 
-- **Connectors** know how to talk to a maker: login, pairing, discovery and message formats. They know nothing about Home or the menu bar.
-- **Devices** know what a product does. Each runs as one task that owns its state and its connection, turns requests into the connector's commands, and turns its state into a capability snapshot. It knows nothing of Home. Rules between controls, like heat needing the fan on, live here, so every surface gets them.
+- **Connectors** are what every product of a maker or a protocol shares: an account sign-in, pairing, discovery, the transport and how its messages are framed. `dyson` (the MyDyson account, its MQTT topics), `samsung` (the remote and apps' channels, IP Control), `home_connect` (any Home Connect appliance, whatever the brand, generic over the model's state), and `mqtt`. A connector knows no model, and nothing about Home or the menu bar.
+- **Devices** are models, at `devices/<category>/<brand>_<line>/`: `purifier/dyson_hot_cool`, `tv/samsung_frame`, `dishwasher/home_connect_dishwasher`, `generic/mqtt`. A model owns its protocol (what its messages mean), its settings, how it is added, and its task, which holds its state and connection, turns requests into commands and its state into a capability snapshot. Two models of a brand share its connector; two brands of a category share nothing but the capabilities. Rules between controls, like heat needing the fan on, live here, so every surface gets them. Each model registers itself (`register_driver!`): nothing outside its module names it.
 - **Capabilities** are the shared vocabulary. A capability has an id, a name, a kind (`power`, `switch`, `choice`, `level`, `reading`, `state`, `keys` or `run`) with its options or range, a role that says what it means (a TV's input, a fan's speed, PM2.5), a value, and whether it is active. The registry holds every device's latest snapshot and the channel to its task.
 - **State is watched, not called.** Every device's latest snapshot is one value in `bus`, which anything can watch: it sees the state at once, then each new one, and a slow watcher skips ahead rather than missing anything. History records from it, and `{"op":"subscribe"}` on the socket (and `hearth events`) streams what changed, named by topic, `hearth/<device>/<capability>`. Nothing a device publishes is wired to who listens.
 - **Surfaces** never know a brand. HomeKit, the socket and the CLI send requests to the same device task, so they always agree. The menu bar draws controls from capability kinds alone, and HomeKit makes each device's accessories from its category and its capabilities' roles: a TV with inputs, a purifier with its sensors, a machine that runs programmes with a tile per programme. It watches the bus to show each new state, and Home's writes become the same requests the menu bar makes.
@@ -240,10 +240,13 @@ src/
   bus.rs                  every device's state as one watched value, and what changed
   series.rs               readings over time, as CSV
   config.rs               config.toml: Settings for each kind, dates, merging two copies
-  connectors/dyson/       MyDyson login, MQTT, the fan's messages
-  connectors/samsung/     pairing, the remote and art channels, IP Control
-  connectors/bosch/       Home Connect sign-in, the local websocket
-  devices/<kind>/<model>/ a device's task and capabilities
+  driver.rs               what a driver is, and the registry drivers add themselves to
+  connectors/dyson/       the MyDyson account, finding a fan, its MQTT topics and messages
+  connectors/samsung/     the remote and apps' channels, pairing, IP Control, waking
+  connectors/home_connect/ the sign-in, feature descriptions, the local session
+  connectors/mqtt.rs      an MQTT client, for Dyson fans and any broker
+  devices/<category>/<brand>_<line>/ a model: protocol, settings, setup, task, capabilities
+  devices/runtime.rs      what every connected device's task shares
   cluster/                the group: hellos, joining, sharing state, who serves
   surfaces/homekit/       the HomeKit bridge, accessories made from capabilities, and their ids
   surfaces/control.rs     the control socket
@@ -360,18 +363,20 @@ The status has a `group`: this computer's `role` (`serving`, `standby`, `joining
 
 ### Adding a device
 
-A kind of device is a **driver**: one module that implements `driver::Driver`, listed once in `driver::DRIVERS`. Nothing else in hearth names a brand.
+A model is a **driver**: one module, `src/devices/<category>/<brand>_<line>/`, that implements `driver::Driver` and registers itself with `register_driver!`. Nothing outside it names it: not the core, not the CLI, not the menu bar, not another model.
 
-1. **Connector.** Under `src/connectors/<maker>/`: the protocol, and a `Setup` (`driver::Setup`) with the steps that add one (what to ask, a page to open, waiting on the device). It ends by saving the device with `config::upsert`, which keeps the name and Home's ids of one already there.
-2. **Settings.** Under `src/devices/<kind>/<model>/settings.rs`: what the config keeps of one, implementing `config::Settings` (its id, its name, the HomeKit accessory ids it owns, the address `hearth doctor` dials, and any setup left to do). The config writes it as its own table, with `kind` and `id`; ids, merging between computers and renames then work for it.
-3. **Driver.** In the device's `mod.rs`: a type implementing `Driver` (its `KIND`, the `NAME` and `CATEGORY` the menu bar offers, its `Settings` and `Setup`, and `start`), added to `DRIVERS`. `start` runs the device's task with a `driver::Context`: `publish` its snapshot, take `requests`, and `remember` what it learns, like a new token, in its saved settings. `devices::runtime` does the rest for a device with a connection: `published` keeps its state and publishes each change, `answer` takes the requests in turn, and `keep_connected` reconnects, waiting longer after each failure, shows it offline in between, and refuses what is asked meanwhile rather than sending it late.
-4. **Capabilities.** In `capabilities.rs` next to it: a `snapshot` from state, and a function from a request to the device's command. Give each capability the `Role` that says what it is (a TV's input, a fan's speed; a measurement with `Capability::measure`), so Home and other ecosystems can show it as theirs. A machine that runs programmes, like a washing machine, publishes a `run` in place of `power`: the controls before it set a run up, those after it are for while it runs, and `devices::cycle` says when a run finished, for an alert and a sensor Home notifies on. The menu bar's start, countdown and time left then come for free.
+1. **Connector.** What every product of its maker or protocol shares goes in `src/connectors/<maker>/`: sign-in, discovery, pairing, the transport, and how messages are framed. Reuse one that is there; a second model of a brand adds nothing to it.
+2. **Protocol.** What this model's messages mean, in `protocol.rs` next to it: its state, and the commands it takes.
+3. **Settings.** In `settings.rs`: what the config keeps of one, implementing `config::Settings` (its id, its name, the HomeKit accessory ids it owns, the address `hearth doctor` dials, and any setup left to do). The config writes it as its own table, with `kind` and `id`; ids, merging between computers and renames then work for it.
+4. **Setup.** In `setup.rs`: a `driver::Setup` with the steps that add one (what to ask, a page to open, waiting on the device). It ends by saving the device with `config::upsert`, which keeps the name and Home's ids of one already there. `hearth add <kind>` and the menu bar show its steps; nothing else is needed for either.
+5. **Driver.** In `mod.rs`: a type implementing `Driver` (its `KIND`, brand and line like `dyson-hot-cool`, any older `ALIASES`, the `NAME` and `CATEGORY` the menu bar offers, its `Settings` and `Setup`, and `start`), then `register_driver!` for it. `start` runs the device's task with a `driver::Context`: `publish` its snapshot, take `requests`, and `remember` what it learns, like a new token, in its saved settings. `devices::runtime` does the rest for a device with a connection: `published` keeps its state and publishes each change, `answer` takes the requests in turn, and `keep_connected` reconnects, waiting longer after each failure, shows it offline in between, and refuses what is asked meanwhile rather than sending it late.
+6. **Capabilities.** In `capabilities.rs` next to it: a `snapshot` from state, and a function from a request to the device's command. Give each capability the `Role` that says what it is (a TV's input, a fan's speed; a measurement with `Capability::measure`), so Home and other ecosystems can show it as theirs. A machine that runs programmes, like a washing machine, publishes a `run` in place of `power`: the controls before it set a run up, those after it are for while it runs, and `devices::cycle` says when a run finished, for an alert and a sensor Home notifies on. The menu bar's start, countdown and time left then come for free.
 
 That is all Home needs: it shows the device from its category and its capabilities' roles, and keeps each accessory and service id in `homekit/ids.json` by what it is, so Home keeps its rooms, scenes and automations whatever is added later. A category Home has no tile for shows as a machine: its `run` or `power`, a switch per other control, and its sensors.
 
 A config that names a kind this build does not know, as from a newer computer in the group, keeps that device as it is; it is not started.
 
-The menu bar, the CLI, the socket and the group need no changes.
+The menu bar, the CLI, MCP, the socket, Home, Matter and the group need no changes.
 
 ### HomeKit notes
 

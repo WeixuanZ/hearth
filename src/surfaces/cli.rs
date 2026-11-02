@@ -25,7 +25,7 @@ pub async fn devices(as_json: bool) -> Result<()> {
     let style = Style::detect();
     let devices = status["devices"].as_array().cloned().unwrap_or_default();
     if devices.is_empty() {
-        println!("No devices yet. Add one with `hearth dyson login` or `hearth frame pair`.");
+        println!("No devices yet. `hearth add list` shows what can be added.");
     }
     for (index, device) in devices.iter().enumerate() {
         if index > 0 {

@@ -1,7 +1,7 @@
 //! Connections to the TV. The remote channel stays open between keys and is
 //! reopened when the Frame drops it. Art and device info are per request.
 
-use super::protocol::{self, ArtReply, DeviceInfo};
+use super::protocol::{self, DeviceInfo};
 use anyhow::{anyhow, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use rustls::{
@@ -250,40 +250,6 @@ async fn send_key(socket: &mut Socket, key: &str, hold: Option<Duration>) -> Res
     Ok(())
 }
 
-pub async fn art(
-    host: &str,
-    token: &str,
-    request: &str,
-    value: Option<&str>,
-) -> Result<Vec<ArtReply>> {
-    let mut socket = connect(host, protocol::ART_CHANNEL, token).await?;
-    // The TV answers "No Authorized" to anything sent before the channel is ready.
-    wait_ready(&mut socket).await?;
-    let id = request_id();
-    socket
-        .send(Message::Text(
-            protocol::art_payload(request, value, &id).into(),
-        ))
-        .await
-        .context("could not send the art command")?;
-    let mut replies = Vec::new();
-    let start = tokio::time::Instant::now();
-    while start.elapsed() < Duration::from_secs(3) {
-        let Some(text) = read_text(&mut socket, Duration::from_secs(3)).await? else {
-            break;
-        };
-        if let Some(reply) = protocol::parse_art_message(&text) {
-            let answered = matches!(reply, ArtReply::Mode(_));
-            replies.push(reply);
-            if answered {
-                break;
-            }
-        }
-    }
-    let _ = socket.close(None).await;
-    Ok(replies)
-}
-
 async fn wait_ready<S>(socket: &mut WebSocketStream<S>) -> Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -301,7 +267,8 @@ where
     anyhow::bail!("the TV did not open the channel")
 }
 
-fn request_id() -> String {
+/// An id for a request on an app's channel, which it echoes back.
+pub fn request_id() -> String {
     let bytes: [u8; 16] = rand::random();
     let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     format!(
@@ -367,4 +334,33 @@ fn body(bytes: &[u8]) -> String {
     text.split_once("\r\n\r\n")
         .map(|(_, body)| body.to_owned())
         .unwrap_or_else(|| text.into_owned())
+}
+
+/// One of the TV's websocket channels, like an app's, open for requests.
+pub struct Channel(Socket);
+
+impl Channel {
+    /// Opens `channel`, and waits until the TV says it is ready: it answers
+    /// "No Authorized" to anything sent before.
+    pub async fn open(host: &str, channel: &str, token: &str) -> Result<Self> {
+        let mut socket = connect(host, channel, token).await?;
+        wait_ready(&mut socket).await?;
+        Ok(Self(socket))
+    }
+
+    pub async fn send(&mut self, text: String) -> Result<()> {
+        self.0
+            .send(Message::Text(text.into()))
+            .await
+            .context("the TV did not take the request")
+    }
+
+    /// The next text the TV sends within `wait`, if any.
+    pub async fn read(&mut self, wait: Duration) -> Result<Option<String>> {
+        read_text(&mut self.0, wait).await
+    }
+
+    pub async fn close(mut self) {
+        let _ = self.0.close(None).await;
+    }
 }

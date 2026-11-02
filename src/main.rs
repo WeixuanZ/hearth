@@ -51,8 +51,8 @@ const EXAMPLES: &[(&str, &str)] = &[
 ];
 
 const NOTES: &str = "\
-A device is its id, name, connector (dyson, frame, bosch, mqtt), kind (purifier, tv,
-dishwasher), or a part of its name. A value is on or off, start or stop, a
+A device is its id, its name or a part of it, its category (purifier, tv,
+dishwasher), or its kind (`hearth add list`). A value is on or off, start or stop, a
 number, or an option id listed by `hearth devices`. Most commands talk to the
 running bridge; history also reads the saved files when it is stopped.";
 
@@ -159,40 +159,13 @@ enum Command {
     /// Forget Apple Home, and take a new HomeKit identity. For a bridge
     /// Home will not add again.
     Unpair,
-    /// Add a device: dyson, frame, bosch or mqtt. Asks what it needs.
+    /// Add a device. Asks what it needs; answers given as field=value, like
+    /// email=you@example.com, are not asked.
     Add {
-        /// dyson, frame, bosch or mqtt.
+        /// The kind of device. `hearth add list` shows them.
         product: String,
-    },
-    /// Add a Dyson purifier.
-    Dyson {
-        #[command(subcommand)]
-        command: DysonCommand,
-    },
-    /// Add a Samsung The Frame television.
-    Frame {
-        #[command(subcommand)]
-        command: FrameCommand,
-    },
-    /// Add a Bosch dishwasher.
-    Bosch {
-        #[command(subcommand)]
-        command: BoschCommand,
-    },
-}
-
-#[derive(Subcommand)]
-enum DysonCommand {
-    /// Learn the fan's local password from MyDyson. This talks to Dyson once.
-    Login {
-        #[arg(long)]
-        email: String,
-        /// Two-letter country of the MyDyson account.
-        #[arg(long, default_value = "GB")]
-        country: String,
-        /// Serial, if the account has more than one fan.
-        #[arg(long)]
-        serial: Option<String>,
+        /// Answers to its questions, as field=value.
+        answers: Vec<String>,
     },
 }
 
@@ -208,32 +181,6 @@ enum GroupCommand {
     Separate,
     /// Leave this group for the other one on the network.
     Join,
-}
-
-#[derive(Subcommand)]
-enum FrameCommand {
-    /// Pair the TV: press Allow on it, twice.
-    Pair {
-        /// The TV's address. Found on the network if left out.
-        #[arg(long)]
-        host: Option<String>,
-        /// Name in Apple Home.
-        #[arg(long, default_value = "The Frame")]
-        name: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum BoschCommand {
-    /// Sign in to Home Connect once and save the dishwasher's local key.
-    Login {
-        /// Address, if the name Home Connect gives does not resolve.
-        #[arg(long)]
-        host: Option<String>,
-        /// Appliance id, if the account has more than one.
-        #[arg(long)]
-        id: Option<String>,
-    },
 }
 
 #[tokio::main]
@@ -304,46 +251,20 @@ async fn main() -> Result<()> {
             println!("If Home still shows an old Hearth, remove it there.");
             println!("Code: {}", config.homekit_pin);
         }
-        Command::Add { product } => setup::in_terminal(&product, setup::Answers::new()).await?,
-        // The same steps as `add`, with what the flags already answer.
-        Command::Dyson {
-            command:
-                DysonCommand::Login {
-                    email,
-                    country,
-                    serial,
-                },
-        } => {
-            let mut given = answers([("email", Some(email)), ("country", Some(country))]);
-            given.extend(answers([("serial", serial)]));
-            setup::in_terminal("dyson", given).await?
-        }
-        Command::Frame {
-            command: FrameCommand::Pair { host, name },
-        } => {
-            let given = answers([
-                ("name", Some(name)),
-                ("host", Some(host.unwrap_or_default())),
-            ]);
-            setup::in_terminal("frame", given).await?
-        }
-        Command::Bosch {
-            command: BoschCommand::Login { host, id },
-        } => {
-            let mut given = answers([("host", Some(host.unwrap_or_default()))]);
-            given.extend(answers([("appliance", id)]));
-            setup::in_terminal("bosch", given).await?
+        Command::Add { product, answers } => {
+            let given = answers
+                .iter()
+                .map(|answer| {
+                    answer
+                        .split_once('=')
+                        .map(|(field, value)| (field.to_owned(), value.to_owned()))
+                        .ok_or_else(|| anyhow::anyhow!("{answer} is not field=value"))
+                })
+                .collect::<Result<setup::Answers>>()?;
+            setup::in_terminal(&product, given).await?
         }
     }
     Ok(())
-}
-
-/// Answers for a setup, from the flags that were given.
-fn answers<const N: usize>(pairs: [(&str, Option<String>); N]) -> setup::Answers {
-    pairs
-        .into_iter()
-        .filter_map(|(id, value)| Some((id.to_owned(), value?)))
-        .collect()
 }
 
 pub fn prompt(label: &str) -> Result<String> {

@@ -1,18 +1,20 @@
-//! A Samsung The Frame: one task that holds the TV's connections and state,
-//! and shows it to HomeKit (a television and an art tile) and as capabilities.
+//! Samsung's The Frame, any year (tested on the 2024 LS03D): one task that holds the TV's
+//! connections and state, published as capabilities. What every Samsung TV
+//! shares (the remote, pairing, IP Control, waking it) is in
+//! `connectors::samsung`; the Frame's art mode and inputs are here.
 
 mod capabilities;
+mod protocol;
 mod settings;
+mod setup;
 
-pub use settings::FrameDevice;
+pub use settings::SamsungFrameDevice;
 mod link;
 
-use crate::connectors::samsung::{
-    link::Signal,
-    protocol::{self, ArtReply, Input},
-};
+use crate::connectors::samsung::link::Signal;
 use anyhow::{anyhow, Result};
 use link::{Link, Network};
+use protocol::{ArtReply, Input};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -29,25 +31,28 @@ pub enum Command {
 }
 
 /// Samsung's The Frame televisions.
-pub struct Frame;
+pub struct SamsungFrame;
 
-impl crate::driver::Driver for Frame {
-    const KIND: &'static str = "frame";
+crate::register_driver!(SamsungFrame);
+
+impl crate::driver::Driver for SamsungFrame {
+    const KIND: &'static str = "samsung-frame";
+    const ALIASES: &'static [&'static str] = &["frame"];
     const NAME: &'static str = "Samsung The Frame";
     const CATEGORY: &'static str = "tv";
-    type Settings = FrameDevice;
-    type Setup = crate::connectors::samsung::Setup;
+    type Settings = SamsungFrameDevice;
+    type Setup = setup::Setup;
 
     fn setup() -> (Self::Setup, crate::setup::Step) {
         Self::Setup::start()
     }
 
-    async fn start(settings: FrameDevice, context: crate::driver::Context) -> Result<()> {
+    async fn start(settings: SamsungFrameDevice, context: crate::driver::Context) -> Result<()> {
         spawn(settings, context).await
     }
 
     /// The TV with its speaker and inputs, and art mode as a tile of its own.
-    fn homekit_ids(tv: &FrameDevice) -> crate::surfaces::homekit::ids::DeviceIds {
+    fn homekit_ids(tv: &SamsungFrameDevice) -> crate::surfaces::homekit::ids::DeviceIds {
         let ids = crate::surfaces::homekit::ids::DeviceIds::default()
             .accessory("main", tv.aid)
             .accessory("art", tv.art_aid)
@@ -67,7 +72,7 @@ impl crate::driver::Driver for Frame {
     }
 }
 
-async fn spawn(device: FrameDevice, context: crate::driver::Context) -> Result<()> {
+async fn spawn(device: SamsungFrameDevice, context: crate::driver::Context) -> Result<()> {
     let tv = Tv::new(Network::new(&device, context.clone()), device);
     context.publish(tv.snapshot());
     let requests = context.requests();
@@ -81,7 +86,7 @@ async fn spawn(device: FrameDevice, context: crate::driver::Context) -> Result<(
 
 /// The TV as hearth last saw it, and the link it reaches the TV by.
 struct Tv<L> {
-    device: FrameDevice,
+    device: SamsungFrameDevice,
     link: L,
     on: bool,
     input: u32,
@@ -92,7 +97,7 @@ struct Tv<L> {
 }
 
 impl<L: Link> Tv<L> {
-    fn new(link: L, device: FrameDevice) -> Self {
+    fn new(link: L, device: SamsungFrameDevice) -> Self {
         Self {
             device,
             link,
@@ -114,7 +119,7 @@ impl<L: Link> Tv<L> {
         let mut poll = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            crate::capabilities::publish(self.snapshot());
+            self.link.publish(self.snapshot());
             tokio::select! {
                 request = requests.recv() => {
                     let Some(request) = request else { break };
@@ -318,7 +323,7 @@ impl<L: Link> Tv<L> {
 
     async fn signal(&mut self, signal: Signal<'_>) -> Result<()> {
         if self.device.token.is_empty() {
-            anyhow::bail!("not paired. Run `hearth frame pair` while the TV is on");
+            anyhow::bail!("not paired. Add the TV again while it is on");
         }
         let token = self.link.remote(&self.device, signal).await?;
         if let Some(token) = token.filter(|token| *token != self.device.token) {
@@ -376,7 +381,7 @@ mod tests {
     }
 
     impl Link for Fake {
-        async fn info(&self, _: &FrameDevice) -> Result<DeviceInfo> {
+        async fn info(&self, _: &SamsungFrameDevice) -> Result<DeviceInfo> {
             Ok(DeviceInfo {
                 on: self.0.lock().unwrap().on,
                 mac: String::new(),
@@ -388,7 +393,7 @@ mod tests {
 
         async fn art(
             &self,
-            _: &FrameDevice,
+            _: &SamsungFrameDevice,
             request: &str,
             value: Option<&str>,
         ) -> Result<Vec<ArtReply>> {
@@ -402,7 +407,11 @@ mod tests {
             Ok(vec![ArtReply::Mode(screen.art)])
         }
 
-        async fn remote(&mut self, _: &FrameDevice, signal: Signal<'_>) -> Result<Option<String>> {
+        async fn remote(
+            &mut self,
+            _: &SamsungFrameDevice,
+            signal: Signal<'_>,
+        ) -> Result<Option<String>> {
             let (key, hold) = match signal {
                 Signal::Key(key, hold) => (key, hold),
                 Signal::Text(text) => {
@@ -422,7 +431,7 @@ mod tests {
             Ok(None)
         }
 
-        fn wake(&self, _: &FrameDevice) -> Result<()> {
+        fn wake(&self, _: &SamsungFrameDevice) -> Result<()> {
             Ok(())
         }
 
@@ -448,12 +457,14 @@ mod tests {
             Ok(())
         }
 
-        fn save(&self, _: &FrameDevice) {}
+        fn save(&self, _: &SamsungFrameDevice) {}
+
+        fn publish(&self, _: crate::capabilities::Snapshot) {}
     }
 
     /// Runs the TV's task over `asks`, as any surface asks, until they end.
     async fn run(fake: &Fake, asks: &[(&str, serde_json::Value)]) {
-        let device = FrameDevice {
+        let device = SamsungFrameDevice {
             token: "token".into(),
             ..Default::default()
         };
@@ -529,7 +540,7 @@ mod tests {
 
     #[test]
     fn art_mode_shows_only_while_the_tv_is_on() {
-        let mut tv = Tv::new(Fake::default(), FrameDevice::default());
+        let mut tv = Tv::new(Fake::default(), SamsungFrameDevice::default());
         tv.art = Some(true);
         let art = |tv: &Tv<Fake>| {
             let snapshot = tv.snapshot();
@@ -541,8 +552,8 @@ mod tests {
         assert_eq!(art(&tv), Some(true.into()));
     }
 
-    fn paired() -> FrameDevice {
-        FrameDevice {
+    fn paired() -> SamsungFrameDevice {
+        SamsungFrameDevice {
             aid: 2,
             art_aid: 4,
             name: "Television".into(),
@@ -557,7 +568,7 @@ mod tests {
         use hap::HapType;
         let device = paired();
         let snapshot = Tv::new(Fake::default(), device.clone()).snapshot();
-        let home = Home::of(&snapshot, Frame::homekit_ids(&device)).await;
+        let home = Home::of(&snapshot, SamsungFrame::homekit_ids(&device)).await;
         assert_eq!(home.services(2, HapType::Television), [20]);
         assert_eq!(home.services(2, HapType::Speaker), [40]);
         assert_eq!(home.services(2, HapType::InputSource), [50, 60, 70, 80, 90]);
@@ -571,7 +582,7 @@ mod tests {
         use serde_json::json;
         let device = paired();
         let mut tv = Tv::new(Fake::default(), device.clone());
-        let mut home = Home::of(&tv.snapshot(), Frame::homekit_ids(&device)).await;
+        let mut home = Home::of(&tv.snapshot(), SamsungFrame::homekit_ids(&device)).await;
         // A scene that turns the TV off may pick an input too: that asks nothing.
         let hdmi2 = json!(Input::Hdmi2 as u32);
         assert!(home

@@ -6,15 +6,14 @@
 //! Home will notify for.
 
 mod capabilities;
+mod machine;
 mod settings;
+mod setup;
 
-pub use settings::BoschDevice;
+pub use settings::HomeConnectDishwasherDevice;
 
 use crate::{
-    connectors::bosch::{
-        link,
-        protocol::{Command, Reading},
-    },
+    connectors::home_connect::{link, protocol::Command},
     devices::{
         cycle::{Cycle, Seen},
         runtime,
@@ -22,30 +21,40 @@ use crate::{
 };
 use anyhow::{anyhow, Result};
 use capabilities::{Ask, Kept};
+use machine::Reading;
 use tokio::sync::{mpsc, watch};
 
 /// Bosch dishwashers, over Home Connect on the local network.
-pub struct Bosch;
+pub struct HomeConnectDishwasher;
 
-impl crate::driver::Driver for Bosch {
-    const KIND: &'static str = "bosch";
-    const NAME: &'static str = "Bosch dishwasher";
+crate::register_driver!(HomeConnectDishwasher);
+
+impl crate::driver::Driver for HomeConnectDishwasher {
+    const KIND: &'static str = "home-connect-dishwasher";
+    const ALIASES: &'static [&'static str] = &["bosch"];
+    const NAME: &'static str = "Home Connect dishwasher (Bosch, Siemens, Neff)";
     const CATEGORY: &'static str = "dishwasher";
-    type Settings = BoschDevice;
-    type Setup = crate::connectors::bosch::Setup;
+    type Settings = HomeConnectDishwasherDevice;
+    type Setup = setup::Setup;
 
     fn setup() -> (Self::Setup, crate::setup::Step) {
         Self::Setup::start()
     }
 
-    async fn start(settings: BoschDevice, context: crate::driver::Context) -> Result<()> {
+    async fn start(
+        settings: HomeConnectDishwasherDevice,
+        context: crate::driver::Context,
+    ) -> Result<()> {
         spawn(settings, context).await
     }
 
     /// The machine with its options, programmes and supplies, and its door,
     /// AquaStop and the end of a cycle as tiles of their own.
-    fn homekit_ids(machine: &BoschDevice) -> crate::surfaces::homekit::ids::DeviceIds {
-        use crate::connectors::bosch::protocol::{option_switches, programs};
+    fn homekit_ids(
+        machine: &HomeConnectDishwasherDevice,
+    ) -> crate::surfaces::homekit::ids::DeviceIds {
+        use crate::connectors::home_connect::protocol::programs;
+        use machine::option_switches;
         let mut ids = crate::surfaces::homekit::ids::DeviceIds::default()
             .accessory("main", machine.aid)
             .accessory("door", machine.door_aid)
@@ -71,7 +80,7 @@ impl crate::driver::Driver for Bosch {
     }
 }
 
-async fn spawn(device: BoschDevice, context: crate::driver::Context) -> Result<()> {
+async fn spawn(device: HomeConnectDishwasherDevice, context: crate::driver::Context) -> Result<()> {
     // The programme the next start runs, chosen from any surface.
     let (chosen, choice) = watch::channel(None);
     let shown = device.clone();
@@ -93,7 +102,7 @@ async fn spawn(device: BoschDevice, context: crate::driver::Context) -> Result<(
         runtime::keep_connected(&device.name, &states, offline, &mut commands, |commands| {
             let (device, states) = (device.clone(), states.clone());
             Box::pin(async move {
-                link::session(&device, Some(&states), Some(commands)).await?;
+                link::session(&device.appliance(), Some(&states), Some(commands)).await?;
                 Ok(())
             })
         })
@@ -106,7 +115,7 @@ async fn spawn(device: BoschDevice, context: crate::driver::Context) -> Result<(
 /// keeps, shown at once, or a command for the machine, refused while it
 /// would be ignored.
 fn answer(
-    device: BoschDevice,
+    device: HomeConnectDishwasherDevice,
     requests: mpsc::Receiver<crate::capabilities::Set>,
     states: watch::Sender<Reading>,
     chosen: watch::Sender<Option<u32>>,
@@ -159,8 +168,8 @@ fn keep(cycle: &mut Cycle, chosen: Option<u32>, reading: &Reading) -> Kept {
 mod tests {
     use super::*;
     use crate::{
-        capabilities::Set, connectors::bosch::protocol::BoschFeature,
-        connectors::bosch::protocol::Machine,
+        capabilities::Set, connectors::home_connect::protocol::Feature,
+        devices::dishwasher::home_connect_dishwasher::machine::Machine,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -168,12 +177,12 @@ mod tests {
     const RUN: &str = "BSH.Common.EnumType.OperationState.Run";
     const READY: &str = "BSH.Common.EnumType.OperationState.Ready";
 
-    fn device() -> BoschDevice {
-        let feature = |name: &str| BoschFeature {
+    fn device() -> HomeConnectDishwasherDevice {
+        let feature = |name: &str| Feature {
             name: name.into(),
             values: BTreeMap::new(),
         };
-        BoschDevice {
+        HomeConnectDishwasherDevice {
             aid: 2,
             door_aid: 3,
             leak_aid: 4,
@@ -299,7 +308,7 @@ mod tests {
         use hap::HapType;
         let device = device();
         let snapshot = capabilities::snapshot(&device, &Reading::default(), Kept::default());
-        let mut home = Home::of(&snapshot, Bosch::homekit_ids(&device)).await;
+        let mut home = Home::of(&snapshot, HomeConnectDishwasher::homekit_ids(&device)).await;
         // Start and stop, then the one programme.
         assert_eq!(home.services(2, HapType::Switch), [20, 400]);
         assert_eq!(home.services(3, HapType::ContactSensor), [7]);

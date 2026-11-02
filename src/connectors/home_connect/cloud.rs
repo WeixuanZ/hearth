@@ -2,17 +2,16 @@
 //!
 //! The account password is typed into Home Connect's own page. The PKCE
 //! verifier and the access token live in memory, only while the sign-in
-//! lasts; nothing but the dishwasher's local key is written down.
+//! lasts; nothing but the appliance's local key is kept, by its model's setup.
 
-use super::protocol::label_of;
+use super::protocol::{label_of, Feature};
 use super::xml;
-use crate::config;
-use crate::devices::dishwasher::bosch::BoschDevice;
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use rand::RngCore;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 const CLIENT_ID: &str = "9B75AC9EC512F36C84256AC47D813E2C1DD0D6520DF774B020E1E6E2EB29B1F3";
@@ -45,7 +44,7 @@ impl SignIn {
         self.authorize_url()
     }
 
-    /// Trades the address the browser was sent to for the account's dishwashers.
+    /// Trades the address the browser was sent to for the account's appliances.
     pub async fn finish(&self, redirect: &str) -> Result<Account> {
         let (code, state) = parse_redirect(redirect)?;
         if state.is_some_and(|state| state != self.state) {
@@ -55,12 +54,12 @@ impl SignIn {
         let token = access_token(&client, self, &code).await?;
         let account = subject(&token)?;
         let (region, body) = appliances(&client, &token, &account).await?;
-        let dishwashers = candidates(parse_appliances(&body), None)?;
+        let appliances = parse_appliances(&body);
         Ok(Account {
             client,
             token,
             region,
-            dishwashers,
+            appliances,
         })
     }
 
@@ -75,18 +74,31 @@ impl SignIn {
     }
 }
 
-/// A signed-in account, while someone chooses which dishwasher to add.
+/// A signed-in account, while someone chooses which appliance to add.
 pub struct Account {
     client: reqwest::Client,
     token: String,
     region: String,
-    pub dishwashers: Vec<Found>,
+    pub appliances: Vec<Found>,
+}
+
+/// What pairing learned of an appliance: where it is, its local keys, and
+/// what it can do. Its model's setup keeps what it needs of it.
+pub struct Paired {
+    pub name: String,
+    pub brand: String,
+    pub model: String,
+    pub ha_id: String,
+    pub host: String,
+    pub key: String,
+    pub iv: String,
+    pub features: BTreeMap<String, Feature>,
 }
 
 impl Account {
-    /// Saves a dishwasher with its local key and feature map. `host` when
-    /// its own name does not resolve. Returns its name.
-    pub async fn add(&self, chosen: &Found, host: Option<&str>) -> Result<String> {
+    /// Pairs `chosen`: its local keys and feature map, and its address,
+    /// `host` when its own name does not resolve.
+    pub async fn pair(&self, chosen: &Found, host: Option<&str>) -> Result<Paired> {
         let keys = encryption(&self.client, &self.region, &self.token, &chosen.ha_id).await?;
         let bytes = description(&self.client, &self.region, &self.token, &chosen.ha_id).await?;
         let features = xml::features_from_zip(&bytes)?;
@@ -97,11 +109,7 @@ impl Account {
                 || discovered_host(chosen, keys.iv.is_empty()),
                 str::to_owned,
             );
-        let device = BoschDevice {
-            aid: 0,
-            door_aid: 0,
-            leak_aid: 0,
-            cycle_aid: 0,
+        Ok(Paired {
             name: display_name(chosen),
             brand: pretty_brand(&chosen.brand),
             model: chosen.model.clone(),
@@ -110,15 +118,7 @@ impl Account {
             key: keys.key,
             iv: keys.iv,
             features,
-        };
-        let name = device.name.clone();
-        let mut saved = config::load_or_new()?;
-        config::upsert(
-            &mut saved,
-            config::Device::new::<crate::devices::dishwasher::bosch::Bosch>(device),
-        );
-        config::save(&saved)?;
-        Ok(name)
+        })
     }
 }
 
@@ -144,7 +144,7 @@ async fn access_token(client: &reqwest::Client, pending: &SignIn, code: &str) ->
         .send()
         .await?;
     if !response.status().is_success() {
-        anyhow::bail!("Home Connect refused that code. Run `hearth bosch login` again");
+        anyhow::bail!("Home Connect refused that code. Add the appliance again");
     }
     let value: Value = response.json().await?;
     value
@@ -241,9 +241,10 @@ fn keys_in(body: &Value) -> Option<Keys> {
 #[derive(Clone)]
 pub struct Found {
     pub ha_id: String,
-    brand: String,
-    kind: String,
-    model: String,
+    pub brand: String,
+    /// Its type, as Home Connect names it, like `Dishwasher`.
+    pub kind: String,
+    pub model: String,
 }
 
 impl Found {
@@ -278,42 +279,6 @@ fn found_from(value: &Value) -> Option<Found> {
     })
 }
 
-fn candidates(found: Vec<Found>, id: Option<&str>) -> Result<Vec<Found>> {
-    if let Some(id) = id.map(str::trim).filter(|id| !id.is_empty()) {
-        return found
-            .into_iter()
-            .find(|item| item.ha_id.eq_ignore_ascii_case(id))
-            .map(|item| vec![item])
-            .ok_or_else(|| anyhow!("no paired appliance has id {id}"));
-    }
-    // Only a dishwasher: anything else would be driven as one.
-    let (dishwashers, others): (Vec<_>, Vec<_>) = found.into_iter().partition(is_dishwasher);
-    if dishwashers.is_empty() {
-        let others: Vec<String> = others
-            .iter()
-            .map(|item| format!("{} ({})", item.ha_id, item.kind))
-            .collect();
-        anyhow::bail!(
-            "the Home Connect account has no dishwasher{}",
-            if others.is_empty() {
-                String::new()
-            } else {
-                format!(", only {}", others.join(", "))
-            }
-        );
-    }
-    Ok(dishwashers)
-}
-
-fn is_dishwasher(item: &Found) -> bool {
-    let kind = item.kind.to_ascii_lowercase();
-    let model = item.model.to_ascii_uppercase();
-    kind.contains("dish")
-        || model.starts_with("SPV")
-        || model.starts_with("SMS")
-        || model.starts_with("SMV")
-}
-
 fn discovered_host(item: &Found, tls: bool) -> String {
     if !tls {
         return item.ha_id.clone();
@@ -334,9 +299,7 @@ fn host_part(text: &str) -> String {
 
 fn display_name(item: &Found) -> String {
     let brand = pretty_brand(&item.brand);
-    if is_dishwasher(item) {
-        format!("{brand} Dishwasher")
-    } else if item.kind.is_empty() {
+    if item.kind.is_empty() {
         brand
     } else {
         format!("{brand} {}", label_of(&item.kind))
@@ -511,48 +474,24 @@ mod tests {
     }
 
     #[test]
-    fn one_dishwasher_is_chosen_from_a_mixed_account() {
+    fn an_account_lists_its_appliances_with_their_type() {
         let body = serde_json::json!({
             "appliances": [
-                {"haId": "OVEN-1", "brand": "BOSCH", "haType": "Oven", "vib": "HBA5780S0"},
-                {"haId": "DW-1", "brand": "BOSCH", "haType": "Dishwasher", "vib": "SPV2HKX42G"}
+                {"haId": "OVEN-1", "brand": "BOSCH", "haType": "Oven", "vib": "XY01"},
+                {"haId": "DW-1", "brand": "BOSCH", "type": "Dishwasher", "vib": "XY02"}
             ]
         });
-        let chosen = candidates(parse_appliances(&body), None).unwrap();
-        assert_eq!(chosen.len(), 1);
-        let chosen = &chosen[0];
-        assert_eq!(chosen.ha_id, "DW-1");
-        assert_eq!(display_name(chosen), "Bosch Dishwasher");
-        assert_eq!(discovered_host(chosen, true), "BOSCH-Dishwasher-DW-1");
+        let found = parse_appliances(&body);
+        assert_eq!(found.len(), 2);
+        assert_eq!(
+            (found[1].ha_id.as_str(), found[1].kind.as_str()),
+            ("DW-1", "Dishwasher")
+        );
+        assert_eq!(display_name(&found[1]), "Bosch Dishwasher");
+        assert_eq!(discovered_host(&found[1], true), "BOSCH-Dishwasher-DW-1");
         let keys = keys_from(&serde_json::json!({"tls": {"key": "abc"}})).unwrap();
         assert!(keys.iv.is_empty());
         let keys = keys_from(&serde_json::json!({"aes": {"key": "abc", "iv": "def"}})).unwrap();
         assert_eq!(keys.iv, "def");
-    }
-
-    #[test]
-    fn two_dishwashers_need_an_id() {
-        let body = serde_json::json!({
-            "appliances": [
-                {"haId": "A", "brand": "BOSCH", "type": "Dishwasher", "vib": "SPV2HKX42G"},
-                {"haId": "B", "brand": "BOSCH", "type": "Dishwasher", "vib": "SMS46IW01G"}
-            ]
-        });
-        let found = parse_appliances(&body);
-        assert_eq!(candidates(found.clone(), None).unwrap().len(), 2);
-        let chosen = candidates(found, Some("b")).unwrap();
-        assert_eq!(chosen[0].model, "SMS46IW01G");
-    }
-
-    #[test]
-    fn an_account_without_a_dishwasher_is_refused() {
-        let oven = Found {
-            ha_id: "OVEN-1".into(),
-            brand: "BOSCH".into(),
-            kind: "Oven".into(),
-            model: "XY01".into(),
-        };
-        let error = candidates(vec![oven], None).err().unwrap().to_string();
-        assert!(error.contains("no dishwasher") && error.contains("OVEN-1"));
     }
 }

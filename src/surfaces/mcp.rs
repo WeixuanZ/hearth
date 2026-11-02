@@ -31,9 +31,6 @@ const WITHHELD: &[(&str, &str)] = &[
     ("remove", "deletes a device on every computer"),
     ("group", "lets computers into the group"),
     ("add", "asks a person questions"),
-    ("dyson", "signs in to an account"),
-    ("frame", "needs Allow pressed on the TV"),
-    ("bosch", "signs in to an account"),
     ("help", "is clap's own"),
 ];
 

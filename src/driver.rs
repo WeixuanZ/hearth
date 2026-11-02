@@ -1,6 +1,7 @@
 //! The kinds of device hearth knows. Each is a [`Driver`] in its device's
-//! module, listed once in [`DRIVERS`]: its settings, how it is added, and how
-//! its task starts. Nothing else names a brand.
+//! module, which registers it there with [`register_driver!`]: its settings,
+//! how it is added, and how its task starts. Nothing outside a device's own
+//! module names it, this file included, so a new one is a new module.
 
 use crate::{
     capabilities::{self, Set, Snapshot},
@@ -15,8 +16,12 @@ use tokio::sync::mpsc;
 
 /// A kind of device.
 pub trait Driver: Send + Sync + 'static {
-    /// The config's `kind`, like `dyson`. Also how `hearth add` names it.
+    /// The config's `kind`, brand and model, like `dyson-hp09`. Also how
+    /// `hearth add` names it.
     const KIND: &'static str;
+    /// Kinds it was known by before, still read from an older config and
+    /// still taken by `hearth add`.
+    const ALIASES: &'static [&'static str] = &[];
     /// How the menu bar offers it, like "Dyson purifier".
     const NAME: &'static str;
     /// What it is, like `purifier`. Picks its icon.
@@ -99,7 +104,8 @@ impl Context {
 
 /// A driver as the rest of hearth handles it, whatever its kind.
 pub trait Kind: Send + Sync {
-    fn kind(&self) -> &'static str;
+    /// Whether `kind` names it, by its kind or one it had before.
+    fn answers_to(&self, kind: &str) -> bool;
     fn product(&self) -> Product;
     /// One device's settings from its table in the config.
     fn read(&self, table: toml::Table) -> Result<Device>;
@@ -137,8 +143,8 @@ impl<D> Registered<D> {
 }
 
 impl<D: Driver> Kind for Registered<D> {
-    fn kind(&self) -> &'static str {
-        D::KIND
+    fn answers_to(&self, kind: &str) -> bool {
+        D::KIND == kind || D::ALIASES.contains(&kind)
     }
 
     fn homekit_ids(&self, device: &Device) -> DeviceIds {
@@ -181,17 +187,38 @@ impl<D: Driver> Kind for Registered<D> {
     }
 }
 
-/// Every kind of device hearth knows, in the order the menu bar offers them.
-pub static DRIVERS: &[&dyn Kind] = &[
-    &Registered::<crate::devices::purifier::dyson::Dyson>::NEW,
-    &Registered::<crate::devices::tv::samsung_frame::Frame>::NEW,
-    &Registered::<crate::devices::dishwasher::bosch::Bosch>::NEW,
-    &Registered::<crate::devices::generic::mqtt::Mqtt>::NEW,
-];
+/// Every kind of device hearth knows, each put here by its own module (see
+/// [`register_driver!`]).
+#[linkme::distributed_slice]
+pub static DRIVERS: [&'static dyn Kind];
+
+/// Makes `$driver` known to hearth: the config reads its devices, the bridge
+/// starts them, and the menu bar and `hearth add` offer it. Called once, in
+/// the driver's own module.
+#[macro_export]
+macro_rules! register_driver {
+    ($driver:ty) => {
+        const _: () = {
+            #[linkme::distributed_slice($crate::driver::DRIVERS)]
+            static DRIVER: &'static dyn $crate::driver::Kind =
+                &$crate::driver::Registered::<$driver>::NEW;
+        };
+    };
+}
+
+/// Every driver, by name, as the menu bar offers them.
+pub fn all() -> Vec<&'static dyn Kind> {
+    let mut all: Vec<&'static dyn Kind> = DRIVERS.iter().copied().collect();
+    all.sort_by_key(|driver| driver.product().name);
+    all
+}
 
 /// The driver for `kind`, if this build has one.
 pub fn find(kind: &str) -> Option<&'static dyn Kind> {
-    DRIVERS.iter().copied().find(|driver| driver.kind() == kind)
+    DRIVERS
+        .iter()
+        .copied()
+        .find(|driver| driver.answers_to(kind))
 }
 
 /// A device's settings behind [`Device`], with the kind that reads them.
@@ -233,5 +260,90 @@ impl<D: Driver> config::Entry for Typed<D> {
     }
     fn as_any_mut(&mut self) -> &mut dyn Any {
         &mut self.0
+    }
+}
+
+/// A driver for tests of what every driver relies on, so they need no real
+/// device: a lamp, with a second tile when asked.
+#[cfg(test)]
+pub mod test {
+    use super::*;
+    use serde::Deserialize;
+
+    pub struct Lamp;
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+    pub struct LampSettings {
+        pub key: String,
+        pub name: String,
+        #[serde(default)]
+        pub aid: u64,
+        /// A second tile, as a TV's art switch, when `tiles` is 2.
+        #[serde(default)]
+        pub tile_aid: u64,
+        #[serde(default)]
+        pub tiles: u8,
+        /// Something a fresh setup learns again, like a password.
+        #[serde(default)]
+        pub secret: String,
+    }
+
+    impl LampSettings {
+        pub fn new(key: &str, name: &str) -> Self {
+            Self {
+                key: key.into(),
+                name: name.into(),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl Settings for LampSettings {
+        fn id(&self) -> String {
+            format!("test-lamp:{}", self.key)
+        }
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn name_mut(&mut self) -> &mut String {
+            &mut self.name
+        }
+        fn aids(&mut self) -> Vec<&mut u64> {
+            if self.tiles == 2 {
+                vec![&mut self.aid, &mut self.tile_aid]
+            } else {
+                vec![&mut self.aid]
+            }
+        }
+        fn address(&self) -> Option<(String, u16)> {
+            None
+        }
+    }
+
+    pub struct NoSetup;
+
+    impl Setup for NoSetup {
+        async fn next(&mut self, _: &Answers) -> Result<Next> {
+            Err(anyhow!("a test lamp is not added"))
+        }
+    }
+
+    crate::register_driver!(Lamp);
+
+    impl Driver for Lamp {
+        const KIND: &'static str = "test-lamp";
+        const ALIASES: &'static [&'static str] = &["test-light"];
+        const NAME: &'static str = "Test lamp";
+        const CATEGORY: &'static str = "light";
+        type Settings = LampSettings;
+        type Setup = NoSetup;
+
+        fn setup() -> (NoSetup, Step) {
+            (NoSetup, Step::new("", ""))
+        }
+
+        async fn start(_: LampSettings, _: Context) -> Result<()> {
+            Ok(())
+        }
     }
 }

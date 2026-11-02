@@ -1,13 +1,14 @@
 //! The dishwasher as capabilities, for the menu bar and the CLI.
 //! HomeKit shows the same state through `accessory`, and both send the same commands.
 
-use crate::connectors::bosch::protocol::{
-    feature_uid, format_remaining, label_of, option_switches, programs, Command, Machine, Reading,
+use super::machine::{option_switches, salt_name, Machine, Reading};
+use crate::connectors::home_connect::protocol::{
+    feature_uid, format_remaining, label_of, programs, Command,
 };
 use crate::{
     capabilities::{About, Alert, Capability, Item, Role, Set, Snapshot},
     config::Settings as _,
-    devices::dishwasher::bosch::BoschDevice,
+    devices::dishwasher::home_connect_dishwasher::HomeConnectDishwasherDevice,
 };
 use anyhow::{anyhow, Result};
 
@@ -31,7 +32,7 @@ pub enum Ask {
 /// The programme and its options, then Start, then what can change while it
 /// runs, then what it reports. While a programme runs its settings are
 /// fixed, so they are inactive.
-pub fn snapshot(device: &BoschDevice, reading: &Reading, kept: Kept) -> Snapshot {
+pub fn snapshot(device: &HomeConnectDishwasherDevice, reading: &Reading, kept: Kept) -> Snapshot {
     let machine = &reading.machine;
     let running = machine.running();
     let chosen = chosen(device, machine, kept);
@@ -92,7 +93,7 @@ pub fn snapshot(device: &BoschDevice, reading: &Reading, kept: Kept) -> Snapshot
     // Only what this machine reports: not every one tracks its rinse aid.
     let reports =
         |part: fn(&str) -> bool| device.features.values().any(|feature| part(&feature.name));
-    if reports(crate::connectors::bosch::protocol::salt_name) {
+    if reports(salt_name) {
         capabilities
             .push(Capability::state("salt", "Salt low", machine.salt_low).role(Role::Supply));
     }
@@ -129,7 +130,7 @@ pub fn snapshot(device: &BoschDevice, reading: &Reading, kept: Kept) -> Snapshot
 
     Snapshot {
         id: device.id(),
-        kind: "bosch",
+        kind: <super::HomeConnectDishwasher as crate::driver::Driver>::KIND,
         category: "dishwasher",
         name: device.name.clone(),
         online: reading.online,
@@ -163,7 +164,7 @@ pub fn snapshot(device: &BoschDevice, reading: &Reading, kept: Kept) -> Snapshot
 }
 
 /// The chosen programme, else the one the machine has selected.
-fn chosen(device: &BoschDevice, machine: &Machine, kept: Kept) -> Option<u32> {
+fn chosen(device: &HomeConnectDishwasherDevice, machine: &Machine, kept: Kept) -> Option<u32> {
     kept.chosen.or_else(|| {
         programs(&device.features)
             .into_iter()
@@ -172,7 +173,11 @@ fn chosen(device: &BoschDevice, machine: &Machine, kept: Kept) -> Option<u32> {
 }
 
 /// Why it cannot start, or stop, from here now.
-fn blocked(device: &BoschDevice, machine: &Machine, chosen: Option<u32>) -> Option<String> {
+fn blocked(
+    device: &HomeConnectDishwasherDevice,
+    machine: &Machine,
+    chosen: Option<u32>,
+) -> Option<String> {
     let why = if machine.running() {
         feature_uid(&device.features, "AbortProgram")
             .is_none()
@@ -280,7 +285,12 @@ pub(super) fn option_id(key: &str) -> &'static str {
 /// What a request comes to, refused while the dishwasher would ignore it.
 /// Nothing is kept for later: a programme asked for an hour ago must not
 /// start now. Starting needs Remote Start, pressed on the machine.
-pub fn command(device: &BoschDevice, reading: &Reading, kept: Kept, set: &Set) -> Result<Ask> {
+pub fn command(
+    device: &HomeConnectDishwasherDevice,
+    reading: &Reading,
+    kept: Kept,
+    set: &Set,
+) -> Result<Ask> {
     let ask = to_ask(device, &reading.machine, kept, set)?;
     let Ask::Send(command) = &ask else {
         return Ok(ask);
@@ -297,7 +307,12 @@ pub fn command(device: &BoschDevice, reading: &Reading, kept: Kept, set: &Set) -
     Ok(ask)
 }
 
-fn to_ask(device: &BoschDevice, machine: &Machine, kept: Kept, set: &Set) -> Result<Ask> {
+fn to_ask(
+    device: &HomeConnectDishwasherDevice,
+    machine: &Machine,
+    kept: Kept,
+    set: &Set,
+) -> Result<Ask> {
     let running = machine.running();
     Ok(match set.capability.as_str() {
         "run" if set.bool()? => {
@@ -353,28 +368,28 @@ fn to_ask(device: &BoschDevice, machine: &Machine, kept: Kept, set: &Set) -> Res
 
 #[cfg(test)]
 mod tests {
+    use super::super::machine::Machine;
     use super::*;
-    use crate::connectors::bosch::protocol::Machine;
 
-    fn device() -> BoschDevice {
-        use crate::connectors::bosch::protocol::BoschFeature;
+    fn device() -> HomeConnectDishwasherDevice {
+        use crate::connectors::home_connect::protocol::Feature;
         use std::collections::BTreeMap;
         let mut features = BTreeMap::new();
         features.insert(
             "30".into(),
-            BoschFeature {
+            Feature {
                 name: "Dishcare.Dishwasher.Program.Eco50".into(),
                 values: BTreeMap::new(),
             },
         );
         features.insert(
             "40".into(),
-            BoschFeature {
+            Feature {
                 name: "Dishcare.Dishwasher.Option.ExtraDry".into(),
                 values: BTreeMap::new(),
             },
         );
-        BoschDevice {
+        HomeConnectDishwasherDevice {
             aid: 2,
             door_aid: 3,
             leak_aid: 4,
@@ -439,7 +454,7 @@ mod tests {
         assert!(!text.contains("secret-key"));
         assert_eq!(snap.headline, "Running");
         assert_eq!(snap.detail, "Eco 50 · 1 h 30 min");
-        assert_eq!(snap.kind, "bosch");
+        assert_eq!(snap.kind, "home-connect-dishwasher");
         assert_eq!(snap.category, "dishwasher");
         let programme = snap
             .capabilities
@@ -498,7 +513,7 @@ mod tests {
 
     #[test]
     fn a_running_programme_stops_only_where_the_machine_offers_it() {
-        use crate::connectors::bosch::protocol::BoschFeature;
+        use crate::connectors::home_connect::protocol::Feature;
         let mut device = device();
         let reading = Reading {
             online: true,
@@ -512,7 +527,7 @@ mod tests {
         assert!(refused(command(&device, &reading, kept, &stop)).contains("own buttons"));
         device.features.insert(
             "50".into(),
-            BoschFeature {
+            Feature {
                 name: "BSH.Common.Command.AbortProgram".into(),
                 values: Default::default(),
             },
@@ -530,7 +545,7 @@ mod tests {
         let mut device = device();
         device.features.insert(
             "31".into(),
-            crate::connectors::bosch::protocol::BoschFeature {
+            crate::connectors::home_connect::protocol::Feature {
                 name: "Dishcare.Dishwasher.Program.Quick45".into(),
                 values: Default::default(),
             },

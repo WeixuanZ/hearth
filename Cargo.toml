@@ -15,6 +15,7 @@ name = "hearth"
 path = "src/main.rs"
 
 [dependencies]
+linkme = "0.3"
 # Matter, beside HomeKit (surfaces::matter).
 rs-matter = { version = "=0.4.1", features = ["async-io", "groups", "max-groups-per-fabric-12", "max-group-keys-per-fabric-3", "max-group-endpoints-per-fabric-3"] }
 rand10 = { package = "rand", version = "=0.10.2", features = ["std", "std_rng", "thread_rng"] }

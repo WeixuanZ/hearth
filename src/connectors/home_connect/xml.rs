@@ -9,9 +9,9 @@ use quick_xml::Reader;
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 
-use crate::connectors::bosch::protocol::BoschFeature;
+use crate::connectors::home_connect::protocol::Feature;
 
-pub fn features_from_zip(bytes: &[u8]) -> Result<BTreeMap<String, BoschFeature>> {
+pub fn features_from_zip(bytes: &[u8]) -> Result<BTreeMap<String, Feature>> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
     let mut mapping = String::new();
     let mut description = String::new();
@@ -34,7 +34,7 @@ pub fn features_from_zip(bytes: &[u8]) -> Result<BTreeMap<String, BoschFeature>>
     let links = parse_links(&description);
     let mut features = BTreeMap::new();
     for (uid, name) in parsed {
-        let mut feature = BoschFeature {
+        let mut feature = Feature {
             name,
             values: BTreeMap::new(),
         };
