@@ -1,3 +1,6 @@
+// rs-matter's handler chains nest deeper than the default allows.
+#![recursion_limit = "256"]
+
 mod bus;
 mod capabilities;
 mod cluster;
