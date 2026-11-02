@@ -5,7 +5,7 @@ use super::protocol::{sweep, Intent, MachineState, SWEEPS};
 use crate::config::Settings as _;
 use crate::{
     capabilities::{About, Alert, Capability, Item, Measure, Role, Set, Snapshot},
-    devices::purifier::dyson_hp09::DysonHp09Device,
+    devices::purifier::dyson_hot_cool::DysonHotCoolDevice,
 };
 use anyhow::{anyhow, Result};
 
@@ -14,7 +14,7 @@ const FILTER_LOW: u8 = 10;
 /// PM2.5 in µg/m³ above which air counts as unhealthy for sensitive groups.
 const PM25_HIGH: f32 = 35.0;
 
-pub fn snapshot(device: &DysonHp09Device, state: &MachineState) -> Snapshot {
+pub fn snapshot(device: &DysonHotCoolDevice, state: &MachineState) -> Snapshot {
     let online = state.connected;
     let headline = match (online, state.power_on) {
         (false, _) => "Looking".into(),
@@ -154,7 +154,7 @@ mod tests {
     use super::*;
 
     fn alerts(state: MachineState) -> Vec<&'static str> {
-        let device = DysonHp09Device {
+        let device = DysonHotCoolDevice {
             aid: 2,
             name: "Purifier".into(),
             serial: "ABC-XY-12345678".into(),

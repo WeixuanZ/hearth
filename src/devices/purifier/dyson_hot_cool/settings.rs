@@ -1,10 +1,10 @@
-//! What hearth keeps of a Dyson HP09-line purifier, in the config.
+//! What hearth keeps of a Dyson Hot+Cool purifier, in the config.
 
 use crate::config::Settings;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DysonHp09Device {
+pub struct DysonHotCoolDevice {
     /// HomeKit accessory id. The fan and its switches are one accessory.
     #[serde(default)]
     pub aid: u64,
@@ -22,7 +22,7 @@ pub struct DysonHp09Device {
     pub heating: bool,
 }
 
-impl Settings for DysonHp09Device {
+impl Settings for DysonHotCoolDevice {
     fn id(&self) -> String {
         format!("dyson:{}", self.serial)
     }

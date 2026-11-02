@@ -4,7 +4,7 @@ use crate::config::Settings;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct FrameDevice {
+pub struct SamsungFrameDevice {
     #[serde(default)]
     pub aid: u64,
     pub name: String,
@@ -25,7 +25,7 @@ pub struct FrameDevice {
     pub art_aid: u64,
 }
 
-impl Settings for FrameDevice {
+impl Settings for SamsungFrameDevice {
     fn id(&self) -> String {
         format!("frame:{}", self.host)
     }

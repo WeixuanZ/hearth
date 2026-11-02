@@ -1,10 +1,10 @@
 //! The Frame as capabilities, for the menu bar and the CLI. HomeKit shows the
 //! same state through `accessory`, and both turn into the same commands.
 
+use super::protocol::Input;
 use super::{Command, Tv};
 use crate::capabilities::{About, Capability, Item, Role, Set, Snapshot};
 use crate::config::Settings as _;
-use crate::connectors::samsung::protocol::Input;
 use anyhow::{anyhow, Result};
 
 /// The remote pad: an id for the UI and CLI, a label, and the Samsung key.
