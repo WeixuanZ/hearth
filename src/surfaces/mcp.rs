@@ -25,6 +25,10 @@ const WITHHELD: &[(&str, &str)] = &[
     ("run", "runs the bridge itself"),
     ("mcp", "is this server"),
     ("events", "never ends: it follows changes as they happen"),
+    (
+        "watch",
+        "knocks on every device on the network, and may never end",
+    ),
     ("pin", "prints Home's pairing code"),
     ("unpair", "takes the bridge out of Home"),
     ("remove", "deletes a device on every computer"),

@@ -89,6 +89,7 @@ hearth rename tv "Living room TV"
 hearth remove "The Frame 2"
 hearth group                      # which computer serves Home
 hearth doctor                     # what stands between Home and the devices
+hearth watch                      # what is on the network, and what is new
 hearth mcp                        # the devices as tools for AI agents
 ```
 
@@ -103,6 +104,8 @@ A device is its id, name, kind (`tv`, `purifier`, `dishwasher`), connector (`fra
 **Alerts.** The menu bar posts a Mac notification when a purifier's filter is down to 10% or PM2.5 rises above 35 µg/m³, and when a dishwasher finishes or runs low on salt or rinse aid. Each comes once while it holds; one that clears and comes back within half an hour is not repeated. `hearth devices` lists the alerts that hold now, and `--json` gives them to scripts. A device raises its own: `alerts` in its snapshot.
 
 **When something does not work**, `hearth doctor` checks the config, the bridge and its place in Home, the network, the macOS firewall, and each device, and says what to do about anything wrong. It only looks: a device the bridge cannot reach is dialled and hung up on, and nothing is sent to it. It exits with status 1 if a check failed.
+
+**What is on the network.** `hearth watch` lists every device on this computer's network, by hardware address, with its name and services on mDNS and which common ports it answers on, and tells what is new since it last looked: a device never seen, one at a new address, a port or a service a device never showed before, and a gateway answering from another device, which is how someone puts themselves between the network and the internet (ARP spoofing). Phones and laptops sleep and leave all day, so what comes and goes is not news; a device unseen for 30 days is forgotten. `--every 15` looks every 15 minutes, telling only changes. What it has seen stays on this computer, in `network.json`. It knocks on the ports and hangs up, sending nothing else.
 
 **Start over with Home.** If Home will not add the bridge, or says it already belongs to a home, choose Forget Home in the menu bar on the computer serving Home (or stop the bridge and run `hearth unpair`). The bridge comes back as a new accessory. Remove any old Hearth from Home.
 
@@ -351,7 +354,7 @@ The menu bar, the CLI, the socket and the group need no changes.
 
 ### On disk
 
-Under `~/.config/hearth/`: `config.toml` (the bridge and devices, shared by the group), `homekit/` (the bridge's keys, Home's pairings and `ids.json`, shared), `group.json` (the group key, 0600, never sent after joining), `node` (this computer's id), `control.sock`, `hearth.log`, and `series/` (one CSV of readings per device, mode 0600, kept for 30 days, with `format.json` naming their layout: a hearth that finds a newer format leaves the files alone, and computers share history only in the same format). The computer serving Home records from the devices. Once a minute every member compares a hash of each day of history with every other member and takes the days it holds differently; rows merge cell by cell, keeping the larger value where two disagree, so all members end with the same record, including one that was asleep or has just joined, and any can take over with it. The menu bar and `hearth history` ask the one serving, from any computer. Removing a device deletes its history on every computer.
+Under `~/.config/hearth/`: `config.toml` (the bridge and devices, shared by the group), `homekit/` (the bridge's keys, Home's pairings and `ids.json`, shared), `group.json` (the group key, 0600, never sent after joining), `network.json` (what `hearth watch` has seen, 0600, never shared), `node` (this computer's id), `control.sock`, `hearth.log`, and `series/` (one CSV of readings per device, mode 0600, kept for 30 days, with `format.json` naming their layout: a hearth that finds a newer format leaves the files alone, and computers share history only in the same format). The computer serving Home records from the devices. Once a minute every member compares a hash of each day of history with every other member and takes the days it holds differently; rows merge cell by cell, keeping the larger value where two disagree, so all members end with the same record, including one that was asleep or has just joined, and any can take over with it. The menu bar and `hearth history` ask the one serving, from any computer. Removing a device deletes its history on every computer.
 
 ### Build, test and release
 
