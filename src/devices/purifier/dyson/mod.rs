@@ -13,6 +13,7 @@ use crate::connectors::dyson::{
         status_topic, Intent, MachineState, DEFAULT_PRODUCT_TYPES,
     },
 };
+use crate::devices::runtime;
 use anyhow::{anyhow, Result};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -57,39 +58,33 @@ impl crate::driver::Driver for Dyson {
 }
 
 async fn spawn(device: DysonDevice, context: crate::driver::Context) -> Result<()> {
-    let (intent_tx, intent_rx) = mpsc::channel::<Intent>(32);
-    context.publish(capabilities::snapshot(&device, &MachineState::default()));
-    // Every surface asks in the same intents.
-    let mut requests = context.requests();
-    tokio::spawn(async move {
-        while let Some(request) = requests.recv().await {
-            let result = match capabilities::intent(&request) {
-                Ok(intent) => intent_tx
-                    .send(intent)
-                    .await
-                    .map_err(|_| anyhow!("the fan stopped")),
-                Err(error) => Err(error),
-            };
-            request.finish(result);
+    let shown = device.clone();
+    let states = runtime::published(&context, MachineState::default(), move |state| {
+        capabilities::snapshot(&shown, state)
+    });
+    // Every surface asks in the same intents, refused while the fan is not
+    // connected rather than sent when it comes back.
+    let (intents, intent_rx) = mpsc::channel::<Intent>(32);
+    let known = states.clone();
+    runtime::answer(context.requests(), move |request| {
+        let decided = if known.borrow().connected {
+            capabilities::intent(request)
+        } else {
+            Err(anyhow!(
+                "the purifier is not connected, so nothing was sent"
+            ))
+        };
+        let intents = intents.clone();
+        async move {
+            intents
+                .send(decided?)
+                .await
+                .map_err(|_| anyhow!("the fan stopped"))
         }
     });
-    // The fan's state, as it says it, shown as a snapshot.
-    let (state_tx, mut state_rx) = watch::channel(MachineState::default());
-    let shown = device.clone();
     tokio::spawn(async move {
-        let publish = async move {
-            while state_rx.changed().await.is_ok() {
-                let state = state_rx.borrow_and_update().clone();
-                context.publish(capabilities::snapshot(&shown, &state));
-            }
-        };
-        tokio::select! {
-            result = drive(device, state_tx, intent_rx) => {
-                if let Err(error) = result {
-                    log::error!("fan stopped: {error:#}");
-                }
-            }
-            () = publish => {}
+        if let Err(error) = drive(device, states, intent_rx).await {
+            log::error!("fan stopped: {error:#}");
         }
     });
     Ok(())
@@ -117,93 +112,108 @@ async fn resolve_host(device: &DysonDevice) -> Result<String> {
 
 async fn drive(
     device: DysonDevice,
-    state_tx: watch::Sender<MachineState>,
-    mut intent_rx: mpsc::Receiver<Intent>,
+    states: watch::Sender<MachineState>,
+    mut intents: mpsc::Receiver<Intent>,
 ) -> Result<()> {
-    let host = resolve_host(&device).await?;
-    log::info!("{} is at {host}:{}", device.name, device.port);
-
     let (command_tx, mut command_rx) = mpsc::channel::<mqtt::Publish>(32);
     let (event_tx, mut event_rx) = mpsc::channel::<mqtt::Incoming>(32);
     let topics: Vec<String> = product_types(&device)
         .iter()
         .map(|kind| status_topic(kind, &device.serial))
         .collect();
-    let host_for_session = host.clone();
-    let serial_for_session = device.serial.clone();
-    let password = device.mqtt_password.clone();
-    let port = device.port;
-    tokio::spawn(async move {
-        loop {
-            if let Err(error) = mqtt::session(
-                &host_for_session,
-                port,
-                &serial_for_session,
-                &password,
-                &topics,
-                &mut command_rx,
-                &event_tx,
-            )
-            .await
-            {
-                log::warn!("fan connection dropped: {error:#}");
-            }
-            if event_tx.is_closed() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_secs(3)).await;
-        }
-    });
-
-    fan(
-        &device,
-        &state_tx,
-        &mut intent_rx,
-        &mut event_rx,
-        &command_tx,
-    )
-    .await
+    let hello = hello(&device);
+    let connection = async {
+        let offline = |state: &mut MachineState| state.connected = false;
+        runtime::keep_connected(
+            &device.name,
+            &states,
+            offline,
+            &mut command_rx,
+            |commands| {
+                let (device, topics, hello, events) = (
+                    device.clone(),
+                    topics.clone(),
+                    hello.clone(),
+                    event_tx.clone(),
+                );
+                Box::pin(async move {
+                    // Looked for again each time, as its address may have changed.
+                    let host = resolve_host(&device).await?;
+                    log::info!("{} is at {host}:{}", device.name, device.port);
+                    let broker = mqtt::Broker {
+                        host: &host,
+                        port: device.port,
+                        username: &device.serial,
+                        password: &device.mqtt_password,
+                    };
+                    mqtt::session(&broker, &topics, &hello, commands, &events).await
+                })
+            },
+        )
+        .await;
+    };
+    tokio::select! {
+        () = connection => Ok(()),
+        result = fan(&device, &states, &mut intents, &mut event_rx, &command_tx) => result,
+    }
 }
 
-/// The fan as hearth keeps it: state from what it reports on `events`,
-/// intents sent to it on `commands`, and its state asked for every half a
-/// minute. The MQTT session is on the other side of the channels, or a test.
+/// What a new session asks the fan at once: its state and its readings, on
+/// each topic it may use.
+fn hello(device: &DysonDevice) -> Vec<mqtt::Publish> {
+    product_types(device)
+        .iter()
+        .flat_map(|kind| {
+            [request_state_payload(), request_environment_payload()].map(|payload| mqtt::Publish {
+                topic: command_topic(kind, &device.serial),
+                payload,
+            })
+        })
+        .collect()
+}
+
+/// The fan as hearth keeps it: its state, in `states`, from what it reports
+/// on `events`; intents sent to it on `commands`; and its state asked for
+/// every half a minute. A session asks at once (see `hello`). The MQTT
+/// session is on the other side of the channels, or a test.
 async fn fan(
     device: &DysonDevice,
-    state_tx: &watch::Sender<MachineState>,
+    states: &watch::Sender<MachineState>,
     intent_rx: &mut mpsc::Receiver<Intent>,
     event_rx: &mut mpsc::Receiver<mqtt::Incoming>,
     command_tx: &mpsc::Sender<mqtt::Publish>,
 ) -> Result<()> {
     let types = product_types(device);
     let serial = device.serial.clone();
-    let mut state = MachineState::default();
     let mut prefix = if types.len() == 1 {
         Some(types[0].clone())
     } else {
         None
     };
-    let mut poll = tokio::time::interval(Duration::from_secs(30));
+    let every = Duration::from_secs(30);
+    let mut poll = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
     poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             incoming = event_rx.recv() => {
                 let Some(incoming) = incoming else { break };
                 log::debug!("fan: {}", incoming.payload);
-                if protocol::apply_message(&mut state, &incoming.topic, &incoming.payload) {
-                    if state.topic_prefix.is_some() {
-                        prefix = state.topic_prefix.clone();
-                    }
-                    state_tx.send(state.clone()).ok();
+                states.send_if_modified(|state| {
+                    // Anything it says means it is connected.
+                    let heard = !std::mem::replace(&mut state.connected, true);
+                    protocol::apply_message(state, &incoming.topic, &incoming.payload) || heard
+                });
+                if let Some(said) = states.borrow().topic_prefix.clone() {
+                    prefix = Some(said);
                 }
             }
             intent = intent_rx.recv() => {
                 let Some(intent) = intent else { break };
                 // Shown at once. The fan confirms a moment later, and until
                 // then the menu bar would put a switch back where it was.
+                let state = states.borrow().clone();
                 if let Some(fields) = publish(command_tx, &serial, prefix.as_deref(), &state, &intent).await {
-                    protocol::assume(&mut state, &fields);
-                    state_tx.send(state.clone()).ok();
+                    states.send_modify(|state| protocol::assume(state, &fields));
                 }
             }
             _ = poll.tick() => {
@@ -267,8 +277,8 @@ mod tests {
 
     impl Fake {
         /// Starts hearth's side against this fan, which has said nothing yet.
-        fn start() -> Self {
-            let device = DysonDevice {
+        fn device() -> DysonDevice {
+            DysonDevice {
                 aid: 2,
                 name: "Purifier".into(),
                 serial: SERIAL.into(),
@@ -278,7 +288,11 @@ mod tests {
                 host: "10.0.0.7".into(),
                 port: 1883,
                 heating: true,
-            };
+            }
+        }
+
+        fn start() -> Self {
+            let device = Self::device();
             let (state_tx, states) = watch::channel(MachineState::default());
             let (intents, mut intent_rx) = mpsc::channel(4);
             let (says, mut event_rx) = mpsc::channel(4);
@@ -326,12 +340,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_session_asks_the_fan_for_its_state_and_readings_at_once() {
+        let hello = hello(&Fake::device());
+        assert!(hello
+            .iter()
+            .all(|ask| ask.topic == command_topic("527K", SERIAL)));
+        assert!(hello[0].payload.contains("REQUEST-CURRENT-STATE"));
+        assert!(hello[1]
+            .payload
+            .contains("REQUEST-PRODUCT-ENVIRONMENT-CURRENT-SENSOR-DATA"));
+    }
+
     #[tokio::test]
-    async fn it_asks_the_fan_for_its_state_at_once() {
+    async fn a_fan_that_speaks_is_connected() {
         let mut fake = Fake::start();
-        let first = fake.sent.recv().await.unwrap();
-        assert_eq!(first.topic, command_topic("527K", SERIAL));
-        assert!(first.payload.contains("REQUEST-CURRENT-STATE"));
+        assert!(!fake.states.borrow().connected);
+        fake.say(json!({ "msg": "CURRENT-STATE", "product-state": { "fpwr": "OFF" } }))
+            .await;
+        fake.states.changed().await.unwrap();
+        assert!(fake.states.borrow().connected);
     }
 
     #[tokio::test]

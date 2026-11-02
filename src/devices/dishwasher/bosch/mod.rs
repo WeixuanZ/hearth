@@ -15,11 +15,13 @@ use crate::{
         link,
         protocol::{Command, Reading},
     },
-    devices::cycle::{Cycle, Seen},
+    devices::{
+        cycle::{Cycle, Seen},
+        runtime,
+    },
 };
 use anyhow::{anyhow, Result};
 use capabilities::{Ask, Kept};
-use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 /// Bosch dishwashers, over Home Connect on the local network.
@@ -70,85 +72,68 @@ impl crate::driver::Driver for Bosch {
 }
 
 async fn spawn(device: BoschDevice, context: crate::driver::Context) -> Result<()> {
-    let (commands_tx, commands_rx) = mpsc::channel(32);
-    context.publish(capabilities::snapshot(
-        &device,
-        &Reading::default(),
-        Kept::default(),
-    ));
-    let requests = context.requests();
-    let (state_tx, state_rx) = watch::channel(Reading::default());
     // The programme the next start runs, chosen from any surface.
-    let (chosen_tx, chosen_rx) = watch::channel(None);
-    tokio::spawn(answer(
-        device.clone(),
-        requests,
-        state_rx.clone(),
-        chosen_tx,
-        commands_tx,
-    ));
-
-    // The machine's state and what the bridge keeps beside it, shown as a
-    // snapshot whenever either changes.
+    let (chosen, choice) = watch::channel(None);
     let shown = device.clone();
+    let mut cycle = Cycle::default();
+    let states = runtime::published(&context, Reading::default(), move |reading| {
+        let kept = keep(&mut cycle, *choice.borrow(), reading);
+        capabilities::snapshot(&shown, reading, kept)
+    });
+    let (commands_tx, mut commands) = mpsc::channel(32);
+    answer(
+        device.clone(),
+        context.requests(),
+        states.clone(),
+        chosen,
+        commands_tx,
+    );
     tokio::spawn(async move {
-        let publish = async move {
-            let mut states = state_rx;
-            let mut chosen = chosen_rx;
-            let mut cycle = Cycle::default();
-            loop {
-                let current = states.borrow_and_update().clone();
-                let kept = keep(&mut cycle, *chosen.borrow_and_update(), &current);
-                context.publish(capabilities::snapshot(&shown, &current, kept));
-                let changed = tokio::select! {
-                    changed = states.changed() => changed,
-                    changed = chosen.changed() => changed,
-                };
-                if changed.is_err() {
-                    break;
-                }
-            }
-        };
-        tokio::select! {
-            result = drive(device, state_tx, commands_rx) => {
-                if let Err(error) = result {
-                    log::error!("dishwasher stopped: {error:#}");
-                }
-            }
-            () = publish => {}
-        }
+        let offline = |reading: &mut Reading| reading.online = false;
+        runtime::keep_connected(&device.name, &states, offline, &mut commands, |commands| {
+            let (device, states) = (device.clone(), states.clone());
+            Box::pin(async move {
+                link::session(&device, Some(&states), Some(commands)).await?;
+                Ok(())
+            })
+        })
+        .await;
     });
     Ok(())
 }
 
 /// Requests from the menu bar, the CLI and agents: a choice the bridge
-/// keeps, or a command for the machine, refused while it would be ignored.
-async fn answer(
+/// keeps, shown at once, or a command for the machine, refused while it
+/// would be ignored.
+fn answer(
     device: BoschDevice,
-    mut requests: mpsc::Receiver<crate::capabilities::Set>,
-    known: watch::Receiver<Reading>,
+    requests: mpsc::Receiver<crate::capabilities::Set>,
+    states: watch::Sender<Reading>,
     chosen: watch::Sender<Option<u32>>,
     commands: mpsc::Sender<Command>,
 ) {
-    while let Some(request) = requests.recv().await {
-        let reading = known.borrow().clone();
+    runtime::answer(requests, move |request| {
         let kept = Kept {
             chosen: *chosen.borrow(),
             ..Kept::default()
         };
-        let result = match capabilities::command(&device, &reading, kept, &request) {
-            Ok(Ask::Send(command)) => commands
-                .send(command)
-                .await
-                .map_err(|_| anyhow!("the dishwasher stopped")),
-            Ok(Ask::Choose(uid)) => {
-                chosen.send_replace(Some(uid));
-                Ok(())
+        let decided = capabilities::command(&device, &states.borrow(), kept, request);
+        let (states, chosen, commands) = (states.clone(), chosen.clone(), commands.clone());
+        async move {
+            match decided? {
+                Ask::Send(command) => commands
+                    .send(command)
+                    .await
+                    .map_err(|_| anyhow!("the dishwasher stopped")),
+                Ask::Choose(uid) => {
+                    chosen.send_replace(Some(uid));
+                    // Shown with the machine's state, as one snapshot.
+                    states.send_modify(|_| {});
+                    Ok(())
+                }
             }
-            Err(error) => Err(error),
-        };
-        request.finish(result);
-    }
+        }
+    });
 }
 
 /// What the bridge keeps as of this reading. A machine whose state has not
@@ -168,39 +153,6 @@ fn keep(cycle: &mut Cycle, chosen: Option<u32>, reading: &Reading) -> Kept {
         chosen,
         finished: cycle.finished(),
     }
-}
-
-async fn drive(
-    device: BoschDevice,
-    states: watch::Sender<Reading>,
-    mut commands: mpsc::Receiver<Command>,
-) -> Result<()> {
-    let mut delay = 2u64;
-    loop {
-        // Asked for while it was unreachable, as from Home: dropped, not
-        // sent late. A session takes commands only once it is connected.
-        while let Ok(command) = commands.try_recv() {
-            log::info!(
-                "{}: not sent, it was not connected: {command:?}",
-                device.name
-            );
-        }
-        match link::session(&device, Some(&states), Some(&mut commands)).await {
-            Ok(_) => {
-                log::info!("{} connection closed", device.name);
-                // It was up, so the next try is a fresh one, not a backoff.
-                delay = 2;
-            }
-            Err(error) => log::warn!("{}: {error:#}", device.name),
-        }
-        if commands.is_closed() {
-            break;
-        }
-        states.send_modify(|reading| reading.online = false);
-        tokio::time::sleep(Duration::from_secs(delay)).await;
-        delay = (delay * 2).min(30);
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -250,14 +202,14 @@ mod tests {
 
     impl Fake {
         fn start(machine: Machine) -> Self {
-            let (reports, known) = watch::channel(Reading {
+            let (reports, _) = watch::channel(Reading {
                 online: true,
                 machine,
             });
             let (chosen_tx, chosen) = watch::channel(None);
             let (requests, requests_rx) = mpsc::channel(4);
             let (commands, sent) = mpsc::channel(4);
-            tokio::spawn(answer(device(), requests_rx, known, chosen_tx, commands));
+            answer(device(), requests_rx, reports.clone(), chosen_tx, commands);
             Self {
                 reports,
                 sent,

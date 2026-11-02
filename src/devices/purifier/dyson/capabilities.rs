@@ -15,7 +15,7 @@ const FILTER_LOW: u8 = 10;
 const PM25_HIGH: f32 = 35.0;
 
 pub fn snapshot(device: &DysonDevice, state: &MachineState) -> Snapshot {
-    let online = state.topic_prefix.is_some() || state.temperature_c.is_some();
+    let online = state.connected;
     let headline = match (online, state.power_on) {
         (false, _) => "Looking".into(),
         (true, false) => "Off".into(),
@@ -172,6 +172,7 @@ mod tests {
     #[test]
     fn a_worn_filter_and_dirty_air_are_alerts() {
         let measuring = MachineState {
+            connected: true,
             temperature_c: Some(20.0),
             monitoring: true,
             ..MachineState::default()

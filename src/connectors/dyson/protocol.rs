@@ -29,6 +29,9 @@ pub enum Intent {
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct MachineState {
+    /// Heard from since the session began. Until then, and between
+    /// sessions, the rest is what it last said, not what it is.
+    pub connected: bool,
     pub power_on: bool,
     pub auto: bool,
     pub speed: Option<u8>,
