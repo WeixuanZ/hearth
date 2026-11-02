@@ -6,9 +6,9 @@ use crate::{
     capabilities::{self, Set, Snapshot},
     config::{self, Device, Settings},
     setup::{Answers, Next, Product, Step},
+    surfaces::homekit::ids::DeviceIds,
 };
 use anyhow::{anyhow, Result};
-use hap::server::IpServer;
 use serde::{de::DeserializeOwned, Serialize};
 use std::{any::Any, fmt::Debug, future::Future, marker::PhantomData, pin::Pin};
 use tokio::sync::mpsc;
@@ -39,6 +39,12 @@ pub trait Driver: Send + Sync + 'static {
     /// Starts one's task, which runs as long as the bridge serves Home.
     fn start(settings: Self::Settings, context: Context)
         -> impl Future<Output = Result<()>> + Send;
+
+    /// The ids Home knew one by before HomeKit was made from capabilities,
+    /// so it keeps them. A kind that came after has none.
+    fn homekit_ids(_settings: &Self::Settings) -> DeviceIds {
+        DeviceIds::default()
+    }
 }
 
 /// One device being added, a step at a time.
@@ -50,12 +56,11 @@ pub trait Setup: Send + 'static {
 #[derive(Clone)]
 pub struct Context {
     id: String,
-    homekit: IpServer,
 }
 
 impl Context {
-    pub fn new(id: String, homekit: IpServer) -> Self {
-        Self { id, homekit }
+    pub fn new(id: String) -> Self {
+        Self { id }
     }
 
     /// The device as it now is, for every surface.
@@ -90,11 +95,6 @@ impl Context {
             log::warn!("could not remember what {} said: {error:#}", self.id);
         }
     }
-
-    /// Home's bridge, until HomeKit is made from capabilities alone.
-    pub fn homekit(&self) -> &IpServer {
-        &self.homekit
-    }
 }
 
 /// A driver as the rest of hearth handles it, whatever its kind.
@@ -109,6 +109,7 @@ pub trait Kind: Send + Sync {
         device: &Device,
         context: Context,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+    fn homekit_ids(&self, device: &Device) -> DeviceIds;
 }
 
 /// [`Setup`], for a setup of any kind.
@@ -138,6 +139,13 @@ impl<D> Registered<D> {
 impl<D: Driver> Kind for Registered<D> {
     fn kind(&self) -> &'static str {
         D::KIND
+    }
+
+    fn homekit_ids(&self, device: &Device) -> DeviceIds {
+        device
+            .get::<D::Settings>()
+            .map(D::homekit_ids)
+            .unwrap_or_default()
     }
 
     fn product(&self) -> Product {

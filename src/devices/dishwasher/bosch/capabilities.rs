@@ -5,7 +5,7 @@ use crate::connectors::bosch::protocol::{
     feature_uid, format_remaining, label_of, option_switches, programs, Command, Machine, Reading,
 };
 use crate::{
-    capabilities::{Alert, Capability, Item, Role, Set, Snapshot},
+    capabilities::{About, Alert, Capability, Item, Role, Set, Snapshot},
     config::Settings as _,
     devices::dishwasher::bosch::BoschDevice,
 };
@@ -62,14 +62,17 @@ pub fn snapshot(device: &BoschDevice, reading: &Reading, kept: Kept) -> Snapshot
     for option in before {
         capabilities.push(switch(option, machine.remote_start && !running));
     }
-    capabilities.push(Capability::run(
-        running,
-        blocked(device, machine, chosen),
-        u32::try_from(machine.remaining_secs)
-            .ok()
-            .filter(|secs| *secs > 0),
-        Some(machine.progress as f32),
-    ));
+    capabilities.push(
+        Capability::run(
+            running,
+            blocked(device, machine, chosen),
+            u32::try_from(machine.remaining_secs)
+                .ok()
+                .filter(|secs| *secs > 0),
+            Some(machine.progress as f32),
+        )
+        .finished(kept.finished),
+    );
     for option in during {
         capabilities.push(switch(option, running));
     }
@@ -131,6 +134,24 @@ pub fn snapshot(device: &BoschDevice, reading: &Reading, kept: Kept) -> Snapshot
             alerts(machine, kept)
         } else {
             Vec::new()
+        },
+        about: About {
+            maker: if device.brand.is_empty() {
+                "Bosch".into()
+            } else {
+                device.brand.clone()
+            },
+            model: if device.model.is_empty() {
+                "Dishwasher".into()
+            } else {
+                device.model.clone()
+            },
+            serial: if device.ha_id.chars().count() > 1 {
+                device.ha_id.clone()
+            } else {
+                "dishwasher".into()
+            },
+            firmware: env!("CARGO_PKG_VERSION").into(),
         },
     }
 }
@@ -244,7 +265,7 @@ fn during_run(key: &str) -> bool {
     key == "SilenceOnDemand"
 }
 
-fn option_id(key: &str) -> &'static str {
+pub(super) fn option_id(key: &str) -> &'static str {
     match key {
         "ExtraDry" => "extra_dry",
         "VarioSpeedPlus" => "speed",
@@ -268,7 +289,7 @@ pub fn command(device: &BoschDevice, reading: &Reading, kept: Kept, set: &Set) -
     if !reading.online {
         anyhow::bail!("the dishwasher is not connected, so nothing was sent");
     }
-    let starts = !matches!(command, Command::Power(false) | Command::Abort);
+    let starts = !matches!(command, Command::Abort);
     if starts && !reading.machine.remote_start {
         anyhow::bail!(
             "the dishwasher is not accepting remote start. Press Remote Start on it first"

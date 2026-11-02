@@ -1,6 +1,10 @@
 //! Apple Home: one HomeKit bridge, with each device's accessories behind it.
 
+mod accessory;
 pub mod characteristics;
+pub mod ids;
+mod profile;
+mod sync;
 
 use crate::config::{self, Config};
 use anyhow::{anyhow, Context, Result};
@@ -60,6 +64,33 @@ pub async fn open(config: &Config) -> Result<IpServer> {
     Ok(server)
 }
 
+/// Every device's accessories, made from its capabilities. A device's ids
+/// are taken from what hearth gave it before (`ids`), so Home keeps them.
+/// Run once the devices have started, before the bridge serves.
+pub async fn add_devices(server: &IpServer, config: &Config) -> Result<()> {
+    let dir = config::homekit_dir()?;
+    let mut ids = ids::Ids::load(&dir)?;
+    // Every device's old ids first, so no new id lands on one.
+    for device in &config.devices {
+        let seed = || {
+            crate::driver::find(device.kind())
+                .map(|driver| driver.homekit_ids(device))
+                .unwrap_or_default()
+        };
+        ids.seed(&device.id(), seed);
+    }
+    for device in &config.devices {
+        let id = device.id();
+        let Ok(snapshot) = crate::capabilities::snapshot(&id) else {
+            continue;
+        };
+        let (writes, asked) = tokio::sync::mpsc::channel(16);
+        let made = profile::make(&snapshot, &mut ids, writes).await?;
+        sync::add(server, &id, made, asked).await?;
+    }
+    ids.save(&dir)
+}
+
 /// The HomeKit device id, a locally administered MAC derived from `seed`.
 fn device_id(seed: &str) -> [u8; 6] {
     let digest = Sha256::digest(seed.as_bytes());
@@ -67,4 +98,94 @@ fn device_id(seed: &str) -> [u8; 6] {
     mac.copy_from_slice(&digest[..6]);
     mac[0] = (mac[0] | 0x02) & 0xFE;
     mac
+}
+
+/// A device's accessories as Home sees them, for tests: the layout Home
+/// keys rooms, scenes and automations on, and what its writes ask.
+#[cfg(test)]
+pub(crate) struct Home {
+    made: profile::Made,
+    asked: tokio::sync::mpsc::Receiver<accessory::Asks>,
+}
+
+#[cfg(test)]
+impl Home {
+    /// Accessories for `snapshot`, with ids seeded as hearth gave them
+    /// before. Fails if any accessory reuses an iid, which Home refuses.
+    pub async fn of(snapshot: &crate::capabilities::Snapshot, seed: ids::DeviceIds) -> Self {
+        use hap::accessory::HapAccessory;
+        let mut ids = ids::Ids::default();
+        ids.seed(&snapshot.id, || seed);
+        let (writes, asked) = tokio::sync::mpsc::channel(16);
+        let made = profile::make(snapshot, &mut ids, writes).await.unwrap();
+        for accessory in &made.accessories {
+            let mut seen = std::collections::HashSet::new();
+            for service in accessory.get_services() {
+                let characteristics = service.get_characteristics();
+                let iids = std::iter::once(service.get_id()).chain(
+                    characteristics
+                        .iter()
+                        .map(|characteristic| characteristic.get_id()),
+                );
+                for iid in iids {
+                    assert!(
+                        seen.insert(iid),
+                        "iid {iid} is used twice in accessory {}",
+                        accessory.id
+                    );
+                }
+            }
+        }
+        Self { made, asked }
+    }
+
+    /// The iids of the `kind` services on accessory `aid`, in order.
+    pub fn services(&self, aid: u64, kind: hap::HapType) -> Vec<u64> {
+        use hap::accessory::HapAccessory;
+        let Some(accessory) = self
+            .made
+            .accessories
+            .iter()
+            .find(|accessory| accessory.id == aid)
+        else {
+            return Vec::new();
+        };
+        accessory
+            .get_services()
+            .into_iter()
+            .filter(|service| service.get_type() == kind)
+            .map(|service| service.get_id())
+            .collect()
+    }
+
+    /// Plays Home writing `value` to the `kind` characteristic of service
+    /// `iid` on accessory `aid`, and returns what that asks of the device.
+    pub async fn write(
+        &mut self,
+        aid: u64,
+        iid: u64,
+        kind: hap::HapType,
+        value: serde_json::Value,
+    ) -> accessory::Asks {
+        use hap::accessory::HapAccessory;
+        let accessory = self
+            .made
+            .accessories
+            .iter_mut()
+            .find(|accessory| accessory.id == aid)
+            .unwrap();
+        let service = accessory
+            .get_mut_services()
+            .into_iter()
+            .find(|service| service.get_id() == iid)
+            .unwrap();
+        let characteristic = service.get_mut_characteristic(kind).unwrap();
+        characteristic.set_value(value).await.unwrap();
+        self.asked.try_recv().unwrap_or_default()
+    }
+
+    /// The device as it now is, as the bridge shows it to Home.
+    pub fn sees(&self, snapshot: &crate::capabilities::Snapshot) {
+        self.made.wiring.seen(std::sync::Arc::new(snapshot.clone()));
+    }
 }

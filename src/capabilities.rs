@@ -144,6 +144,9 @@ pub enum Kind {
         /// How far through it is, 0 to 100.
         #[serde(skip_serializing_if = "Option::is_none")]
         progress: Option<f32>,
+        /// The last run ended without being stopped (see `devices::cycle`),
+        /// until the door opens or a new one starts.
+        finished: bool,
     },
     Switch,
     /// One of a few options, like an input.
@@ -212,6 +215,7 @@ impl Capability {
             blocked,
             remaining: remaining.filter(|_| running),
             progress: progress.filter(|_| running),
+            finished: false,
         };
         Self::new("run", "Programme", kind, json!(running)).active(active)
     }
@@ -278,6 +282,14 @@ impl Capability {
         }
     }
 
+    /// For a run: whether the last one ended without being stopped.
+    pub fn finished(mut self, finished: bool) -> Self {
+        if let Kind::Run { finished: held, .. } = &mut self.kind {
+            *held = finished;
+        }
+        self
+    }
+
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
         self
@@ -305,6 +317,18 @@ pub struct Snapshot {
     /// What is worth telling someone about now. Each stays while it holds,
     /// and surfaces notify when one appears.
     pub alerts: Vec<Alert>,
+    pub about: About,
+}
+
+/// Who made a device and which one it is, as an ecosystem's device details
+/// show it.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct About {
+    pub maker: String,
+    pub model: String,
+    pub serial: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub firmware: String,
 }
 
 /// Something that needs a person, like a filter to replace.
@@ -620,6 +644,7 @@ mod tests {
                 None,
             )],
             alerts: Vec::new(),
+            about: Default::default(),
         };
         let id = |value: Value| option_id(&snapshot, "programme", value);
         assert_eq!(id(json!("eco 50")), json!("8195"));

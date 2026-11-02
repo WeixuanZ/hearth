@@ -416,6 +416,7 @@ mod tests {
             detail: String::new(),
             capabilities: vec![Capability::power(on)],
             alerts: Vec::new(),
+            about: Default::default(),
         }
     }
 

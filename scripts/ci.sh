@@ -28,7 +28,9 @@ in_linux() {
     exit 1
   fi
   docker build -q -t hearth-ci -f scripts/ci.Dockerfile scripts >/dev/null
+  # Not incremental, as in CI: the target volume stays a few GB, not tens.
   docker run --rm \
+    -e CARGO_INCREMENTAL=0 \
     -v "$PWD":/src -w /src \
     -v hearth-ci-registry:/usr/local/cargo/registry \
     -v hearth-ci-target:/src/target \

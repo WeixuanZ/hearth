@@ -1,41 +1,24 @@
 //! A Samsung The Frame: one task that holds the TV's connections and state,
 //! and shows it to HomeKit (a television and an art tile) and as capabilities.
 
-mod accessory;
 mod capabilities;
 mod settings;
 
 pub use settings::FrameDevice;
 mod link;
 
-use crate::{
-    connectors::samsung::protocol::{self, ArtReply, Input},
-    surfaces::homekit::characteristics::follow_name,
-};
-use accessory::{apply, apply_art, build, build_art, View};
+use crate::connectors::samsung::protocol::{self, ArtReply, Input};
 use anyhow::{anyhow, Result};
-use hap::{server::Server, HapType};
 use link::{Link, Network};
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
-use tokio::sync::{mpsc, watch};
+use std::time::Duration;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub enum Command {
     Active(bool),
     Art(bool),
     Input(u32),
-    Key(u8),
     Brightness(i32),
-    /// Home's volume button. HAP says 0 is louder, but Home on iOS sends 0 for
-    /// the down button, as tested on a Frame.
-    Volume(u8),
-    Mute,
     /// A Samsung key, from the menu bar's or the CLI's remote.
     Remote(&'static str),
 }
@@ -57,54 +40,35 @@ impl crate::driver::Driver for Frame {
     async fn start(settings: FrameDevice, context: crate::driver::Context) -> Result<()> {
         spawn(settings, context).await
     }
+
+    /// The TV with its speaker and inputs, and art mode as a tile of its own.
+    fn homekit_ids(tv: &FrameDevice) -> crate::surfaces::homekit::ids::DeviceIds {
+        let ids = crate::surfaces::homekit::ids::DeviceIds::default()
+            .accessory("main", tv.aid)
+            .accessory("art", tv.art_aid)
+            .service("main", "television", 20)
+            .service("main", "speaker", 40)
+            .service("art", "switch", 20);
+        Input::ALL
+            .iter()
+            .zip((50..).step_by(10))
+            .fold(ids, |ids, (input, iid)| {
+                ids.service(
+                    "main",
+                    format!("input:{}", input.source().to_lowercase()),
+                    iid,
+                )
+            })
+    }
 }
 
 async fn spawn(device: FrameDevice, context: crate::driver::Context) -> Result<()> {
-    let server = context.homekit().clone();
-    let (tx, rx) = mpsc::channel(32);
     let tv = Tv::new(Network::new(&device, context.clone()), device);
-    let snapshot = tv.snapshot();
-    let id = snapshot.id.clone();
-    context.publish(snapshot);
+    context.publish(tv.snapshot());
     let requests = context.requests();
-    let (state_tx, mut state_rx) = watch::channel(tv.view());
-    let suppress = Arc::new(AtomicBool::new(false));
-    let accessory = server
-        .add_accessory(build(&tv.device, &suppress, &tx).await?)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    follow_name(&id, accessory.clone(), HapType::Television);
-    let art = server
-        .add_accessory(build_art(&tv.device, &suppress, &tx).await?)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
     tokio::spawn(async move {
-        let updates = async move {
-            loop {
-                let current = state_rx.borrow().clone();
-                suppress.store(true, Ordering::SeqCst);
-                let result = async {
-                    apply(accessory.lock().await.as_mut(), &current).await?;
-                    apply_art(art.lock().await.as_mut(), &current).await
-                }
-                .await;
-                suppress.store(false, Ordering::SeqCst);
-                if let Err(error) = result {
-                    log::warn!("Frame HomeKit update failed: {error:#}");
-                }
-                if state_rx.changed().await.is_err() {
-                    break;
-                }
-            }
-        };
-        tokio::pin!(updates);
-        tokio::select! {
-            result = tv.run(rx, requests, state_tx) => {
-                if let Err(error) = result {
-                    log::error!("Frame stopped: {error:#}");
-                }
-            }
-            _ = &mut updates => {}
+        if let Err(error) = tv.run(requests).await {
+            log::error!("Frame stopped: {error:#}");
         }
     });
     Ok(())
@@ -136,12 +100,8 @@ impl<L: Link> Tv<L> {
         }
     }
 
-    async fn run(
-        mut self,
-        mut commands: mpsc::Receiver<Command>,
-        mut requests: mpsc::Receiver<crate::capabilities::Set>,
-        states: watch::Sender<View>,
-    ) -> Result<()> {
+    /// Takes requests from every surface, Home's included, until they end.
+    async fn run(mut self, mut requests: mpsc::Receiver<crate::capabilities::Set>) -> Result<()> {
         // Look before acting: a command handled on the defaults (off, art
         // unknown) would power on or click a TV that is already showing.
         let every = Duration::from_secs(20);
@@ -149,24 +109,10 @@ impl<L: Link> Tv<L> {
         let mut poll = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            states.send(self.view()).ok();
             crate::capabilities::publish(self.snapshot());
             tokio::select! {
-                command = commands.recv() => {
-                    let Some(command) = command else { break };
-                    log::info!("{}: from Home: {command:?}", self.device.name);
-                    // Home's input picker works only while the TV is on. With it
-                    // off, an input comes from a scene or an automation, beside
-                    // turning it off, and waking the TV for it would undo that.
-                    if matches!(command, Command::Input(_)) && !self.on {
-                        log::info!("{}: off, so the input was not set", self.device.name);
-                        continue;
-                    }
-                    if let Err(error) = self.handle(command).await {
-                        log::warn!("{}: {error:#}", self.device.name);
-                    }
-                }
-                Some(request) = requests.recv() => {
+                request = requests.recv() => {
+                    let Some(request) = request else { break };
                     let result = match capabilities::command(&request) {
                         Ok(command) => {
                             log::info!("{}: requested: {command:?}", self.device.name);
@@ -188,15 +134,6 @@ impl<L: Link> Tv<L> {
             self.reachable = false;
             self.seen = true;
             self.on = false;
-        }
-    }
-
-    fn view(&self) -> View {
-        View {
-            on: self.on,
-            art: self.on && self.art == Some(true),
-            input: self.input,
-            brightness: self.brightness,
         }
     }
 
@@ -280,11 +217,6 @@ impl<L: Link> Tv<L> {
                     self.set_art(on).await?;
                 }
             }
-            Command::Key(value) => {
-                if let Some(key) = protocol::hap_remote_key(value) {
-                    self.click(key).await?;
-                }
-            }
             Command::Brightness(home) => {
                 let level = protocol::art_brightness(home);
                 self.brightness = Some(protocol::home_brightness(level));
@@ -297,11 +229,6 @@ impl<L: Link> Tv<L> {
                     log::info!("the TV did not confirm the art brightness");
                 }
             }
-            // Volume Selector: 0 is up, 1 is down, as the HAP spec has it and
-            // the Control Center remote sends.
-            Command::Volume(0) => self.click("KEY_VOLUP").await?,
-            Command::Volume(_) => self.click("KEY_VOLDOWN").await?,
-            Command::Mute => self.click("KEY_MUTE").await?,
             Command::Remote(key) => self.click(key).await?,
         }
         Ok(())
@@ -414,7 +341,7 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct Fake(Arc<Mutex<Screen>>);
+    struct Fake(std::sync::Arc<Mutex<Screen>>);
 
     impl Fake {
         fn showing(art: bool, answers: bool) -> Self {
@@ -512,21 +439,20 @@ mod tests {
         fn save(&self, _: &FrameDevice) {}
     }
 
-    /// Runs the TV's task over `commands` from Home, until they run out.
-    async fn run(fake: &Fake, commands: &[Command]) {
+    /// Runs the TV's task over `asks`, as any surface asks, until they end.
+    async fn run(fake: &Fake, asks: &[(&str, serde_json::Value)]) {
         let device = FrameDevice {
             token: "token".into(),
             ..Default::default()
         };
         let (tx, rx) = mpsc::channel(8);
-        for command in commands {
-            tx.send(command.clone()).await.unwrap();
+        for (capability, value) in asks {
+            tx.send(crate::capabilities::Set::test(capability, value.clone()))
+                .await
+                .unwrap();
         }
         drop(tx);
-        let (_requests, requests) = mpsc::channel(1);
-        let tv = Tv::new(fake.clone(), device);
-        let (states, _) = watch::channel(tv.view());
-        tv.run(rx, requests, states).await.unwrap();
+        Tv::new(fake.clone(), device).run(rx).await.unwrap();
     }
 
     #[tokio::test]
@@ -544,7 +470,7 @@ mod tests {
         // The art channel is silent, so the mode is not known: a power click
         // to leave art would have sent a picture to art instead.
         let fake = Fake::showing(false, false);
-        run(&fake, &[Command::Input(Input::Hdmi2 as u32)]).await;
+        run(&fake, &[("input", serde_json::json!("hdmi2"))]).await;
         assert_eq!(fake.sent(), [Input::Hdmi2.key()]);
         assert_eq!(fake.state(), (true, false));
     }
@@ -553,7 +479,7 @@ mod tests {
     async fn an_input_leaves_art_first_when_the_tv_says_it_is_in_art() {
         let fake = Fake::showing(true, true);
         fake.0.lock().unwrap().ip = true;
-        run(&fake, &[Command::Input(Input::Hdmi2 as u32)]).await;
+        run(&fake, &[("input", serde_json::json!("hdmi2"))]).await;
         assert_eq!(fake.sent(), ["input HDMI2"]);
         assert_eq!(fake.state(), (true, false));
     }
@@ -561,7 +487,14 @@ mod tests {
     #[tokio::test]
     async fn art_mode_is_not_toggled_on_a_guess() {
         let fake = Fake::showing(true, false);
-        run(&fake, &[Command::Art(false), Command::Art(true)]).await;
+        run(
+            &fake,
+            &[
+                ("art", serde_json::json!(false)),
+                ("art", serde_json::json!(true)),
+            ],
+        )
+        .await;
         assert_eq!(fake.sent(), Vec::<String>::new());
         assert_eq!(fake.state(), (true, true));
     }
@@ -569,27 +502,15 @@ mod tests {
     #[tokio::test]
     async fn art_from_standby_wakes_the_tv_then_clicks_into_art() {
         let fake = Fake::default();
-        run(&fake, &[Command::Art(true)]).await;
+        run(&fake, &[("art", serde_json::json!(true))]).await;
         assert_eq!(fake.sent(), ["KEY_POWER", "KEY_POWER"]);
         assert_eq!(fake.state(), (true, true));
     }
 
     #[tokio::test]
-    async fn a_scene_that_turns_the_tv_off_with_an_input_leaves_it_off() {
-        let fake = Fake::showing(false, false);
-        run(
-            &fake,
-            &[Command::Active(false), Command::Input(Input::Hdmi4 as u32)],
-        )
-        .await;
-        assert_eq!(fake.sent(), ["KEY_POWER held"]);
-        assert_eq!(fake.state(), (false, false));
-    }
-
-    #[tokio::test]
     async fn turning_off_holds_the_power_key() {
         let fake = Fake::showing(true, true);
-        run(&fake, &[Command::Active(false)]).await;
+        run(&fake, &[("power", serde_json::json!(false))]).await;
         assert_eq!(fake.sent(), ["KEY_POWER held"]);
         assert_eq!(fake.state(), (false, false));
     }
@@ -601,10 +522,55 @@ mod tests {
         let art = |tv: &Tv<Fake>| {
             let snapshot = tv.snapshot();
             let art = snapshot.capabilities.iter().find(|c| c.id == "art");
-            (tv.view().art, art.map(|c| c.value.clone()))
+            art.map(|c| c.value.clone())
         };
-        assert_eq!(art(&tv), (false, Some(false.into())));
+        assert_eq!(art(&tv), Some(false.into()));
         tv.on = true;
-        assert_eq!(art(&tv), (true, Some(true.into())));
+        assert_eq!(art(&tv), Some(true.into()));
+    }
+
+    fn paired() -> FrameDevice {
+        FrameDevice {
+            aid: 2,
+            art_aid: 4,
+            name: "Television".into(),
+            token: "token".into(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn home_keeps_the_ids_it_knows_the_tv_by() {
+        use crate::{driver::Driver, surfaces::homekit::Home};
+        use hap::HapType;
+        let device = paired();
+        let snapshot = Tv::new(Fake::default(), device.clone()).snapshot();
+        let home = Home::of(&snapshot, Frame::homekit_ids(&device)).await;
+        assert_eq!(home.services(2, HapType::Television), [20]);
+        assert_eq!(home.services(2, HapType::Speaker), [40]);
+        assert_eq!(home.services(2, HapType::InputSource), [50, 60, 70, 80, 90]);
+        assert_eq!(home.services(4, HapType::Switch), [20]);
+    }
+
+    #[tokio::test]
+    async fn an_input_from_a_scene_leaves_the_tv_off() {
+        use crate::{driver::Driver, surfaces::homekit::Home};
+        use hap::HapType;
+        use serde_json::json;
+        let device = paired();
+        let mut tv = Tv::new(Fake::default(), device.clone());
+        let mut home = Home::of(&tv.snapshot(), Frame::homekit_ids(&device)).await;
+        // A scene that turns the TV off may pick an input too: that asks nothing.
+        let hdmi2 = json!(Input::Hdmi2 as u32);
+        assert!(home
+            .write(2, 20, HapType::ActiveIdentifier, hdmi2.clone())
+            .await
+            .is_empty());
+        tv.on = true;
+        home.sees(&tv.snapshot());
+        assert_eq!(
+            home.write(2, 20, HapType::ActiveIdentifier, hdmi2).await,
+            [("input", json!("hdmi2"))]
+        );
     }
 }

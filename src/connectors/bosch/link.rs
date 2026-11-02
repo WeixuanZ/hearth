@@ -65,7 +65,7 @@ pub async fn session(
             }
             Event::Command(Some(command)) => {
                 log::info!("{}: sending {command:?}", device.name);
-                let starting = matches!(command, Command::Program(_) | Command::Power(true));
+                let starting = matches!(command, Command::Program(_));
                 if starting && talk.synced() && !machine.remote_start {
                     log::warn!(
                         "the dishwasher is not accepting remote start, so it may ignore this"

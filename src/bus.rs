@@ -195,6 +195,7 @@ mod tests {
                 Capability::reading("pm25", "PM2.5", "µg/m³", Some(4.0)),
             ],
             alerts,
+            about: Default::default(),
         })
     }
 

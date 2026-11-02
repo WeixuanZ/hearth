@@ -60,14 +60,6 @@ impl Input {
             Self::Tv => "TV",
         }
     }
-
-    /// HomeKit input source type: HDMI, or tuner for the TV's own source.
-    pub fn source_type(self) -> u8 {
-        match self {
-            Self::Tv => 2,
-            _ => 3,
-        }
-    }
 }
 
 pub fn app_name() -> String {
@@ -119,24 +111,6 @@ pub fn art_payload(request: &str, value: Option<&str>, id: &str) -> String {
         }
     })
     .to_string()
-}
-
-/// Home's remote buttons, as Samsung key names.
-pub fn hap_remote_key(value: u8) -> Option<&'static str> {
-    Some(match value {
-        0 => "KEY_REWIND",
-        1 => "KEY_FF",
-        4 => "KEY_UP",
-        5 => "KEY_DOWN",
-        6 => "KEY_LEFT",
-        7 => "KEY_RIGHT",
-        8 => "KEY_ENTER",
-        9 => "KEY_RETURN",
-        10 => "KEY_EXIT",
-        11 => "KEY_PLAY",
-        15 => "KEY_INFO",
-        _ => return None,
-    })
 }
 
 pub fn parse_token(text: &str) -> Option<String> {
@@ -389,7 +363,6 @@ mod tests {
         assert!(art.contains("art_app_request"));
         assert!(art.contains("set_artmode_status"));
         assert!(art.contains(r#"\"request_id\":\"abc\""#));
-        assert_eq!(hap_remote_key(8), Some("KEY_ENTER"));
         assert_eq!(Input::from_id(1), None);
         assert_eq!(Input::from_id(3), Some(Input::Hdmi2));
         assert_eq!(Input::Hdmi2.key(), "KEY_HDMI2");
