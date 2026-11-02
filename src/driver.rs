@@ -186,6 +186,7 @@ pub static DRIVERS: &[&dyn Kind] = &[
     &Registered::<crate::devices::purifier::dyson::Dyson>::NEW,
     &Registered::<crate::devices::tv::samsung_frame::Frame>::NEW,
     &Registered::<crate::devices::dishwasher::bosch::Bosch>::NEW,
+    &Registered::<crate::devices::generic::mqtt::Mqtt>::NEW,
 ];
 
 /// The driver for `kind`, if this build has one.

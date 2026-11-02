@@ -22,8 +22,9 @@ hearth is generic. Every device describes itself as a few **capabilities**: powe
 | Purifier | Dyson Purifier Hot+Cool Formaldehyde (HP09), and other Dyson purifiers | The fan's own MQTT, after one MyDyson login | power, auto, speed, oscillation, sweep, night mode, jet focus, continuous monitoring, heat, heat target, temperature, humidity, PM2.5, PM10, formaldehyde, filter life |
 | TV | Samsung The Frame, 2024 (LS03D) | The TV's websocket and IP Control, not SmartThings | power, art mode, input (TV, HDMI 1–4), art brightness, remote keys and volume |
 | Dishwasher | Bosch dishwashers on Home Connect, including the slimline SPV2HKX42G | The dishwasher's own websocket, after one Home Connect sign-in | power, programme, the machine's options, remaining time, progress, energy and water |
+| Anything on MQTT | Lights, switches and sensors through an MQTT broker: Zigbee2MQTT, Tasmota, ESPHome, or your own | The broker, MQTT 3.1 | whatever its config lists: power, switches, levels, choices, readings and states |
 
-As many of each as you have. In Apple Home they become purifiers, televisions each with an Art mode tile, and a dishwasher as switches with a door, a leak and a cycle sensor beside it. New kinds and models plug in without touching the rest; see [Adding a device](#adding-a-device).
+As many of each as you have. In Apple Home they become purifiers, televisions each with an Art mode tile, a dishwasher as switches with a door, a leak and a cycle sensor beside it, and MQTT devices as lights, switches and sensors. New kinds and models plug in without touching the rest; see [Adding a device](#adding-a-device).
 
 ## Install
 
@@ -46,6 +47,34 @@ downloads the latest release for this machine (Linux x86_64 or aarch64, macOS Ap
 **A Samsung Frame.** Turn the TV on, out of art mode. On the TV, turn on device connection and Power On with Mobile (Settings → General → External Device Manager, and Connection), and IP Remote (Settings → General → Network → Expert Settings). Then press Allow twice: once for the remote, once for IP Control, which picks inputs and powers the TV fully off. Nothing leaves your network.
 
 **A Bosch dishwasher.** It has to be on the home Wi-Fi, already set up in the Home Connect app. You sign in once on Home Connect's own page. From the menu bar, the browser then asks to open Hearth, which takes the sign-in from there; in the terminal, the page ends on an `hcauth://` address to paste back. The account password is not saved; the dishwasher's local key is, and after that hearth talks only to the dishwasher. Starting a programme needs Remote Start on the dishwasher. Reading it does not.
+
+**Anything on MQTT.** A light, a switch or a sensor that talks through an MQTT broker, like Mosquitto beside Zigbee2MQTT, needs no code: `hearth add mqtt` asks where the broker is and the topics for the common cases, and anything more goes in its table in `config.toml`. Each control is a capability, read from the topic it reports on and set on the topic it is set on; with a `field`, messages are JSON and the value is that field (a dotted path), as Zigbee2MQTT sends them. A light becomes a lightbulb in Home, its brightness over its own range; a sensor becomes Home's temperature, humidity and air-quality sensors, with a door (`role = "contact"`) or a leak as tiles Home notifies for.
+
+```toml
+[[devices]]
+kind = "mqtt"
+key = "desk-lamp"            # its id for good: mqtt:desk-lamp
+name = "Desk lamp"
+category = "light"           # light, switch, sensor or other
+host = "10.0.0.5"            # the broker; port 1883, username and password if it needs them
+
+[[devices.control]]
+kind = "power"               # power, switch, level, reading, state or choice
+state = "zigbee2mqtt/desk-lamp"
+command = "zigbee2mqtt/desk-lamp/set"
+field = "state"              # on and off are ON and OFF unless `on` and `off` say
+
+[[devices.control]]
+id = "brightness"
+kind = "level"
+role = "brightness"          # what Home shows it as: brightness, temperature, humidity, pm25, contact, leak…
+state = "zigbee2mqtt/desk-lamp"
+command = "zigbee2mqtt/desk-lamp/set"
+field = "brightness"
+max = 254
+```
+
+A choice lists `[[devices.control.options]]`, each an `id`, a `name` and the `value` the device says for it. While the broker is not connected the device shows offline, and anything asked of it is refused, not sent later.
 
 **Apple Home.** Start the bridge (the menu bar's Start, or `hearth run`), then in the Home app choose Add Accessory → More options → Hearth, and enter the code the menu bar or `hearth pin` shows.
 

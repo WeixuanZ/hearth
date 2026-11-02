@@ -44,7 +44,7 @@ const EXAMPLES: &[(&str, &str)] = &[
 ];
 
 const NOTES: &str = "\
-A device is its id, name, connector (dyson, frame, bosch), kind (purifier, tv,
+A device is its id, name, connector (dyson, frame, bosch, mqtt), kind (purifier, tv,
 dishwasher), or a part of its name. A value is on or off, start or stop, a
 number, or an option id listed by `hearth devices`. Most commands talk to the
 running bridge; history also reads the saved files when it is stopped.";
@@ -146,9 +146,9 @@ enum Command {
     /// Forget Apple Home, and take a new HomeKit identity. For a bridge
     /// Home will not add again.
     Unpair,
-    /// Add a device: dyson, frame or bosch. Asks what it needs.
+    /// Add a device: dyson, frame, bosch or mqtt. Asks what it needs.
     Add {
-        /// dyson, frame or bosch.
+        /// dyson, frame, bosch or mqtt.
         product: String,
     },
     /// Add a Dyson purifier.

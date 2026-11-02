@@ -7,12 +7,13 @@ mod settings;
 pub use settings::DysonDevice;
 
 use crate::connectors::dyson::{
-    discover, mqtt,
+    discover,
     protocol::{
         self, command_topic, intent_fields, request_environment_payload, request_state_payload,
         status_topic, Intent, MachineState, DEFAULT_PRODUCT_TYPES,
     },
 };
+use crate::connectors::mqtt;
 use crate::devices::runtime;
 use anyhow::{anyhow, Result};
 use std::time::Duration;
@@ -130,11 +131,12 @@ async fn drive(
             offline,
             &mut command_rx,
             |commands| {
-                let (device, topics, hello, events) = (
+                let (device, topics, hello, events, states) = (
                     device.clone(),
                     topics.clone(),
                     hello.clone(),
                     event_tx.clone(),
+                    states.clone(),
                 );
                 Box::pin(async move {
                     // Looked for again each time, as its address may have changed.
@@ -146,7 +148,9 @@ async fn drive(
                         username: &device.serial,
                         password: &device.mqtt_password,
                     };
-                    mqtt::session(&broker, &topics, &hello, commands, &events).await
+                    // The fan is its own broker: taken is connected.
+                    let connected = move || states.send_modify(|state| state.connected = true);
+                    mqtt::session(&broker, &topics, &hello, commands, &events, connected).await
                 })
             },
         )
@@ -199,9 +203,7 @@ async fn fan(
                 let Some(incoming) = incoming else { break };
                 log::debug!("fan: {}", incoming.payload);
                 states.send_if_modified(|state| {
-                    // Anything it says means it is connected.
-                    let heard = !std::mem::replace(&mut state.connected, true);
-                    protocol::apply_message(state, &incoming.topic, &incoming.payload) || heard
+                    protocol::apply_message(state, &incoming.topic, &incoming.payload)
                 });
                 if let Some(said) = states.borrow().topic_prefix.clone() {
                     prefix = Some(said);
@@ -350,16 +352,6 @@ mod tests {
         assert!(hello[1]
             .payload
             .contains("REQUEST-PRODUCT-ENVIRONMENT-CURRENT-SENSOR-DATA"));
-    }
-
-    #[tokio::test]
-    async fn a_fan_that_speaks_is_connected() {
-        let mut fake = Fake::start();
-        assert!(!fake.states.borrow().connected);
-        fake.say(json!({ "msg": "CURRENT-STATE", "product-state": { "fpwr": "OFF" } }))
-            .await;
-        fake.states.changed().await.unwrap();
-        assert!(fake.states.borrow().connected);
     }
 
     #[tokio::test]

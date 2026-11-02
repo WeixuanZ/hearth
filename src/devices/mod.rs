@@ -3,6 +3,7 @@
 
 pub mod cycle;
 pub mod dishwasher;
+pub mod generic;
 pub mod purifier;
 pub mod runtime;
 pub mod tv;

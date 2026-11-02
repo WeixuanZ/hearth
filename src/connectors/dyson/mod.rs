@@ -6,7 +6,6 @@
 mod cloud;
 mod crypto;
 pub mod discover;
-pub mod mqtt;
 pub mod protocol;
 mod setup;
 
