@@ -75,6 +75,28 @@ pub fn channel_path(channel: &str, token: &str) -> String {
     path
 }
 
+/// Types `text` into the text box the TV shows, then ends the input, as a
+/// phone's keyboard does. A TV with no text box open ignores both.
+pub fn text_payloads(text: &str) -> [String; 2] {
+    let typed = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, text);
+    [
+        json!({
+            "method": "ms.remote.control",
+            "params": {
+                "Cmd": typed,
+                "DataOfCmd": "base64",
+                "TypeOfRemote": "SendInputString"
+            }
+        })
+        .to_string(),
+        json!({
+            "method": "ms.remote.control",
+            "params": { "TypeOfRemote": "SendInputEnd" }
+        })
+        .to_string(),
+    ]
+}
+
 pub fn key_payload(key: &str) -> String {
     key_command("Click", key)
 }
@@ -368,5 +390,13 @@ mod tests {
         assert_eq!(Input::Hdmi2.key(), "KEY_HDMI2");
         assert_eq!(Input::from_source("HDMI4"), Some(Input::Hdmi4));
         assert_eq!(Input::from_source("TV"), Some(Input::Tv));
+    }
+
+    #[test]
+    fn text_is_typed_then_ended() {
+        let [typed, ended] = text_payloads("Hi there");
+        assert!(typed.contains(r#""TypeOfRemote":"SendInputString""#));
+        assert!(typed.contains(r#""Cmd":"SGkgdGhlcmU=""#), "{typed}");
+        assert!(ended.contains(r#""TypeOfRemote":"SendInputEnd""#));
     }
 }

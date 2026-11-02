@@ -185,6 +185,9 @@ pub enum Kind {
     Keys {
         keys: Vec<Item>,
     },
+    /// Text to send, like what a TV's text box should say. Setting it
+    /// types it; it has no value of its own.
+    Text,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -293,6 +296,10 @@ impl Capability {
 
     pub fn keys(id: &'static str, name: &str, keys: Vec<Item>) -> Self {
         Self::new(id, name, Kind::Keys { keys }, Value::Null)
+    }
+
+    pub fn text(id: &'static str, name: &str) -> Self {
+        Self::new(id, name, Kind::Text, Value::Null)
     }
 
     fn new(id: &'static str, name: &str, kind: Kind, value: Value) -> Self {

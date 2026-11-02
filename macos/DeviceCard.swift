@@ -158,6 +158,11 @@ struct DeviceCard: View {
                     .disabled(!keys.active || !device.online)
                     .opacity(keys.active ? 1 : 0.45)
             }
+            ForEach(all("text")) { text in
+                TypeRow(model: model, device: device, capability: text)
+                    .disabled(!text.active || !device.online)
+                    .opacity(text.active ? 1 : 0.45)
+            }
             let readings = all("reading")
             if !readings.isEmpty {
                 Readings(device: device, readings: readings, grid: true)
@@ -194,6 +199,32 @@ extension BridgeModel {
 }
 
 /// One switch, choice or level.
+/// Text for a device, like the text box a TV shows: typed here on the Mac's
+/// keyboard, and sent with Return.
+struct TypeRow: View {
+    @ObservedObject var model: BridgeModel
+    let device: Device
+    let capability: Capability
+    @State private var draft = ""
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "keyboard")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            TextField("Type on the TV, then Return", text: $draft)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .onSubmit {
+                    guard !draft.isEmpty else { return }
+                    model.set(device, capability, .text(draft))
+                    draft = ""
+                }
+        }
+        .help("Types into the text box the TV is showing, like a search")
+    }
+}
+
 struct ControlRow: View {
     @ObservedObject var model: BridgeModel
     let device: Device

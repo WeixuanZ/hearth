@@ -139,6 +139,16 @@ pub async fn pair(host: &str) -> Result<String> {
 
 type Socket = WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>;
 
+/// What goes down the remote channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal<'a> {
+    /// A key, held down for this long, or clicked when `None`. A Frame only
+    /// powers fully off on a held power key; a click toggles art.
+    Key(&'a str, Option<Duration>),
+    /// Text for the text box the TV shows, as if typed on it.
+    Text(&'a str),
+}
+
 /// The remote channel, kept open between keys. Opening it costs a TLS
 /// handshake and the TV's greeting, most of a key's delay. A Frame drops an
 /// idle session, so a dead socket is reopened.
@@ -146,15 +156,12 @@ type Socket = WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>;
 pub struct Remote(Option<Socket>);
 
 impl Remote {
-    /// Holds a key down for `hold`, or clicks it when `hold` is `None`. A
-    /// Frame only powers fully off on a held power key; a click toggles art.
-    /// Returns a new token if the TV handed one back.
-    pub async fn press(
+    /// Sends `signal`. Returns a new token if the TV handed one back.
+    pub async fn send_signal(
         &mut self,
         host: &str,
         token: &str,
-        key: &str,
-        hold: Option<Duration>,
+        signal: Signal<'_>,
     ) -> Result<Option<String>> {
         if let Some(socket) = self.0.as_mut() {
             if !alive(socket).await {
@@ -164,29 +171,35 @@ impl Remote {
         // A kept channel can still have been dropped by the TV since: then
         // one more try, on a new one.
         let reused = self.0.is_some();
-        match self.send(host, token, key, hold).await {
+        match self.send(host, token, signal).await {
             Err(error) if reused => {
                 log::debug!("remote channel dropped, reopening: {error:#}");
-                self.send(host, token, key, hold).await
+                self.send(host, token, signal).await
             }
             result => result,
         }
     }
 
-    /// Sends a key on the kept channel, or a new one, and keeps the channel
-    /// once a key has gone through on it.
+    /// Sends on the kept channel, or a new one, and keeps the channel once
+    /// something has gone through on it.
     async fn send(
         &mut self,
         host: &str,
         token: &str,
-        key: &str,
-        hold: Option<Duration>,
+        signal: Signal<'_>,
     ) -> Result<Option<String>> {
         let (mut socket, found) = match self.0.take() {
             Some(socket) => (socket, None),
             None => open_remote(host, token).await?,
         };
-        send_key(&mut socket, key, hold).await?;
+        match signal {
+            Signal::Key(key, hold) => send_key(&mut socket, key, hold).await?,
+            Signal::Text(text) => {
+                for payload in protocol::text_payloads(text) {
+                    socket.send(Message::Text(payload.into())).await?;
+                }
+            }
+        }
         self.0 = Some(socket);
         Ok(found)
     }

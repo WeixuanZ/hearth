@@ -83,6 +83,8 @@ impl<L> Tv<L> {
                 )
                 .role(Role::Remote)
                 .active(self.on),
+                // For whatever text box the TV shows, as its own keyboard.
+                Capability::text("text", "Type").active(showing),
             ],
             alerts: Vec::new(),
             about: About {
@@ -115,6 +117,12 @@ pub fn command(set: &Set) -> Result<Command> {
             Command::Input(input as u32)
         }
         "brightness" => Command::Brightness(set.number()?.round() as i32),
+        "text" => Command::Text(
+            set.value
+                .as_str()
+                .ok_or_else(|| anyhow!("text takes words, in quotes"))?
+                .to_owned(),
+        ),
         "remote" => {
             let key = set.option()?;
             let (_, _, samsung) = REMOTE
