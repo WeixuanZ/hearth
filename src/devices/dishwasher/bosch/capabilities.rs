@@ -552,9 +552,15 @@ mod tests {
             .iter()
             .map(|option| (option.name.as_str(), option.note.as_deref()))
             .collect();
-        assert!(notes.contains(&("Eco 50", Some("Uses energy 51%, water 40% of the most it can"))));
+        assert!(notes.contains(&(
+            "Eco 50",
+            Some("Uses energy 51%, water 40% of the most it can")
+        )));
         assert!(notes.contains(&("Quick 45", None)));
         // Not a reading: nothing to keep in history.
-        assert!(shown.capabilities.iter().all(|capability| capability.id != "energy"));
+        assert!(shown
+            .capabilities
+            .iter()
+            .all(|capability| capability.id != "energy"));
     }
 }
