@@ -1,9 +1,10 @@
-//! Each kind of device, one module per model: its task, its HomeKit
-//! accessories, its capabilities.
+//! Each kind of device, one module per model: its task and its
+//! capabilities, on the runtime every device shares.
 
 pub mod cycle;
 pub mod dishwasher;
 pub mod purifier;
+pub mod runtime;
 pub mod tv;
 
 use crate::{config::Device, driver};

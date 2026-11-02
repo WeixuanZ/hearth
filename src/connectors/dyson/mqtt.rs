@@ -12,6 +12,7 @@ use tokio::{
     time::{interval, timeout},
 };
 
+#[derive(Debug, Clone)]
 pub struct Publish {
     pub topic: String,
     pub payload: String,
@@ -130,16 +131,29 @@ fn parse_publish(header: u8, body: &[u8]) -> Result<(u8, Option<u16>, Incoming)>
     Ok((qos, packet_id, Incoming { topic, payload }))
 }
 
-/// Hold one connection open. Returns when the socket dies; the caller reconnects.
+/// Where an MQTT broker is, and how to log in to it.
+pub struct Broker<'a> {
+    pub host: &'a str,
+    pub port: u16,
+    pub username: &'a str,
+    pub password: &'a str,
+}
+
+/// Hold one connection open: subscribed to `topics`, with `hello` sent once
+/// subscribed. Returns when the socket dies; the caller reconnects.
 pub async fn session(
-    host: &str,
-    port: u16,
-    username: &str,
-    password: &str,
+    broker: &Broker<'_>,
     topics: &[String],
+    hello: &[Publish],
     commands: &mut mpsc::Receiver<Publish>,
     events: &mpsc::Sender<Incoming>,
 ) -> Result<()> {
+    let Broker {
+        host,
+        port,
+        username,
+        password,
+    } = *broker;
     let stream = timeout(Duration::from_secs(8), TcpStream::connect((host, port)))
         .await
         .context("timed out reaching the purifier")?
@@ -178,6 +192,13 @@ pub async fn session(
             packet_id = packet_id.wrapping_add(1).max(1);
             write.flush().await.ok();
         }
+        for publish in hello {
+            write
+                .write_all(&encode_publish(packet_id, &publish.topic, &publish.payload))
+                .await?;
+            packet_id = packet_id.wrapping_add(1).max(1);
+        }
+        write.flush().await.ok();
     }
 
     let ping_writer = writer.clone();

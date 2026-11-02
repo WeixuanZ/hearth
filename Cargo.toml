@@ -60,3 +60,6 @@ all = "deny"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
