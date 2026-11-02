@@ -26,6 +26,7 @@ const WITHHELD: &[(&str, &str)] = &[
     ("mcp", "is this server"),
     ("events", "never ends: it follows changes as they happen"),
     ("pin", "prints Home's pairing code"),
+    ("matter", "turns Matter on and prints its pairing code"),
     ("unpair", "takes the bridge out of Home"),
     ("remove", "deletes a device on every computer"),
     ("group", "lets computers into the group"),

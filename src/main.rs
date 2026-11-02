@@ -1,3 +1,6 @@
+// rs-matter's handler chains nest deeper than the default allows.
+#![recursion_limit = "256"]
+
 mod bus;
 mod capabilities;
 mod cluster;
@@ -130,6 +133,12 @@ enum Command {
     Mcp,
     /// Print the Apple Home pairing code.
     Pin,
+    /// Matter, for Google Home, Alexa and other controllers: on, off, or its
+    /// pairing code if left out.
+    Matter {
+        #[arg(value_parser = ["on", "off"])]
+        state: Option<String>,
+    },
     /// Rename a device, in the menu bar, the CLI and Home.
     Rename {
         /// The device: as for `get`, or its current name if the bridge is off.
@@ -262,6 +271,7 @@ async fn main() -> Result<()> {
         Command::Doctor => surfaces::doctor::run(cli.json).await?,
         Command::Mcp => surfaces::mcp::serve(command()).await?,
         Command::Pin => println!("{}", config::load()?.homekit_pin),
+        Command::Matter { state } => cli::matter(state.as_deref(), cli.json)?,
         Command::Rename { device, name } => cli::rename(&device, &name, cli.json).await?,
         Command::Remove { device } => {
             let mut config = config::load()?;
