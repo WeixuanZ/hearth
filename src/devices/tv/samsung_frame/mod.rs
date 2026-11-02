@@ -114,7 +114,7 @@ impl<L: Link> Tv<L> {
         let mut poll = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            crate::capabilities::publish(self.snapshot());
+            self.link.publish(self.snapshot());
             tokio::select! {
                 request = requests.recv() => {
                     let Some(request) = request else { break };
@@ -449,6 +449,8 @@ mod tests {
         }
 
         fn save(&self, _: &FrameDevice) {}
+
+        fn publish(&self, _: crate::capabilities::Snapshot) {}
     }
 
     /// Runs the TV's task over `asks`, as any surface asks, until they end.

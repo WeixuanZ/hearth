@@ -38,6 +38,8 @@ pub trait Link: Send + 'static {
     fn set_input(&self, source: &str) -> impl Future<Output = Result<()>> + Send;
     /// Keeps what was learned of the TV (token, MAC, model) in the config.
     fn save(&self, device: &FrameDevice);
+    /// Shows the TV as it now is, to every surface.
+    fn publish(&self, snapshot: crate::capabilities::Snapshot);
 }
 
 /// The TV over the network.
@@ -104,6 +106,10 @@ impl Link for Network {
 
     async fn set_input(&self, source: &str) -> Result<()> {
         self.ip()?.set_input(source).await
+    }
+
+    fn publish(&self, snapshot: crate::capabilities::Snapshot) {
+        self.context.publish(snapshot);
     }
 
     fn save(&self, device: &FrameDevice) {
