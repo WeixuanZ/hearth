@@ -1,13 +1,13 @@
 //! Adding a Dyson purifier: a MyDyson sign-in with an emailed code, once.
 
-use super::{
+use crate::connectors::dyson::{
     cloud::{self, Challenge, CloudDevice},
     product_name,
 };
 use crate::{
     capabilities::Item,
     config,
-    devices::purifier::dyson::DysonDevice,
+    devices::purifier::dyson_hp09::DysonHp09Device,
     setup::{answer, Answers, Field, Next, Step},
 };
 use anyhow::{anyhow, Result};
@@ -90,7 +90,7 @@ fn add(fan: &CloudDevice) -> Result<Next> {
     let mut saved = config::load_or_new()?;
     config::upsert(
         &mut saved,
-        config::Device::new::<crate::devices::purifier::dyson::Dyson>(DysonDevice {
+        config::Device::new::<crate::devices::purifier::dyson_hp09::DysonHp09>(DysonHp09Device {
             aid: 0,
             name: name.clone(),
             serial: fan.serial.clone(),

@@ -1,3 +1,3 @@
 //! Air purifiers, one module per maker's line.
 
-pub mod dyson;
+pub mod dyson_hp09;

@@ -1,46 +1,53 @@
-//! A Dyson purifier: one task that holds the fan's MQTT session and state,
-//! and shows it to HomeKit and as capabilities.
+//! Dyson's Purifier Hot+Cool line, HP09 and its siblings (product types
+//! 527K, 527E, 527): one task that holds the fan's MQTT session and state,
+//! published as capabilities. What every Dyson shares (the account, finding
+//! a fan, how messages are framed) is in `connectors::dyson`; what this
+//! line's fields mean is here, in `protocol`.
 
 mod capabilities;
+mod protocol;
 mod settings;
+mod setup;
 
-pub use settings::DysonDevice;
+pub use settings::DysonHp09Device;
 
 use crate::connectors::dyson::{
     discover,
-    protocol::{
-        self, command_topic, intent_fields, request_environment_payload, request_state_payload,
-        status_topic, Intent, MachineState, DEFAULT_PRODUCT_TYPES,
+    messages::{
+        command_topic, request_environment_payload, request_state_payload, state_set_payload,
+        status_topic,
     },
 };
 use crate::connectors::mqtt;
 use crate::devices::runtime;
 use anyhow::{anyhow, Result};
+use protocol::{intent_fields, Intent, MachineState, DEFAULT_PRODUCT_TYPES};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 /// Dyson purifiers, over their own MQTT on the local network.
-pub struct Dyson;
+pub struct DysonHp09;
 
-crate::register_driver!(Dyson);
+crate::register_driver!(DysonHp09);
 
-impl crate::driver::Driver for Dyson {
-    const KIND: &'static str = "dyson";
-    const NAME: &'static str = "Dyson purifier";
+impl crate::driver::Driver for DysonHp09 {
+    const KIND: &'static str = "dyson-hp09";
+    const ALIASES: &'static [&'static str] = &["dyson"];
+    const NAME: &'static str = "Dyson Purifier Hot+Cool (HP09 and family)";
     const CATEGORY: &'static str = "purifier";
-    type Settings = DysonDevice;
-    type Setup = crate::connectors::dyson::Setup;
+    type Settings = DysonHp09Device;
+    type Setup = setup::Setup;
 
     fn setup() -> (Self::Setup, crate::setup::Step) {
         Self::Setup::start()
     }
 
-    async fn start(settings: DysonDevice, context: crate::driver::Context) -> Result<()> {
+    async fn start(settings: DysonHp09Device, context: crate::driver::Context) -> Result<()> {
         spawn(settings, context).await
     }
 
     /// The fan, its sensors, heater and filter, and its switches.
-    fn homekit_ids(fan: &DysonDevice) -> crate::surfaces::homekit::ids::DeviceIds {
+    fn homekit_ids(fan: &DysonHp09Device) -> crate::surfaces::homekit::ids::DeviceIds {
         let ids = crate::surfaces::homekit::ids::DeviceIds::default()
             .accessory("main", fan.aid)
             .service("main", "purifier", 20)
@@ -60,7 +67,7 @@ impl crate::driver::Driver for Dyson {
     }
 }
 
-async fn spawn(device: DysonDevice, context: crate::driver::Context) -> Result<()> {
+async fn spawn(device: DysonHp09Device, context: crate::driver::Context) -> Result<()> {
     let shown = device.clone();
     let states = runtime::published(&context, MachineState::default(), move |state| {
         capabilities::snapshot(&shown, state)
@@ -93,7 +100,7 @@ async fn spawn(device: DysonDevice, context: crate::driver::Context) -> Result<(
     Ok(())
 }
 
-fn product_types(device: &DysonDevice) -> Vec<String> {
+fn product_types(device: &DysonHp09Device) -> Vec<String> {
     let configured = device.product_type.trim();
     if configured.is_empty() || configured.eq_ignore_ascii_case("auto") {
         DEFAULT_PRODUCT_TYPES
@@ -105,7 +112,7 @@ fn product_types(device: &DysonDevice) -> Vec<String> {
     }
 }
 
-async fn resolve_host(device: &DysonDevice) -> Result<String> {
+async fn resolve_host(device: &DysonHp09Device) -> Result<String> {
     if !device.host.trim().is_empty() {
         return Ok(device.host.trim().to_owned());
     }
@@ -114,7 +121,7 @@ async fn resolve_host(device: &DysonDevice) -> Result<String> {
 }
 
 async fn drive(
-    device: DysonDevice,
+    device: DysonHp09Device,
     states: watch::Sender<MachineState>,
     mut intents: mpsc::Receiver<Intent>,
 ) -> Result<()> {
@@ -166,7 +173,7 @@ async fn drive(
 
 /// What a new session asks the fan at once: its state and its readings, on
 /// each topic it may use.
-fn hello(device: &DysonDevice) -> Vec<mqtt::Publish> {
+fn hello(device: &DysonHp09Device) -> Vec<mqtt::Publish> {
     product_types(device)
         .iter()
         .flat_map(|kind| {
@@ -183,7 +190,7 @@ fn hello(device: &DysonDevice) -> Vec<mqtt::Publish> {
 /// every half a minute. A session asks at once (see `hello`). The MQTT
 /// session is on the other side of the channels, or a test.
 async fn fan(
-    device: &DysonDevice,
+    device: &DysonHp09Device,
     states: &watch::Sender<MachineState>,
     intent_rx: &mut mpsc::Receiver<Intent>,
     event_rx: &mut mpsc::Receiver<mqtt::Incoming>,
@@ -258,7 +265,7 @@ async fn publish(
     let sent = commands
         .send(mqtt::Publish {
             topic: command_topic(prefix, serial),
-            payload: protocol::state_set_payload(&fields),
+            payload: state_set_payload(&fields),
         })
         .await;
     sent.is_ok().then_some(fields)
@@ -281,8 +288,8 @@ mod tests {
 
     impl Fake {
         /// Starts hearth's side against this fan, which has said nothing yet.
-        fn device() -> DysonDevice {
-            DysonDevice {
+        fn device() -> DysonHp09Device {
+            DysonHp09Device {
                 aid: 2,
                 name: "Purifier".into(),
                 serial: SERIAL.into(),
@@ -394,7 +401,7 @@ mod tests {
         use crate::{driver::Driver, surfaces::homekit::Home};
         use hap::HapType;
         use serde_json::json;
-        let device = DysonDevice {
+        let device = DysonHp09Device {
             aid: 3,
             name: "Purifier".into(),
             serial: "ABC-XY-12345678".into(),
@@ -406,7 +413,7 @@ mod tests {
             heating: true,
         };
         let snapshot = super::capabilities::snapshot(&device, &MachineState::default());
-        let mut home = Home::of(&snapshot, Dyson::homekit_ids(&device)).await;
+        let mut home = Home::of(&snapshot, DysonHp09::homekit_ids(&device)).await;
         assert_eq!(home.services(3, HapType::AirPurifier), [20]);
         assert_eq!(home.services(3, HapType::AirQualitySensor), [40]);
         assert_eq!(home.services(3, HapType::HumiditySensor), [70]);
