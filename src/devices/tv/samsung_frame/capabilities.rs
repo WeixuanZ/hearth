@@ -41,7 +41,7 @@ impl<L> Tv<L> {
         let input = Input::from_id(self.input).map(|input| input.source().to_lowercase());
         Snapshot {
             id: self.device.id(),
-            kind: "frame",
+            kind: <super::SamsungFrame as crate::driver::Driver>::KIND,
             category: "tv",
             name: self.device.name.clone(),
             online: self.reachable,

@@ -336,7 +336,7 @@ impl Capability {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Snapshot {
     pub id: String,
-    /// The connector, like `dyson`.
+    /// Its driver's kind, like `dyson-hot-cool`.
     pub kind: &'static str,
     /// What it is, like `tv`. Picks the icon, and names it in the CLI.
     pub category: &'static str,

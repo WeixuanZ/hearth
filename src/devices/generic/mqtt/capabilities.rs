@@ -45,7 +45,7 @@ pub fn snapshot(device: &MqttDevice, state: &State) -> Snapshot {
     };
     Snapshot {
         id: device.id(),
-        kind: "mqtt",
+        kind: <super::Mqtt as crate::driver::Driver>::KIND,
         category: device.category.word(),
         name: device.name.clone(),
         online: state.connected,

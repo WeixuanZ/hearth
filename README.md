@@ -124,7 +124,7 @@ hearth doctor                     # what stands between Home and the devices
 hearth mcp                        # the devices as tools for AI agents
 ```
 
-A device is its id, name, kind (`tv`, `purifier`, `dishwasher`), connector (`frame`, `dyson`, `bosch`), or a part of its name; with two TVs, `tv` asks which. A value is `on`/`off`, a number, or an option id from `hearth devices`.
+A device is its id, its name or a part of it, its category (`tv`, `purifier`, `dishwasher`), or its kind (`hearth add list`); with two TVs, `tv` asks which. A value is `on`/`off`, a number, or an option id from `hearth devices`.
 
 **Scripts and agents.** Add `--json` to any command. `hearth devices --json` lists every capability with its kind, value, accepted options or range, and whether it is active, which is enough to drive any device without knowing its brand. Errors go to stderr with exit status 1. Programs can also talk to the [control socket](#control-socket) directly.
 

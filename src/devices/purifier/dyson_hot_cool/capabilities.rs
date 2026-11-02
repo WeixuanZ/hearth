@@ -89,7 +89,7 @@ pub fn snapshot(device: &DysonHotCoolDevice, state: &MachineState) -> Snapshot {
 
     Snapshot {
         id: device.id(),
-        kind: "dyson",
+        kind: <super::DysonHotCool as crate::driver::Driver>::KIND,
         category: "purifier",
         name: device.name.clone(),
         online,

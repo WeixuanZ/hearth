@@ -130,7 +130,7 @@ pub fn snapshot(device: &HomeConnectDishwasherDevice, reading: &Reading, kept: K
 
     Snapshot {
         id: device.id(),
-        kind: "bosch",
+        kind: <super::HomeConnectDishwasher as crate::driver::Driver>::KIND,
         category: "dishwasher",
         name: device.name.clone(),
         online: reading.online,
@@ -454,7 +454,7 @@ mod tests {
         assert!(!text.contains("secret-key"));
         assert_eq!(snap.headline, "Running");
         assert_eq!(snap.detail, "Eco 50 · 1 h 30 min");
-        assert_eq!(snap.kind, "bosch");
+        assert_eq!(snap.kind, "home-connect-dishwasher");
         assert_eq!(snap.category, "dishwasher");
         let programme = snap
             .capabilities
