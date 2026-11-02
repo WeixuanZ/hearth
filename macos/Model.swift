@@ -103,7 +103,7 @@ final class BridgeModel: ObservableObject {
     func set(_ device: Device, _ capability: Capability, _ value: JSONValue) {
         if let d = status?.devices.firstIndex(where: { $0.id == device.id }),
            let c = status?.devices[d].capabilities.firstIndex(where: { $0.id == capability.id }),
-           capability.kind != "keys"
+           !["keys", "text"].contains(capability.kind)
         {
             status?.devices[d].capabilities[c].value = value
         }

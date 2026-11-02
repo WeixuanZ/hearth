@@ -7,7 +7,10 @@ mod settings;
 pub use settings::FrameDevice;
 mod link;
 
-use crate::connectors::samsung::protocol::{self, ArtReply, Input};
+use crate::connectors::samsung::{
+    link::Signal,
+    protocol::{self, ArtReply, Input},
+};
 use anyhow::{anyhow, Result};
 use link::{Link, Network};
 use std::time::Duration;
@@ -21,6 +24,8 @@ pub enum Command {
     Brightness(i32),
     /// A Samsung key, from the menu bar's or the CLI's remote.
     Remote(&'static str),
+    /// Text for the text box the TV shows.
+    Text(String),
 }
 
 /// Samsung's The Frame televisions.
@@ -230,6 +235,7 @@ impl<L: Link> Tv<L> {
                 }
             }
             Command::Remote(key) => self.click(key).await?,
+            Command::Text(text) => self.signal(Signal::Text(&text)).await?,
         }
         Ok(())
     }
@@ -307,10 +313,14 @@ impl<L: Link> Tv<L> {
     }
 
     async fn press(&mut self, key: &str, hold: Option<Duration>) -> Result<()> {
+        self.signal(Signal::Key(key, hold)).await
+    }
+
+    async fn signal(&mut self, signal: Signal<'_>) -> Result<()> {
         if self.device.token.is_empty() {
             anyhow::bail!("not paired. Run `hearth frame pair` while the TV is on");
         }
-        let token = self.link.press(&self.device, key, hold).await?;
+        let token = self.link.remote(&self.device, signal).await?;
         if let Some(token) = token.filter(|token| *token != self.device.token) {
             self.device.token = token;
             self.remember();
@@ -392,12 +402,14 @@ mod tests {
             Ok(vec![ArtReply::Mode(screen.art)])
         }
 
-        async fn press(
-            &mut self,
-            _: &FrameDevice,
-            key: &str,
-            hold: Option<Duration>,
-        ) -> Result<Option<String>> {
+        async fn remote(&mut self, _: &FrameDevice, signal: Signal<'_>) -> Result<Option<String>> {
+            let (key, hold) = match signal {
+                Signal::Key(key, hold) => (key, hold),
+                Signal::Text(text) => {
+                    self.0.lock().unwrap().sent.push(format!("typed {text}"));
+                    return Ok(None);
+                }
+            };
             let mut screen = self.0.lock().unwrap();
             match (key, hold) {
                 ("KEY_POWER", Some(_)) => (screen.on, screen.art) = (false, false),
@@ -572,5 +584,12 @@ mod tests {
             home.write(2, 20, HapType::ActiveIdentifier, hdmi2).await,
             [("input", json!("hdmi2"))]
         );
+    }
+
+    #[tokio::test]
+    async fn text_is_typed_on_the_remote_channel() {
+        let fake = Fake::showing(false, true);
+        run(&fake, &[("text", serde_json::json!("weather"))]).await;
+        assert_eq!(fake.sent(), ["typed weather"]);
     }
 }

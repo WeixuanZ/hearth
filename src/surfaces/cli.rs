@@ -604,6 +604,7 @@ fn accepts(capability: &Value) -> String {
         },
         Some("choice") => options(),
         Some("keys") => format!("press: {}", ids("keys")),
+        Some("text") => "words, in quotes".into(),
         Some("level") => {
             let number = |key: &str| number_text(capability[key].as_f64().unwrap_or(0.0));
             format!(

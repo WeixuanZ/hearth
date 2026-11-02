@@ -20,7 +20,7 @@ hearth is generic. Every device describes itself as a few **capabilities**: powe
 | Kind | Device | Reached over | Capabilities |
 |---|---|---|---|
 | Purifier | Dyson Purifier Hot+Cool Formaldehyde (HP09), and other Dyson purifiers | The fan's own MQTT, after one MyDyson login | power, auto, speed, oscillation, sweep, night mode, jet focus, continuous monitoring, heat, heat target, temperature, humidity, PM2.5, PM10, formaldehyde, filter life |
-| TV | Samsung The Frame, 2024 (LS03D) | The TV's websocket and IP Control, not SmartThings | power, art mode, input (TV, HDMI 1–4), art brightness, remote keys and volume |
+| TV | Samsung The Frame, 2024 (LS03D) | The TV's websocket and IP Control, not SmartThings | power, art mode, input (TV, HDMI 1–4), art brightness, remote keys and volume, and typing into its text boxes |
 | Dishwasher | Bosch dishwashers on Home Connect, including the slimline SPV2HKX42G | The dishwasher's own websocket, after one Home Connect sign-in | power, programme, the machine's options, remaining time, progress, and what a programme will use |
 | Anything on MQTT | Lights, switches and sensors through an MQTT broker: Zigbee2MQTT, Tasmota, ESPHome, or your own | The broker, MQTT 3.1 | whatever its config lists: power, switches, levels, choices, readings and states |
 
@@ -110,6 +110,7 @@ hearth history purifier --hours 168
 hearth set tv power on
 hearth set tv input hdmi2
 hearth set tv remote select
+hearth set tv text "the weather"  # into the text box the TV shows
 hearth set purifier speed 4
 hearth set dishwasher programme "Eco 50"
 hearth set dishwasher run start

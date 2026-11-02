@@ -22,6 +22,10 @@ const EXAMPLES: &[(&str, &str)] = &[
     ("hearth set tv power on", ""),
     ("hearth set tv input hdmi2", ""),
     ("hearth set tv remote select", "Press a key"),
+    (
+        "hearth set tv text \"the weather\"",
+        "Type into its text box",
+    ),
     ("hearth set purifier speed 4", ""),
     (
         "hearth set dishwasher programme \"Eco 50\"",

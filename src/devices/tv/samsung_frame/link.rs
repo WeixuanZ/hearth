@@ -5,14 +5,14 @@
 use crate::{
     connectors::samsung::{
         ipc::IpControl,
-        link,
+        link::{self, Signal},
         protocol::{ArtReply, DeviceInfo},
     },
     devices::tv::samsung_frame::FrameDevice,
     driver::Context,
 };
 use anyhow::{anyhow, Result};
-use std::{future::Future, time::Duration};
+use std::future::Future;
 
 pub trait Link: Send + 'static {
     fn info(&self, device: &FrameDevice) -> impl Future<Output = Result<DeviceInfo>> + Send;
@@ -23,12 +23,12 @@ pub trait Link: Send + 'static {
         request: &str,
         value: Option<&str>,
     ) -> impl Future<Output = Result<Vec<ArtReply>>> + Send;
-    /// Clicks a key, or holds it. Returns a new token if the TV issued one.
-    fn press(
+    /// A key, or text, on the remote channel. Returns a new token if the TV
+    /// issued one.
+    fn remote(
         &mut self,
         device: &FrameDevice,
-        key: &str,
-        hold: Option<Duration>,
+        signal: Signal<'_>,
     ) -> impl Future<Output = Result<Option<String>>> + Send;
     fn wake(&self, device: &FrameDevice) -> Result<()>;
     /// IP Control, once paired: power and inputs by name rather than keys.
@@ -80,14 +80,9 @@ impl Link for Network {
         link::art(&device.host, &device.token, request, value).await
     }
 
-    async fn press(
-        &mut self,
-        device: &FrameDevice,
-        key: &str,
-        hold: Option<Duration>,
-    ) -> Result<Option<String>> {
+    async fn remote(&mut self, device: &FrameDevice, signal: Signal<'_>) -> Result<Option<String>> {
         self.remote
-            .press(&device.host, &device.token, key, hold)
+            .send_signal(&device.host, &device.token, signal)
             .await
     }
 
