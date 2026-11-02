@@ -215,7 +215,10 @@ pub fn all() -> Vec<&'static dyn Kind> {
 
 /// The driver for `kind`, if this build has one.
 pub fn find(kind: &str) -> Option<&'static dyn Kind> {
-    DRIVERS.iter().copied().find(|driver| driver.answers_to(kind))
+    DRIVERS
+        .iter()
+        .copied()
+        .find(|driver| driver.answers_to(kind))
 }
 
 /// A device's settings behind [`Device`], with the kind that reads them.
@@ -257,5 +260,90 @@ impl<D: Driver> config::Entry for Typed<D> {
     }
     fn as_any_mut(&mut self) -> &mut dyn Any {
         &mut self.0
+    }
+}
+
+/// A driver for tests of what every driver relies on, so they need no real
+/// device: a lamp, with a second tile when asked.
+#[cfg(test)]
+pub mod test {
+    use super::*;
+    use serde::Deserialize;
+
+    pub struct Lamp;
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+    pub struct LampSettings {
+        pub key: String,
+        pub name: String,
+        #[serde(default)]
+        pub aid: u64,
+        /// A second tile, as a TV's art switch, when `tiles` is 2.
+        #[serde(default)]
+        pub tile_aid: u64,
+        #[serde(default)]
+        pub tiles: u8,
+        /// Something a fresh setup learns again, like a password.
+        #[serde(default)]
+        pub secret: String,
+    }
+
+    impl LampSettings {
+        pub fn new(key: &str, name: &str) -> Self {
+            Self {
+                key: key.into(),
+                name: name.into(),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl Settings for LampSettings {
+        fn id(&self) -> String {
+            format!("test-lamp:{}", self.key)
+        }
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn name_mut(&mut self) -> &mut String {
+            &mut self.name
+        }
+        fn aids(&mut self) -> Vec<&mut u64> {
+            if self.tiles == 2 {
+                vec![&mut self.aid, &mut self.tile_aid]
+            } else {
+                vec![&mut self.aid]
+            }
+        }
+        fn address(&self) -> Option<(String, u16)> {
+            None
+        }
+    }
+
+    pub struct NoSetup;
+
+    impl Setup for NoSetup {
+        async fn next(&mut self, _: &Answers) -> Result<Next> {
+            Err(anyhow!("a test lamp is not added"))
+        }
+    }
+
+    crate::register_driver!(Lamp);
+
+    impl Driver for Lamp {
+        const KIND: &'static str = "test-lamp";
+        const ALIASES: &'static [&'static str] = &["test-light"];
+        const NAME: &'static str = "Test lamp";
+        const CATEGORY: &'static str = "light";
+        type Settings = LampSettings;
+        type Setup = NoSetup;
+
+        fn setup() -> (NoSetup, Step) {
+            (NoSetup, Step::new("", ""))
+        }
+
+        async fn start(_: LampSettings, _: Context) -> Result<()> {
+            Ok(())
+        }
     }
 }

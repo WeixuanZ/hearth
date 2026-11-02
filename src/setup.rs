@@ -170,7 +170,12 @@ pub fn products() -> Vec<Product> {
 fn start(product: &str) -> Result<(Box<dyn crate::driver::AnySetup>, Step)> {
     crate::driver::find(product)
         .map(|driver| driver.setup())
-        .ok_or_else(|| anyhow!("no device called {product} can be added. These can: {}", kinds()))
+        .ok_or_else(|| {
+            anyhow!(
+                "no device called {product} can be added. These can: {}",
+                kinds()
+            )
+        })
 }
 
 /// Setups under way for the control socket, one per product.
