@@ -79,6 +79,8 @@ async fn serve(config: Config) -> Result<()> {
     }
     // Home's accessories, made from what the devices just published.
     homekit::add_devices(&server, &config).await?;
+    // Matter too, if it is on, until serving ends.
+    let _matter = crate::surfaces::matter::start(&config)?;
     log::info!(
         "serving Home as {}. To add it: Add Accessory, More options, then {}, code {}",
         config.name,

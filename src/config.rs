@@ -35,6 +35,9 @@ pub struct Config {
     /// When each removed device went, by id, so other computers drop it too.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub removed: BTreeMap<String, u64>,
+    /// Matter's pairing code, while Matter is on (`hearth matter on`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matter: Option<crate::surfaces::matter::Settings>,
 }
 
 /// A device in the config: its kind's own settings, read and written by the

@@ -15,6 +15,14 @@ name = "hearth"
 path = "src/main.rs"
 
 [dependencies]
+# Matter, beside HomeKit (surfaces::matter).
+rs-matter = { version = "=0.4.1", features = ["async-io", "groups", "max-groups-per-fabric-12", "max-group-keys-per-fabric-3", "max-group-endpoints-per-fabric-3"] }
+rand10 = { package = "rand", version = "=0.10.2", features = ["std", "std_rng", "thread_rng"] }
+async-io = "2"
+futures-lite = "2"
+embassy-futures = "0.1"
+embassy-time = { version = "0.5", features = ["std"] }
+embassy-time-queue-utils = { version = "0.3", features = ["generic-queue-64"] }
 aes = "0.8"
 anyhow = "1"
 base64 = "0.22"
@@ -63,3 +71,11 @@ codegen-units = 1
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+
+# Matter advertises through the system's own mDNS: Bonjour on a Mac, Avahi
+# elsewhere.
+[target.'cfg(target_os = "macos")'.dependencies]
+rs-matter = { version = "=0.4.1", features = ["astro-dnssd"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+rs-matter = { version = "=0.4.1", features = ["zbus"] }

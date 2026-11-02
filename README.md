@@ -78,6 +78,8 @@ A choice lists `[[devices.control.options]]`, each an `id`, a `name` and the `va
 
 **Apple Home.** Start the bridge (the menu bar's Start, or `hearth run`), then in the Home app choose Add Accessory → More options → Hearth, and enter the code the menu bar or `hearth pin` shows.
 
+**Google Home, Alexa and other Matter controllers.** `hearth matter on` turns on a Matter bridge beside HomeKit and prints its pairing code; restart the bridge, then add a Matter device in the controller's app and enter the code. Each device's power and switches are plugs, and its temperature, humidity, door and leak are sensors; a dishwasher shows only its sensors, so nothing can start it by accident. The bridge uses the Matter test certificate, as anything made at home does, so the app warns that it is not certified; Google Home asks for its test vendor id in the Google Home Developer Console first. Pairing is open for 15 minutes after the bridge starts, until a controller has it; a second controller is added from the first, as Matter shares. Apple Home has these devices through HomeKit already, so do not add the Matter bridge there too. `hearth matter off` turns it off and forgets every controller.
+
 ## Use it
 
 **Menu bar.** The bridge, which computer serves Home, the pairing code while Home does not have it yet, and each device. Click a device to open its controls, drawn from its capabilities: toggles, choices, sliders, a remote, and readings. Rest the pointer on a reading, like temperature or PM2.5, and its history opens beside the menu, drawn the way Apple Weather draws its own: the last day as a smooth line coloured by value, which the pointer scrubs, or the last week as each day's low to high.

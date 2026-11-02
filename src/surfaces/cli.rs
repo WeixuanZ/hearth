@@ -647,6 +647,44 @@ impl Style {
     }
 }
 
+/// `hearth matter`: turns Matter on or off, and shows its pairing code.
+pub fn matter(state: Option<&str>, as_json: bool) -> Result<()> {
+    let mut config = crate::config::load()?;
+    match state {
+        Some("on") if config.matter.is_none() => {
+            config.matter = Some(crate::surfaces::matter::Settings::new());
+        }
+        Some("off") if config.matter.is_some() => {
+            config.matter = None;
+            crate::surfaces::matter::forget()?;
+        }
+        _ => {}
+    }
+    if state.is_some() {
+        config.updated = crate::config::now();
+        crate::config::save(&config)?;
+    }
+    let code = config.matter.map(|settings| settings.code());
+    if as_json {
+        println!(
+            "{}",
+            serde_json::json!({ "on": code.is_some(), "code": code })
+        );
+        return Ok(());
+    }
+    match (code, state) {
+        (Some(code), _) => {
+            println!("Matter is on. Pairing code: {code}");
+            if state.is_some() {
+                println!("Restart the bridge, then add it in a Matter controller with that code.");
+            }
+        }
+        (None, Some(_)) => println!("Matter is off. Restart the bridge for it to stop."),
+        (None, None) => println!("Matter is off. `hearth matter on` turns it on."),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod sparkline_tests {
     use super::sparkline;
