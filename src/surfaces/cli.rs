@@ -520,12 +520,18 @@ fn value_text(capability: &Value) -> String {
             None => "running".into(),
         },
         Some("run") => "stopped".into(),
-        Some("choice") => capability["options"]
-            .as_array()
-            .and_then(|options| options.iter().find(|option| option["id"] == *value))
-            .and_then(|option| option["name"].as_str())
-            .unwrap_or_else(|| value.as_str().unwrap_or(""))
-            .into(),
+        Some("choice") => {
+            let option = capability["options"]
+                .as_array()
+                .and_then(|options| options.iter().find(|option| option["id"] == *value));
+            let name = option
+                .and_then(|option| option["name"].as_str())
+                .unwrap_or_else(|| value.as_str().unwrap_or(""));
+            match option.and_then(|option| option["note"].as_str()) {
+                Some(note) => format!("{name} ({})", note.to_lowercase()),
+                None => name.into(),
+            }
+        }
         Some("level" | "reading") => {
             let number = number_text(value.as_f64().unwrap_or(0.0));
             let unit = capability["unit"].as_str().unwrap_or("");

@@ -223,16 +223,24 @@ struct ControlRow: View {
             .controlSize(.small)
             // Segments only when they fit the card, like a sweep's four
             // angles. More, like a TV's inputs, become a menu.
-            if options.count <= 4 && options.map(\.name.count).reduce(0, +) <= 20 {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(capability.name).font(.system(size: 12))
-                    picker.pickerStyle(.segmented).fixedSize()
+            let note = options.first { $0.id == capability.value.text }?.note
+            VStack(alignment: .leading, spacing: 2) {
+                if options.count <= 4 && options.map(\.name.count).reduce(0, +) <= 20 {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(capability.name).font(.system(size: 12))
+                        picker.pickerStyle(.segmented).fixedSize()
+                    }
+                } else {
+                    HStack {
+                        Text(capability.name).font(.system(size: 12))
+                        Spacer(minLength: 8)
+                        picker.pickerStyle(.menu).fixedSize()
+                    }
                 }
-            } else {
-                HStack {
-                    Text(capability.name).font(.system(size: 12))
-                    Spacer(minLength: 8)
-                    picker.pickerStyle(.menu).fixedSize()
+                if let note {
+                    Text(note)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
             }
         case "level":
