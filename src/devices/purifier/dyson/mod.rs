@@ -22,6 +22,8 @@ use tokio::sync::{mpsc, watch};
 /// Dyson purifiers, over their own MQTT on the local network.
 pub struct Dyson;
 
+crate::register_driver!(Dyson);
+
 impl crate::driver::Driver for Dyson {
     const KIND: &'static str = "dyson";
     const NAME: &'static str = "Dyson purifier";

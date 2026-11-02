@@ -31,6 +31,8 @@ pub enum Command {
 /// Samsung's The Frame televisions.
 pub struct Frame;
 
+crate::register_driver!(Frame);
+
 impl crate::driver::Driver for Frame {
     const KIND: &'static str = "frame";
     const NAME: &'static str = "Samsung The Frame";

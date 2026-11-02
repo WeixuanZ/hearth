@@ -160,8 +160,8 @@ pub struct Product {
 
 /// The devices that can be added, from the drivers.
 pub fn products() -> Vec<Product> {
-    crate::driver::DRIVERS
-        .iter()
+    crate::driver::all()
+        .into_iter()
         .map(|driver| driver.product())
         .collect()
 }

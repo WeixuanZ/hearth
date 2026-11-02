@@ -18,6 +18,8 @@ use tokio::sync::mpsc;
 /// Devices on an MQTT broker.
 pub struct Mqtt;
 
+crate::register_driver!(Mqtt);
+
 impl crate::driver::Driver for Mqtt {
     const KIND: &'static str = "mqtt";
     const NAME: &'static str = "MQTT device";

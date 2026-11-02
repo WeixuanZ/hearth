@@ -27,6 +27,8 @@ use tokio::sync::{mpsc, watch};
 /// Bosch dishwashers, over Home Connect on the local network.
 pub struct Bosch;
 
+crate::register_driver!(Bosch);
+
 impl crate::driver::Driver for Bosch {
     const KIND: &'static str = "bosch";
     const NAME: &'static str = "Bosch dishwasher";
