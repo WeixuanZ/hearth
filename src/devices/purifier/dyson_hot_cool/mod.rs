@@ -45,26 +45,6 @@ impl crate::driver::Driver for DysonHotCool {
     async fn start(settings: DysonHotCoolDevice, context: crate::driver::Context) -> Result<()> {
         spawn(settings, context).await
     }
-
-    /// The fan, its sensors, heater and filter, and its switches.
-    fn homekit_ids(fan: &DysonHotCoolDevice) -> crate::surfaces::homekit::ids::DeviceIds {
-        let ids = crate::surfaces::homekit::ids::DeviceIds::default()
-            .accessory("main", fan.aid)
-            .service("main", "purifier", 20)
-            .service("main", "air", 40)
-            .service("main", "humidity", 70)
-            .service("main", "climate", 100)
-            .service("main", "filter", 140)
-            .service("main", "switch:night", 170)
-            .service("main", "switch:jet_focus", 180)
-            .service("main", "switch:monitoring", 190);
-        protocol::SWEEPS
-            .iter()
-            .zip((200..).step_by(10))
-            .fold(ids, |ids, (width, iid)| {
-                ids.service("main", format!("option:sweep:{width}"), iid)
-            })
-    }
 }
 
 async fn spawn(device: DysonHotCoolDevice, context: crate::driver::Context) -> Result<()> {
@@ -290,7 +270,6 @@ mod tests {
         /// Starts hearth's side against this fan, which has said nothing yet.
         fn device() -> DysonHotCoolDevice {
             DysonHotCoolDevice {
-                aid: 2,
                 name: "Purifier".into(),
                 serial: SERIAL.into(),
                 model: "HP09".into(),
@@ -397,12 +376,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn home_keeps_the_ids_it_knows_the_purifier_by() {
-        use crate::{driver::Driver, surfaces::homekit::Home};
+    async fn home_shows_a_purifier_with_its_sensors_heater_and_switches() {
+        use crate::surfaces::homekit::Home;
         use hap::HapType;
         use serde_json::json;
         let device = DysonHotCoolDevice {
-            aid: 3,
             name: "Purifier".into(),
             serial: "ABC-XY-12345678".into(),
             model: "XY01".into(),
@@ -413,22 +391,24 @@ mod tests {
             heating: true,
         };
         let snapshot = super::capabilities::snapshot(&device, &MachineState::default());
-        let mut home = Home::of(&snapshot, DysonHotCool::homekit_ids(&device)).await;
-        assert_eq!(home.services(3, HapType::AirPurifier), [20]);
-        assert_eq!(home.services(3, HapType::AirQualitySensor), [40]);
-        assert_eq!(home.services(3, HapType::HumiditySensor), [70]);
-        assert_eq!(home.services(3, HapType::HeaterCooler), [100]);
-        assert_eq!(home.services(3, HapType::FilterMaintenance), [140]);
+        let mut home = Home::of(&snapshot).await;
+        for kind in [
+            HapType::AirPurifier,
+            HapType::AirQualitySensor,
+            HapType::HumiditySensor,
+            HapType::HeaterCooler,
+            HapType::FilterMaintenance,
+        ] {
+            assert_eq!(home.services(2, kind).len(), 1, "{kind:?}");
+        }
         // Night mode, jet focus and monitoring, then one switch per sweep.
-        let mut switches = home.services(3, HapType::Switch);
-        switches.sort();
-        assert_eq!(switches[..3], [170, 180, 190]);
-        let sweeps: Vec<u64> = (0..switches.len() as u64 - 3)
-            .map(|index| 200 + 10 * index)
-            .collect();
-        assert_eq!(switches[3..], sweeps);
         assert_eq!(
-            home.write(3, 20, HapType::Active, json!(1)).await,
+            home.services(2, HapType::Switch).len(),
+            3 + protocol::SWEEPS.len()
+        );
+        let purifier = home.services(2, HapType::AirPurifier)[0];
+        assert_eq!(
+            home.write(2, purifier, HapType::Active, json!(1)).await,
             [("power", json!(true))]
         );
     }

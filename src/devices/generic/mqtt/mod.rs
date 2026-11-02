@@ -135,7 +135,6 @@ mod tests {
             category,
             host: "10.0.0.5".into(),
             port: 1883,
-            aid: 2,
             controls,
             ..MqttDevice::default()
         }
@@ -153,7 +152,7 @@ mod tests {
             ],
         );
         let snapshot = capabilities::snapshot(&lamp, &State::default());
-        let mut home = Home::of(&snapshot, Default::default()).await;
+        let mut home = Home::of(&snapshot).await;
         let light = home.services(2, HapType::Lightbulb);
         assert_eq!(light.len(), 1);
         assert_eq!(
@@ -179,7 +178,7 @@ mod tests {
             ],
         );
         let snapshot = capabilities::snapshot(&sensor, &State::default());
-        let home = Home::of(&snapshot, Default::default()).await;
+        let home = Home::of(&snapshot).await;
         assert_eq!(home.services(2, HapType::TemperatureSensor).len(), 1);
         assert_eq!(home.services(2, HapType::HumiditySensor).len(), 1);
         assert!(home.services(2, HapType::Switch).is_empty());

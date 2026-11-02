@@ -92,7 +92,6 @@ fn add(fan: &CloudDevice) -> Result<Next> {
         &mut saved,
         config::Device::new::<crate::devices::purifier::dyson_hot_cool::DysonHotCool>(
             DysonHotCoolDevice {
-                aid: 0,
                 name: name.clone(),
                 serial: fan.serial.clone(),
                 model: fan.model.clone(),

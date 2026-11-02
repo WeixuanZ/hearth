@@ -390,10 +390,6 @@ mod tests {
             },
         );
         HomeConnectDishwasherDevice {
-            aid: 2,
-            door_aid: 3,
-            leak_aid: 4,
-            cycle_aid: 5,
             name: "Bosch Dishwasher".into(),
             brand: "Bosch".into(),
             model: "SPV2HKX42G".into(),

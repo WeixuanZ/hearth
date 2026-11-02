@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SamsungFrameDevice {
-    #[serde(default)]
-    pub aid: u64,
     pub name: String,
     /// Filled in from the TV. The 65" 2024 Frame reports a model like QE65LS03D.
     #[serde(default)]
@@ -20,9 +18,6 @@ pub struct SamsungFrameDevice {
     /// IP Control's token, from a second Allow. Empty if IP Remote is off.
     #[serde(default)]
     pub ip_token: String,
-    /// HomeKit accessory id of the art switch, a tile beside the TV.
-    #[serde(default)]
-    pub art_aid: u64,
 }
 
 impl Settings for SamsungFrameDevice {
@@ -34,10 +29,6 @@ impl Settings for SamsungFrameDevice {
     }
     fn name_mut(&mut self) -> &mut String {
         &mut self.name
-    }
-    /// The TV, and art mode as a tile of its own.
-    fn aids(&mut self) -> Vec<&mut u64> {
-        vec![&mut self.aid, &mut self.art_aid]
     }
     /// The TV's own API, which answers even before it is paired.
     fn address(&self) -> Option<(String, u16)> {

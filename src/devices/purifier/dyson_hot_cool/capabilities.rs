@@ -155,7 +155,6 @@ mod tests {
 
     fn alerts(state: MachineState) -> Vec<&'static str> {
         let device = DysonHotCoolDevice {
-            aid: 2,
             name: "Purifier".into(),
             serial: "ABC-XY-12345678".into(),
             model: "HP09".into(),

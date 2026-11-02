@@ -3,9 +3,8 @@
 //! Home keeps rooms, scenes and automations by these ids, so once given they
 //! never change: a device that gains a programme or loses an option keeps
 //! every other id it had. They are kept in `homekit/ids.json`, which the
-//! group shares with the bridge's keys. A device's first ids come from what
-//! hearth gave it before this file (see [`DeviceIds`] seeds); anything new
-//! gets the next free id.
+//! group shares with the bridge's keys. Anything new gets the next free id.
+//! Devices know nothing of them: this is HomeKit's own record.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -38,25 +37,6 @@ pub struct DeviceIds {
     pub services: BTreeMap<String, BTreeMap<String, u64>>,
 }
 
-impl DeviceIds {
-    /// With accessory `key` at `aid`. 0, an id never given, is left out.
-    pub fn accessory(mut self, key: &str, aid: u64) -> Self {
-        if aid != 0 {
-            self.accessories.insert(key.to_owned(), aid);
-        }
-        self
-    }
-
-    /// With service `key` of accessory `accessory` at `iid`.
-    pub fn service(mut self, accessory: &str, key: impl Into<String>, iid: u64) -> Self {
-        self.services
-            .entry(accessory.to_owned())
-            .or_default()
-            .insert(key.into(), iid);
-        self
-    }
-}
-
 impl Ids {
     pub fn load(dir: &Path) -> Result<Self> {
         match fs::read_to_string(dir.join(FILE)) {
@@ -78,6 +58,7 @@ impl Ids {
     /// store knows keeps what it has. Every device is seeded before any new
     /// id is given, so a new one cannot land on an old one. Nothing is ever
     /// forgotten, so no id is given twice, even after a device is removed.
+    #[cfg(test)]
     pub fn seed(&mut self, device: &str, seed: impl FnOnce() -> DeviceIds) {
         self.devices.entry(device.to_owned()).or_insert_with(seed);
     }

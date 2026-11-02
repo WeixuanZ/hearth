@@ -47,37 +47,6 @@ impl crate::driver::Driver for HomeConnectDishwasher {
     ) -> Result<()> {
         spawn(settings, context).await
     }
-
-    /// The machine with its options, programmes and supplies, and its door,
-    /// AquaStop and the end of a cycle as tiles of their own.
-    fn homekit_ids(
-        machine: &HomeConnectDishwasherDevice,
-    ) -> crate::surfaces::homekit::ids::DeviceIds {
-        use crate::connectors::home_connect::protocol::programs;
-        use machine::option_switches;
-        let mut ids = crate::surfaces::homekit::ids::DeviceIds::default()
-            .accessory("main", machine.aid)
-            .accessory("door", machine.door_aid)
-            .accessory("leak", machine.leak_aid)
-            .accessory("cycle", machine.cycle_aid)
-            .service("main", "run", 20)
-            .service("main", "supply:salt", 700)
-            .service("main", "supply:rinse_aid", 720);
-        for (key, iid, _) in option_switches(&machine.features) {
-            ids = ids.service(
-                "main",
-                format!("switch:{}", capabilities::option_id(key)),
-                iid,
-            );
-        }
-        for (index, (uid, _)) in programs(&machine.features).into_iter().enumerate() {
-            ids = ids.service("main", format!("programme:{uid}"), 400 + index as u64 * 10);
-        }
-        // Each sensor tile counted its iid past its information service.
-        ["door", "leak", "cycle"]
-            .into_iter()
-            .fold(ids, |ids, tile| ids.service(tile, "sensor", 7))
-    }
 }
 
 async fn spawn(device: HomeConnectDishwasherDevice, context: crate::driver::Context) -> Result<()> {
@@ -183,10 +152,6 @@ mod tests {
             values: BTreeMap::new(),
         };
         HomeConnectDishwasherDevice {
-            aid: 2,
-            door_aid: 3,
-            leak_aid: 4,
-            cycle_aid: 5,
             name: "Dishwasher".into(),
             brand: "Bosch".into(),
             model: "XY01".into(),
@@ -303,24 +268,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn home_keeps_the_ids_it_knows_the_dishwasher_by() {
-        use crate::{driver::Driver, surfaces::homekit::Home};
+    async fn home_shows_start_and_stop_a_tile_per_programme_and_its_sensors() {
+        use crate::surfaces::homekit::Home;
         use hap::HapType;
         let device = device();
         let snapshot = capabilities::snapshot(&device, &Reading::default(), Kept::default());
-        let mut home = Home::of(&snapshot, HomeConnectDishwasher::homekit_ids(&device)).await;
+        let mut home = Home::of(&snapshot).await;
         // Start and stop, then the one programme.
-        assert_eq!(home.services(2, HapType::Switch), [20, 400]);
-        assert_eq!(home.services(3, HapType::ContactSensor), [7]);
-        assert_eq!(home.services(4, HapType::LeakSensor), [7]);
-        assert_eq!(home.services(5, HapType::MotionSensor), [7]);
+        let switches = home.services(2, HapType::Switch);
+        assert_eq!(switches.len(), 2);
+        // The door, a leak and a finished run notify, so each is a tile.
+        for kind in [
+            HapType::ContactSensor,
+            HapType::LeakSensor,
+            HapType::MotionSensor,
+        ] {
+            let tiles: usize = (3..=5).map(|aid| home.services(aid, kind).len()).sum();
+            assert_eq!(tiles, 1, "{kind:?}");
+        }
         // A programme's tile picks it and starts it, and stops it when off.
+        let programme = switches[1];
         assert_eq!(
-            home.write(2, 400, HapType::PowerState, json!(true)).await,
+            home.write(2, programme, HapType::PowerState, json!(true))
+                .await,
             [("programme", json!("30")), ("run", json!(true))]
         );
         assert_eq!(
-            home.write(2, 400, HapType::PowerState, json!(false)).await,
+            home.write(2, programme, HapType::PowerState, json!(false))
+                .await,
             [("run", json!(false))]
         );
     }

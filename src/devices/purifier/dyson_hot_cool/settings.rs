@@ -5,9 +5,6 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DysonHotCoolDevice {
-    /// HomeKit accessory id. The fan and its switches are one accessory.
-    #[serde(default)]
-    pub aid: u64,
     pub name: String,
     pub serial: String,
     pub model: String,
@@ -31,9 +28,6 @@ impl Settings for DysonHotCoolDevice {
     }
     fn name_mut(&mut self) -> &mut String {
         &mut self.name
-    }
-    fn aids(&mut self) -> Vec<&mut u64> {
-        vec![&mut self.aid]
     }
     /// Empty means found on the network by its serial.
     fn address(&self) -> Option<(String, u16)> {
