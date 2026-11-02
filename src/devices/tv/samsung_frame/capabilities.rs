@@ -2,7 +2,7 @@
 //! same state through `accessory`, and both turn into the same commands.
 
 use super::{Command, Tv};
-use crate::capabilities::{Capability, Item, Role, Set, Snapshot};
+use crate::capabilities::{About, Capability, Item, Role, Set, Snapshot};
 use crate::config::Settings as _;
 use crate::connectors::samsung::protocol::Input;
 use anyhow::{anyhow, Result};
@@ -85,6 +85,20 @@ impl<L> Tv<L> {
                 .active(self.on),
             ],
             alerts: Vec::new(),
+            about: About {
+                maker: "Samsung".into(),
+                model: if self.device.model.is_empty() {
+                    "The Frame 2024".into()
+                } else {
+                    self.device.model.clone()
+                },
+                serial: if self.device.mac.is_empty() {
+                    self.device.host.clone()
+                } else {
+                    self.device.mac.clone()
+                },
+                firmware: "2024".into(),
+            },
         }
     }
 }

@@ -4,7 +4,7 @@
 use crate::config::Settings as _;
 use crate::connectors::dyson::protocol::{sweep, Intent, MachineState, SWEEPS};
 use crate::{
-    capabilities::{Alert, Capability, Item, Measure, Role, Set, Snapshot},
+    capabilities::{About, Alert, Capability, Item, Measure, Role, Set, Snapshot},
     devices::purifier::dyson::DysonDevice,
 };
 use anyhow::{anyhow, Result};
@@ -97,6 +97,12 @@ pub fn snapshot(device: &DysonDevice, state: &MachineState) -> Snapshot {
         detail: device.model.clone(),
         capabilities,
         alerts: if online { alerts(state) } else { Vec::new() },
+        about: About {
+            maker: "Dyson".into(),
+            model: device.model.clone(),
+            serial: device.serial.clone(),
+            firmware: "1.0".into(),
+        },
     }
 }
 

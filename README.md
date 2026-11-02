@@ -184,7 +184,7 @@ flowchart TB
   cli --> socket
   bar --> socket
   socket --> registry
-  homekit --> devices
+  homekit --> registry
   registry --> devices
   devices --> registry
   purifier --> dyson
@@ -196,10 +196,10 @@ flowchart TB
 ```
 
 - **Connectors** know how to talk to a maker: login, pairing, discovery and message formats. They know nothing about Home or the menu bar.
-- **Devices** know what a product does. Each runs as one task that owns its state and its connection, turns requests into the connector's commands, and turns its state into a capability snapshot and HomeKit accessories. Rules between controls, like heat needing the fan on, live here, so every surface gets them.
-- **Capabilities** are the shared vocabulary. A capability has an id, a name, a kind (`power`, `switch`, `choice`, `level`, `reading` or `keys`) with its options or range, a value, and whether it is active. The registry holds every device's latest snapshot and the channel to its task.
+- **Devices** know what a product does. Each runs as one task that owns its state and its connection, turns requests into the connector's commands, and turns its state into a capability snapshot. It knows nothing of Home. Rules between controls, like heat needing the fan on, live here, so every surface gets them.
+- **Capabilities** are the shared vocabulary. A capability has an id, a name, a kind (`power`, `switch`, `choice`, `level`, `reading`, `state`, `keys` or `run`) with its options or range, a role that says what it means (a TV's input, a fan's speed, PM2.5), a value, and whether it is active. The registry holds every device's latest snapshot and the channel to its task.
 - **State is watched, not called.** Every device's latest snapshot is one value in `bus`, which anything can watch: it sees the state at once, then each new one, and a slow watcher skips ahead rather than missing anything. History records from it, and `{"op":"subscribe"}` on the socket (and `hearth events`) streams what changed, named by topic, `hearth/<device>/<capability>`. Nothing a device publishes is wired to who listens.
-- **Surfaces** never know a brand. HomeKit, the socket and the CLI send requests to the same device task, so they always agree. The menu bar draws controls from capability kinds alone.
+- **Surfaces** never know a brand. HomeKit, the socket and the CLI send requests to the same device task, so they always agree. The menu bar draws controls from capability kinds alone, and HomeKit makes each device's accessories from its category and its capabilities' roles: a TV with inputs, a purifier with its sensors, a machine that runs programmes with a tile per programme. It watches the bus to show each new state, and Home's writes become the same requests the menu bar makes.
 - **The group** decides which computer serves. Serving runs on a Tokio runtime of its own, so a computer that steps down ends every device connection at once.
 
 ```text
@@ -211,9 +211,9 @@ src/
   connectors/dyson/       MyDyson login, MQTT, the fan's messages
   connectors/samsung/     pairing, the remote and art channels, IP Control
   connectors/bosch/       Home Connect sign-in, the local websocket
-  devices/<kind>/<model>/ a device's task, HomeKit accessories and capabilities
+  devices/<kind>/<model>/ a device's task and capabilities
   cluster/                the group: hellos, joining, sharing state, who serves
-  surfaces/homekit/       the HomeKit bridge and accessory helpers
+  surfaces/homekit/       the HomeKit bridge, accessories made from capabilities, and their ids
   surfaces/control.rs     the control socket
   surfaces/cli.rs         what the CLI prints
   run.rs                  hearth run: the socket and the group always; devices and Home when serving
@@ -334,7 +334,8 @@ A kind of device is a **driver**: one module that implements `driver::Driver`, l
 2. **Settings.** Under `src/devices/<kind>/<model>/settings.rs`: what the config keeps of one, implementing `config::Settings` (its id, its name, the HomeKit accessory ids it owns, the address `hearth doctor` dials, and any setup left to do). The config writes it as its own table, with `kind` and `id`; ids, merging between computers and renames then work for it.
 3. **Driver.** In the device's `mod.rs`: a type implementing `Driver` (its `KIND`, the `NAME` and `CATEGORY` the menu bar offers, its `Settings` and `Setup`, and `start`), added to `DRIVERS`. `start` runs the device's task with a `driver::Context`: `publish` its snapshot, take `requests`, and `remember` what it learns, like a new token, in its saved settings.
 4. **Capabilities.** In `capabilities.rs` next to it: a `snapshot` from state, and a function from a request to the device's command. Give each capability the `Role` that says what it is (a TV's input, a fan's speed; a measurement with `Capability::measure`), so Home and other ecosystems can show it as theirs. A machine that runs programmes, like a washing machine, publishes a `run` in place of `power`: the controls before it set a run up, those after it are for while it runs, and `devices::cycle` says when a run finished, for an alert and a sensor Home notifies on. The menu bar's start, countdown and time left then come for free.
-5. **HomeKit.** For now, in `accessory.rs`: the accessories, with fixed iids per service (tests check they are unique), and the same commands as the capabilities. Give the main service `device_name`, and call `follow_name` once the accessory is added, so renames reach Home and come back from it. Other services take `configured_name`, for names Home can change. This step is going away: HomeKit is being made from capabilities and their roles.
+
+That is all Home needs: it shows the device from its category and its capabilities' roles, and keeps each accessory and service id in `homekit/ids.json` by what it is, so Home keeps its rooms, scenes and automations whatever is added later. A category Home has no tile for shows as a machine: its `run` or `power`, a switch per other control, and its sensors.
 
 A config that names a kind this build does not know, as from a newer computer in the group, keeps that device as it is; it is not started.
 
@@ -343,13 +344,14 @@ The menu bar, the CLI, the socket and the group need no changes.
 ### HomeKit notes
 
 - A service linked to a TV shows up in its input picker, so the TV links only inputs.
+- Home keys rooms, scenes and automations on accessory and service ids, so they never move: `homekit/ids.json` gives each a fixed id by what it is (`input:hdmi2`, `programme:30`), and a new one the next free id, never one used before. Devices paired before keep the ids they had.
 - Home caches the accessory layout until the configuration number changes. hearth fingerprints the layout and bumps the number when it differs.
 - After pairing, Home names an accessory from the Configured Name of its main service, not from its accessory information, so that is where a rename goes.
 - `bridge_id` in the config is hashed into the HomeKit identity. Changing it makes Home see a new accessory, which is how `hearth unpair` starts over.
 
 ### On disk
 
-Under `~/.config/hearth/`: `config.toml` (the bridge and devices, shared by the group), `homekit/` (the bridge's keys and Home's pairings, shared), `group.json` (the group key, 0600, never sent after joining), `node` (this computer's id), `control.sock`, `hearth.log`, and `series/` (one CSV of readings per device, mode 0600, kept for 30 days, with `format.json` naming their layout: a hearth that finds a newer format leaves the files alone, and computers share history only in the same format). The computer serving Home records from the devices. Once a minute every member compares a hash of each day of history with every other member and takes the days it holds differently; rows merge cell by cell, keeping the larger value where two disagree, so all members end with the same record, including one that was asleep or has just joined, and any can take over with it. The menu bar and `hearth history` ask the one serving, from any computer. Removing a device deletes its history on every computer.
+Under `~/.config/hearth/`: `config.toml` (the bridge and devices, shared by the group), `homekit/` (the bridge's keys, Home's pairings and `ids.json`, shared), `group.json` (the group key, 0600, never sent after joining), `node` (this computer's id), `control.sock`, `hearth.log`, and `series/` (one CSV of readings per device, mode 0600, kept for 30 days, with `format.json` naming their layout: a hearth that finds a newer format leaves the files alone, and computers share history only in the same format). The computer serving Home records from the devices. Once a minute every member compares a hash of each day of history with every other member and takes the days it holds differently; rows merge cell by cell, keeping the larger value where two disagree, so all members end with the same record, including one that was asleep or has just joined, and any can take over with it. The menu bar and `hearth history` ask the one serving, from any computer. Removing a device deletes its history on every computer.
 
 ### Build, test and release
 

@@ -5,7 +5,6 @@
 //! end of a cycle are their own accessories, because those are the sensors
 //! Home will notify for.
 
-mod accessory;
 mod capabilities;
 mod settings;
 
@@ -17,22 +16,10 @@ use crate::{
         protocol::{Command, Reading},
     },
     devices::cycle::{Cycle, Seen},
-    surfaces::homekit::characteristics::{follow_label, follow_name},
-};
-use accessory::{
-    apply_cycle, apply_door, apply_leak, apply_main, build_cycle, build_door, build_leak,
-    build_main,
 };
 use anyhow::{anyhow, Result};
 use capabilities::{Ask, Kept};
-use hap::{server::Server, HapType};
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 /// Bosch dishwashers, over Home Connect on the local network.
@@ -52,71 +39,67 @@ impl crate::driver::Driver for Bosch {
     async fn start(settings: BoschDevice, context: crate::driver::Context) -> Result<()> {
         spawn(settings, context).await
     }
+
+    /// The machine with its options, programmes and supplies, and its door,
+    /// AquaStop and the end of a cycle as tiles of their own.
+    fn homekit_ids(machine: &BoschDevice) -> crate::surfaces::homekit::ids::DeviceIds {
+        use crate::connectors::bosch::protocol::{option_switches, programs};
+        let mut ids = crate::surfaces::homekit::ids::DeviceIds::default()
+            .accessory("main", machine.aid)
+            .accessory("door", machine.door_aid)
+            .accessory("leak", machine.leak_aid)
+            .accessory("cycle", machine.cycle_aid)
+            .service("main", "run", 20)
+            .service("main", "supply:salt", 700)
+            .service("main", "supply:rinse_aid", 720);
+        for (key, iid, _) in option_switches(&machine.features) {
+            ids = ids.service(
+                "main",
+                format!("switch:{}", capabilities::option_id(key)),
+                iid,
+            );
+        }
+        for (index, (uid, _)) in programs(&machine.features).into_iter().enumerate() {
+            ids = ids.service("main", format!("programme:{uid}"), 400 + index as u64 * 10);
+        }
+        // Each sensor tile counted its iid past its information service.
+        ["door", "leak", "cycle"]
+            .into_iter()
+            .fold(ids, |ids, tile| ids.service(tile, "sensor", 7))
+    }
 }
 
 async fn spawn(device: BoschDevice, context: crate::driver::Context) -> Result<()> {
-    let server = context.homekit().clone();
     let (commands_tx, commands_rx) = mpsc::channel(32);
-    let snapshot = capabilities::snapshot(&device, &Reading::default(), Kept::default());
-    let id = snapshot.id.clone();
-    context.publish(snapshot);
+    context.publish(capabilities::snapshot(
+        &device,
+        &Reading::default(),
+        Kept::default(),
+    ));
     let requests = context.requests();
     let (state_tx, state_rx) = watch::channel(Reading::default());
-    // The programme the next start runs, chosen from the menu bar or CLI.
+    // The programme the next start runs, chosen from any surface.
     let (chosen_tx, chosen_rx) = watch::channel(None);
     tokio::spawn(answer(
         device.clone(),
         requests,
         state_rx.clone(),
         chosen_tx,
-        commands_tx.clone(),
+        commands_tx,
     ));
 
-    let suppress = Arc::new(AtomicBool::new(false));
-    let main = server
-        .add_accessory(build_main(&device, &suppress, &commands_tx).await?)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    follow_name(&id, main.clone(), HapType::Switch);
-    let door = server
-        .add_accessory(build_door(&device).await?)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    follow_label(&id, door.clone(), HapType::ContactSensor, "door");
-    let leak = server
-        .add_accessory(build_leak(&device).await?)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    follow_label(&id, leak.clone(), HapType::LeakSensor, "AquaStop");
-    let sensor = server
-        .add_accessory(build_cycle(&device).await?)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    follow_label(&id, sensor.clone(), HapType::MotionSensor, "cycle");
-
+    // The machine's state and what the bridge keeps beside it, shown as a
+    // snapshot whenever either changes.
     let shown = device.clone();
     tokio::spawn(async move {
-        let updates = async move {
+        let publish = async move {
             let mut states = state_rx;
             let mut chosen = chosen_rx;
             let mut cycle = Cycle::default();
             loop {
                 let current = states.borrow_and_update().clone();
                 let kept = keep(&mut cycle, *chosen.borrow_and_update(), &current);
-                suppress.store(true, Ordering::SeqCst);
-                let result = async {
-                    apply_main(main.lock().await.as_mut(), &shown, &current).await?;
-                    apply_door(door.lock().await.as_mut(), &current).await?;
-                    apply_leak(leak.lock().await.as_mut(), &current).await?;
-                    apply_cycle(sensor.lock().await.as_mut(), &current, kept.finished).await?;
-                    Ok::<(), anyhow::Error>(())
-                }
-                .await;
-                suppress.store(false, Ordering::SeqCst);
-                if let Err(error) = result {
-                    log::warn!("dishwasher HomeKit update failed: {error:#}");
-                }
-                crate::capabilities::publish(capabilities::snapshot(&shown, &current, kept));
+                context.publish(capabilities::snapshot(&shown, &current, kept));
                 let changed = tokio::select! {
                     changed = states.changed() => changed,
                     changed = chosen.changed() => changed,
@@ -126,14 +109,13 @@ async fn spawn(device: BoschDevice, context: crate::driver::Context) -> Result<(
                 }
             }
         };
-        tokio::pin!(updates);
         tokio::select! {
             result = drive(device, state_tx, commands_rx) => {
                 if let Err(error) = result {
                     log::error!("dishwasher stopped: {error:#}");
                 }
             }
-            () = &mut updates => {}
+            () = publish => {}
         }
     });
     Ok(())
@@ -356,6 +338,29 @@ mod tests {
         assert_eq!(
             keep(&mut cycle, Some(30), &reading(true, READY)).chosen,
             Some(30)
+        );
+    }
+
+    #[tokio::test]
+    async fn home_keeps_the_ids_it_knows_the_dishwasher_by() {
+        use crate::{driver::Driver, surfaces::homekit::Home};
+        use hap::HapType;
+        let device = device();
+        let snapshot = capabilities::snapshot(&device, &Reading::default(), Kept::default());
+        let mut home = Home::of(&snapshot, Bosch::homekit_ids(&device)).await;
+        // Start and stop, then the one programme.
+        assert_eq!(home.services(2, HapType::Switch), [20, 400]);
+        assert_eq!(home.services(3, HapType::ContactSensor), [7]);
+        assert_eq!(home.services(4, HapType::LeakSensor), [7]);
+        assert_eq!(home.services(5, HapType::MotionSensor), [7]);
+        // A programme's tile picks it and starts it, and stops it when off.
+        assert_eq!(
+            home.write(2, 400, HapType::PowerState, json!(true)).await,
+            [("programme", json!("30")), ("run", json!(true))]
+        );
+        assert_eq!(
+            home.write(2, 400, HapType::PowerState, json!(false)).await,
+            [("run", json!(false))]
         );
     }
 }

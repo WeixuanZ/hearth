@@ -74,9 +74,11 @@ impl Drop for Serving {
 async fn serve(config: Config) -> Result<()> {
     capabilities::begin(&config);
     let server = homekit::open(&config).await?;
-    for device in config.devices {
-        devices::spawn(device, server.clone()).await?;
+    for device in config.devices.clone() {
+        devices::spawn(device).await?;
     }
+    // Home's accessories, made from what the devices just published.
+    homekit::add_devices(&server, &config).await?;
     log::info!(
         "serving Home as {}. To add it: Add Accessory, More options, then {}, code {}",
         config.name,

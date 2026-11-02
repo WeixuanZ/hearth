@@ -64,88 +64,6 @@ impl MachineState {
     }
 }
 
-/// Apple Home's air-quality scale: 0 unknown, 1 excellent … 5 poor.
-/// Takes the worst of the pollutants the HP09 actually measures.
-pub fn air_quality(state: &MachineState) -> u8 {
-    let mut level = 0u8;
-    let consider = |level: &mut u8, band: u8| {
-        if band > *level {
-            *level = band;
-        }
-    };
-    if let Some(pm) = state.pm25 {
-        consider(
-            &mut level,
-            match pm {
-                n if n <= 12.0 => 1,
-                n if n <= 35.4 => 2,
-                n if n <= 55.4 => 3,
-                n if n <= 150.0 => 4,
-                _ => 5,
-            },
-        );
-    }
-    if let Some(pm) = state.pm10 {
-        consider(
-            &mut level,
-            match pm {
-                n if n <= 20.0 => 1,
-                n if n <= 50.0 => 2,
-                n if n <= 100.0 => 3,
-                n if n <= 150.0 => 4,
-                _ => 5,
-            },
-        );
-    }
-    // VOC and NO₂ arrive as Dyson's own 0–10 index, not a density.
-    if let Some(index) = state.voc_index.or(state.no2_index) {
-        consider(
-            &mut level,
-            match index {
-                n if n <= 2.0 => 1,
-                n if n <= 4.0 => 2,
-                n if n <= 6.0 => 3,
-                n if n <= 8.0 => 4,
-                _ => 5,
-            },
-        );
-    }
-    if let Some(other) = state.no2_index.filter(|_| state.voc_index.is_some()) {
-        consider(
-            &mut level,
-            match other {
-                n if n <= 2.0 => 1,
-                n if n <= 4.0 => 2,
-                n if n <= 6.0 => 3,
-                n if n <= 8.0 => 4,
-                _ => 5,
-            },
-        );
-    }
-    // WHO's 30-minute formaldehyde guideline is 0.1 mg/m³.
-    if let Some(hcho) = state.hcho_mg_m3 {
-        consider(
-            &mut level,
-            match hcho {
-                n if n <= 0.03 => 1,
-                n if n <= 0.08 => 2,
-                n if n <= 0.10 => 3,
-                n if n <= 0.30 => 4,
-                _ => 5,
-            },
-        );
-    }
-    level
-}
-
-pub fn speed_to_percent(speed: u8) -> f32 {
-    (speed.clamp(1, 10) as f32) * 10.0
-}
-
-pub fn percent_to_speed(percent: f32) -> u8 {
-    (percent / 10.0).round().clamp(1.0, 10.0) as u8
-}
-
 pub fn kelvin_tenths_to_c(raw: f32) -> f32 {
     raw / 10.0 - 273.15
 }
@@ -502,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_environment_and_rates_air() {
+    fn parses_environment() {
         let mut state = MachineState::default();
         let payload = r#"{
             "msg":"ENVIRONMENTAL-CURRENT-SENSOR-DATA",
@@ -514,17 +432,6 @@ mod tests {
         assert_eq!(state.pm25, Some(8.0));
         assert_eq!(state.voc_index, Some(3.0));
         assert_eq!(state.hcho_mg_m3, Some(0.02));
-        assert_eq!(air_quality(&state), 2); // VOC index 3 sits in "good"
-    }
-
-    #[test]
-    fn poor_pm_wins() {
-        let state = MachineState {
-            pm25: Some(160.0),
-            voc_index: Some(1.0),
-            ..MachineState::default()
-        };
-        assert_eq!(air_quality(&state), 5);
     }
 
     #[test]

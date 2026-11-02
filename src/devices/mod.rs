@@ -8,11 +8,10 @@ pub mod tv;
 
 use crate::{config::Device, driver};
 use anyhow::Result;
-use hap::server::IpServer;
 
 /// Starts a device's task, through the driver for its kind. A kind this
 /// build does not know is left for a computer that does.
-pub async fn spawn(device: Device, server: IpServer) -> Result<()> {
+pub async fn spawn(device: Device) -> Result<()> {
     let Some(driver) = driver::find(device.kind()) else {
         log::warn!(
             "{} is a {} device, which this version of hearth does not know",
@@ -22,6 +21,6 @@ pub async fn spawn(device: Device, server: IpServer) -> Result<()> {
         return Ok(());
     };
     driver
-        .start(&device, driver::Context::new(device.id(), server))
+        .start(&device, driver::Context::new(device.id()))
         .await
 }

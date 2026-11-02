@@ -428,7 +428,6 @@ pub fn format_remaining(seconds: u64) -> String {
 /// What Home asked for. Queued until the machine has finished its handshake.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    Power(bool),
     Option {
         key: String,
         on: bool,
@@ -621,14 +620,6 @@ impl Talk {
         command: Command,
     ) -> Option<String> {
         let (resource, data) = match command {
-            Command::Power(on) => {
-                let uid = feature_uid(features, "PowerState")?;
-                let feature = features.get(&uid.to_string())?;
-                (
-                    "/ro/values",
-                    json!([{ "uid": uid, "value": switched(feature, on) }]),
-                )
-            }
             Command::Option { key, on } => {
                 let uid = feature_uid(features, &key)?;
                 let feature = features.get(&uid.to_string())?;
@@ -884,7 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn the_handshake_replies_then_sends_a_queued_power_command() {
+    fn the_handshake_replies_then_sends_a_queued_command() {
         let mut features = BTreeMap::new();
         let mut values = BTreeMap::new();
         values.insert("0".into(), "Off".into());
@@ -907,7 +898,15 @@ mod tests {
         assert!(hello[0].contains(r#""deviceType":"Application""#));
         assert!(hello[1].contains(r#""resource":"/ci/services""#));
         assert!(hello[1].contains(r#""msgID":40"#));
-        assert!(talk.submit(&features, Command::Power(true)).is_none());
+        assert!(talk
+            .submit(
+                &features,
+                Command::Option {
+                    key: "PowerState".into(),
+                    on: true
+                }
+            )
+            .is_none());
         let replies = talk.intake(
             &features,
             &mut machine,

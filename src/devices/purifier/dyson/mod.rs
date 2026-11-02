@@ -1,32 +1,20 @@
 //! A Dyson purifier: one task that holds the fan's MQTT session and state,
 //! and shows it to HomeKit and as capabilities.
 
-mod accessory;
 mod capabilities;
 mod settings;
 
 pub use settings::DysonDevice;
 
-use crate::{
-    connectors::dyson::{
-        discover, mqtt,
-        protocol::{
-            self, command_topic, intent_fields, request_environment_payload, request_state_payload,
-            status_topic, Intent, MachineState, DEFAULT_PRODUCT_TYPES,
-        },
+use crate::connectors::dyson::{
+    discover, mqtt,
+    protocol::{
+        self, command_topic, intent_fields, request_environment_payload, request_state_payload,
+        status_topic, Intent, MachineState, DEFAULT_PRODUCT_TYPES,
     },
-    surfaces::homekit::characteristics::follow_name,
 };
-use accessory::{apply_purifier, build_purifier};
 use anyhow::{anyhow, Result};
-use hap::{server::Server, HapType};
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 /// Dyson purifiers, over their own MQTT on the local network.
@@ -46,22 +34,37 @@ impl crate::driver::Driver for Dyson {
     async fn start(settings: DysonDevice, context: crate::driver::Context) -> Result<()> {
         spawn(settings, context).await
     }
+
+    /// The fan, its sensors, heater and filter, and its switches.
+    fn homekit_ids(fan: &DysonDevice) -> crate::surfaces::homekit::ids::DeviceIds {
+        let ids = crate::surfaces::homekit::ids::DeviceIds::default()
+            .accessory("main", fan.aid)
+            .service("main", "purifier", 20)
+            .service("main", "air", 40)
+            .service("main", "humidity", 70)
+            .service("main", "climate", 100)
+            .service("main", "filter", 140)
+            .service("main", "switch:night", 170)
+            .service("main", "switch:jet_focus", 180)
+            .service("main", "switch:monitoring", 190);
+        protocol::SWEEPS
+            .iter()
+            .zip((200..).step_by(10))
+            .fold(ids, |ids, (width, iid)| {
+                ids.service("main", format!("option:sweep:{width}"), iid)
+            })
+    }
 }
 
 async fn spawn(device: DysonDevice, context: crate::driver::Context) -> Result<()> {
-    let server = context.homekit().clone();
     let (intent_tx, intent_rx) = mpsc::channel::<Intent>(32);
-    // The menu bar and the CLI ask through the registry, in the same intents
-    // HomeKit sends.
-    let snapshot = capabilities::snapshot(&device, &MachineState::default());
-    let id = snapshot.id.clone();
-    context.publish(snapshot);
+    context.publish(capabilities::snapshot(&device, &MachineState::default()));
+    // Every surface asks in the same intents.
     let mut requests = context.requests();
-    let intents = intent_tx.clone();
     tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
             let result = match capabilities::intent(&request) {
-                Ok(intent) => intents
+                Ok(intent) => intent_tx
                     .send(intent)
                     .await
                     .map_err(|_| anyhow!("the fan stopped")),
@@ -70,42 +73,23 @@ async fn spawn(device: DysonDevice, context: crate::driver::Context) -> Result<(
             request.finish(result);
         }
     });
-    let (state_tx, state_rx) = watch::channel(MachineState::default());
-    let suppress = Arc::new(AtomicBool::new(false));
-    let purifier = server
-        .add_accessory(build_purifier(&device, &suppress, &intent_tx).await?)
-        .await
-        .map_err(|error| anyhow!("{error}"))?;
-    follow_name(&id, purifier.clone(), HapType::AirPurifier);
-
+    // The fan's state, as it says it, shown as a snapshot.
+    let (state_tx, mut state_rx) = watch::channel(MachineState::default());
+    let shown = device.clone();
     tokio::spawn(async move {
-        let updates = async move {
-            let mut states = state_rx;
-            loop {
-                let current = states.borrow().clone();
-                suppress.store(true, Ordering::SeqCst);
-                let result = async {
-                    apply_purifier(purifier.lock().await.as_mut(), &current).await?;
-                    Ok::<(), anyhow::Error>(())
-                }
-                .await;
-                suppress.store(false, Ordering::SeqCst);
-                if let Err(error) = result {
-                    log::warn!("fan HomeKit update failed: {error:#}");
-                }
-                if states.changed().await.is_err() {
-                    break;
-                }
+        let publish = async move {
+            while state_rx.changed().await.is_ok() {
+                let state = state_rx.borrow_and_update().clone();
+                context.publish(capabilities::snapshot(&shown, &state));
             }
         };
-        tokio::pin!(updates);
         tokio::select! {
             result = drive(device, state_tx, intent_rx) => {
                 if let Err(error) = result {
                     log::error!("fan stopped: {error:#}");
                 }
             }
-            _ = &mut updates => {}
+            () = publish => {}
         }
     });
     Ok(())
@@ -211,7 +195,6 @@ async fn fan(
                         prefix = state.topic_prefix.clone();
                     }
                     state_tx.send(state.clone()).ok();
-                    crate::capabilities::publish(capabilities::snapshot(device, &state));
                 }
             }
             intent = intent_rx.recv() => {
@@ -221,7 +204,6 @@ async fn fan(
                 if let Some(fields) = publish(command_tx, &serial, prefix.as_deref(), &state, &intent).await {
                     protocol::assume(&mut state, &fields);
                     state_tx.send(state.clone()).ok();
-                    crate::capabilities::publish(capabilities::snapshot(device, &state));
                 }
             }
             _ = poll.tick() => {
@@ -383,5 +365,42 @@ mod tests {
         let command = fake.next_command().await;
         assert!(command.payload.contains(r#""fpwr":"OFF""#));
         assert!(command.payload.contains(r#""hmod":"OFF""#));
+    }
+
+    #[tokio::test]
+    async fn home_keeps_the_ids_it_knows_the_purifier_by() {
+        use crate::{driver::Driver, surfaces::homekit::Home};
+        use hap::HapType;
+        use serde_json::json;
+        let device = DysonDevice {
+            aid: 3,
+            name: "Purifier".into(),
+            serial: "ABC-XY-12345678".into(),
+            model: "XY01".into(),
+            product_type: "000X".into(),
+            mqtt_password: "x".into(),
+            host: String::new(),
+            port: 1883,
+            heating: true,
+        };
+        let snapshot = super::capabilities::snapshot(&device, &MachineState::default());
+        let mut home = Home::of(&snapshot, Dyson::homekit_ids(&device)).await;
+        assert_eq!(home.services(3, HapType::AirPurifier), [20]);
+        assert_eq!(home.services(3, HapType::AirQualitySensor), [40]);
+        assert_eq!(home.services(3, HapType::HumiditySensor), [70]);
+        assert_eq!(home.services(3, HapType::HeaterCooler), [100]);
+        assert_eq!(home.services(3, HapType::FilterMaintenance), [140]);
+        // Night mode, jet focus and monitoring, then one switch per sweep.
+        let mut switches = home.services(3, HapType::Switch);
+        switches.sort();
+        assert_eq!(switches[..3], [170, 180, 190]);
+        let sweeps: Vec<u64> = (0..switches.len() as u64 - 3)
+            .map(|index| 200 + 10 * index)
+            .collect();
+        assert_eq!(switches[3..], sweeps);
+        assert_eq!(
+            home.write(3, 20, HapType::Active, json!(1)).await,
+            [("power", json!(true))]
+        );
     }
 }
