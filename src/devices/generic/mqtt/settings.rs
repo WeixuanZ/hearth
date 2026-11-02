@@ -20,8 +20,6 @@ pub struct MqttDevice {
     pub username: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub password: String,
-    #[serde(default)]
-    pub aid: u64,
     /// What it does, each as a capability.
     #[serde(default, rename = "control")]
     pub controls: Vec<Control>,
@@ -199,9 +197,6 @@ impl Settings for MqttDevice {
     }
     fn name_mut(&mut self) -> &mut String {
         &mut self.name
-    }
-    fn aids(&mut self) -> Vec<&mut u64> {
-        vec![&mut self.aid]
     }
     /// The broker.
     fn address(&self) -> Option<(String, u16)> {

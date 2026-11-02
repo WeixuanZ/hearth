@@ -7,7 +7,6 @@ use crate::{
     capabilities::{self, Set, Snapshot},
     config::{self, Device, Settings},
     setup::{Answers, Next, Product, Step},
-    surfaces::homekit::ids::DeviceIds,
 };
 use anyhow::{anyhow, Result};
 use serde::{de::DeserializeOwned, Serialize};
@@ -44,12 +43,6 @@ pub trait Driver: Send + Sync + 'static {
     /// Starts one's task, which runs as long as the bridge serves Home.
     fn start(settings: Self::Settings, context: Context)
         -> impl Future<Output = Result<()>> + Send;
-
-    /// The ids Home knew one by before HomeKit was made from capabilities,
-    /// so it keeps them. A kind that came after has none.
-    fn homekit_ids(_settings: &Self::Settings) -> DeviceIds {
-        DeviceIds::default()
-    }
 }
 
 /// One device being added, a step at a time.
@@ -115,7 +108,6 @@ pub trait Kind: Send + Sync {
         device: &Device,
         context: Context,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>;
-    fn homekit_ids(&self, device: &Device) -> DeviceIds;
 }
 
 /// [`Setup`], for a setup of any kind.
@@ -145,13 +137,6 @@ impl<D> Registered<D> {
 impl<D: Driver> Kind for Registered<D> {
     fn answers_to(&self, kind: &str) -> bool {
         D::KIND == kind || D::ALIASES.contains(&kind)
-    }
-
-    fn homekit_ids(&self, device: &Device) -> DeviceIds {
-        device
-            .get::<D::Settings>()
-            .map(D::homekit_ids)
-            .unwrap_or_default()
     }
 
     fn product(&self) -> Product {
@@ -264,7 +249,7 @@ impl<D: Driver> config::Entry for Typed<D> {
 }
 
 /// A driver for tests of what every driver relies on, so they need no real
-/// device: a lamp, with a second tile when asked.
+/// device: a lamp.
 #[cfg(test)]
 pub mod test {
     use super::*;
@@ -276,13 +261,6 @@ pub mod test {
     pub struct LampSettings {
         pub key: String,
         pub name: String,
-        #[serde(default)]
-        pub aid: u64,
-        /// A second tile, as a TV's art switch, when `tiles` is 2.
-        #[serde(default)]
-        pub tile_aid: u64,
-        #[serde(default)]
-        pub tiles: u8,
         /// Something a fresh setup learns again, like a password.
         #[serde(default)]
         pub secret: String,
@@ -307,13 +285,6 @@ pub mod test {
         }
         fn name_mut(&mut self) -> &mut String {
             &mut self.name
-        }
-        fn aids(&mut self) -> Vec<&mut u64> {
-            if self.tiles == 2 {
-                vec![&mut self.aid, &mut self.tile_aid]
-            } else {
-                vec![&mut self.aid]
-            }
         }
         fn address(&self) -> Option<(String, u16)> {
             None

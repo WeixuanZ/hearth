@@ -78,10 +78,6 @@ async fn add(
 ) -> Result<Next> {
     let paired = account.pair(&chosen, host.as_deref()).await?;
     let device = HomeConnectDishwasherDevice {
-        aid: 0,
-        door_aid: 0,
-        leak_aid: 0,
-        cycle_aid: 0,
         name: if chosen.kind.is_empty() {
             format!("{} Dishwasher", paired.brand)
         } else {

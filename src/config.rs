@@ -19,9 +19,9 @@ pub struct Config {
     pub bridge_id: String,
     #[serde(default)]
     pub devices: Vec<Device>,
-    /// Names given in Home, by `aid.iid`. Home keeps a rename on the
-    /// accessory, so the bridge saves it here to show it after a restart.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Names given in Home, as a config from before `homekit/names.json`
+    /// kept them: read once, to move them there, and not written again.
+    #[serde(default, skip_serializing)]
     pub names: BTreeMap<String, String>,
     /// When the bridge's own settings above last changed, in Unix seconds.
     #[serde(default)]
@@ -61,8 +61,6 @@ pub trait Settings {
     fn id(&self) -> String;
     fn name(&self) -> &str;
     fn name_mut(&mut self) -> &mut String;
-    /// Every HomeKit accessory id it owns, its own first. 0 until assigned.
-    fn aids(&mut self) -> Vec<&mut u64>;
     /// Where the bridge reaches it on the network, when that is a fixed
     /// address rather than one found each time. `hearth doctor` dials it.
     fn address(&self) -> Option<(String, u16)>;
@@ -167,14 +165,13 @@ impl<'de> Deserialize<'de> for Device {
 }
 
 /// A device of a kind this build does not know, as it came: never started,
-/// but kept, with its name and Home ids, so a newer computer's devices pass
-/// through this one unharmed.
+/// but kept, with its name and everything else it had, so a newer
+/// computer's devices pass through this one unharmed.
 #[derive(Debug, Clone)]
 struct Unknown {
     kind: String,
     id: String,
     name: String,
-    aids: Vec<(String, u64)>,
     table: toml::Table,
 }
 
@@ -184,18 +181,10 @@ impl Unknown {
             Some(toml::Value::String(name)) => name.clone(),
             _ => kind.clone(),
         };
-        let aids = table
-            .iter()
-            .filter(|(key, _)| key.ends_with("aid"))
-            .filter_map(|(key, value)| {
-                Some((key.clone(), u64::try_from(value.as_integer()?).ok()?))
-            })
-            .collect();
         Self {
             id: id.unwrap_or_else(|| format!("{kind}:{name}")),
             kind,
             name,
-            aids,
             table,
         }
     }
@@ -210,9 +199,6 @@ impl Settings for Unknown {
     }
     fn name_mut(&mut self) -> &mut String {
         &mut self.name
-    }
-    fn aids(&mut self) -> Vec<&mut u64> {
-        self.aids.iter_mut().map(|(_, aid)| aid).collect()
     }
     fn address(&self) -> Option<(String, u16)> {
         None
@@ -232,9 +218,6 @@ impl Entry for Unknown {
     fn table(&self) -> Result<toml::Table> {
         let mut table = self.table.clone();
         table.insert("name".into(), self.name.clone().into());
-        for (key, aid) in &self.aids {
-            table.insert(key.clone(), i64::try_from(*aid)?.into());
-        }
         Ok(table)
     }
     fn clone_entry(&self) -> Box<dyn Entry> {
@@ -302,14 +285,6 @@ pub fn paired() -> bool {
     !pairing_files().is_empty()
 }
 
-/// Keeps a name given in Home, so the next start shows it again.
-pub fn save_name(key: &str, name: &str) -> Result<()> {
-    let mut config = load()?;
-    config.names.insert(key.to_owned(), name.to_owned());
-    save(&config)?;
-    Ok(())
-}
-
 /// Forgets every Home that paired with the bridge, so it can be added again.
 /// Returns how many pairings there were.
 pub fn clear_pairings() -> Result<usize> {
@@ -318,39 +293,6 @@ pub fn clear_pairings() -> Result<usize> {
         fs::remove_file(path).with_context(|| format!("could not remove {}", path.display()))?;
     }
     Ok(files.len())
-}
-
-/// Gives every device's accessories an id, keeping those already in use so
-/// Home keeps knowing them. Each device's own accessory comes first.
-pub fn assign_aids(devices: &mut [Device]) -> bool {
-    let mut slots: Vec<Vec<&mut u64>> = devices
-        .iter_mut()
-        .map(|device| device.settings_mut().aids())
-        .collect();
-    // An id claimed twice, as when two computers' devices merge, stays with
-    // the first claim; the other gets a new one below.
-    let mut used = Vec::new();
-    for slot in slots.iter_mut().flatten() {
-        if **slot >= 2 && !used.contains(&**slot) {
-            used.push(**slot);
-        } else {
-            **slot = 0;
-        }
-    }
-    let depth = slots.iter().map(Vec::len).max().unwrap_or(0);
-    let mut changed = false;
-    for level in 0..depth {
-        for slot in slots.iter_mut().filter_map(|device| device.get_mut(level)) {
-            if **slot == 0 {
-                **slot = (2..)
-                    .find(|aid| !used.contains(aid))
-                    .expect("ids are endless");
-                used.push(**slot);
-                changed = true;
-            }
-        }
-    }
-    changed
 }
 
 pub fn config_dir() -> Result<PathBuf> {
@@ -386,17 +328,12 @@ pub fn load() -> Result<Config> {
     let path = config_path()?;
     if path.exists() {
         let text = fs::read_to_string(&path)?;
-        let mut config = config_from_toml(&text)?;
-        if assign_aids(&mut config.devices) {
-            save(&config)?;
-        }
-        return Ok(config);
+        return config_from_toml(&text);
     }
     let legacy = legacy_config_path()?;
     if legacy.exists() {
         let text = fs::read_to_string(&legacy)?;
-        let mut config = config_from_toml(&text)?;
-        let _ = assign_aids(&mut config.devices);
+        let config = config_from_toml(&text)?;
         let saved = save(&config)?;
         copy_legacy_homekit()?;
         log::info!("moved the fan config to {}", saved.display());
@@ -483,7 +420,6 @@ fn stamp(config: &mut Config, old: Option<&Config>, now: u64) {
             config.name.clone(),
             config.homekit_pin.clone(),
             config.bridge_id.clone(),
-            config.names.clone(),
         )
     };
     if old.map(identity) != Some(identity(config)) {
@@ -573,7 +509,6 @@ pub fn merge(local: &Config, remote: &Config, local_paired: bool, remote_paired:
     }
     // What both have seen, so neither fetches the other again for it.
     config.updated = local.updated.max(remote.updated);
-    assign_aids(&mut config.devices);
     Merged {
         config,
         conflict: false,
@@ -604,26 +539,17 @@ fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
 }
 
 /// Adds `device`, or puts it in place of the one with its id, keeping the
-/// name given since and Home's accessory ids, so Home sees the same device.
+/// name given since. Its id is what every surface knows it by, so they all
+/// see the same device.
 pub fn upsert(config: &mut Config, mut device: Device) {
     let id = device.id();
     if let Some(existing) = config.devices.iter_mut().find(|item| item.id() == id) {
-        let aids: Vec<u64> = existing
-            .settings_mut()
-            .aids()
-            .into_iter()
-            .map(|aid| *aid)
-            .collect();
-        for (slot, aid) in device.settings_mut().aids().into_iter().zip(aids) {
-            *slot = aid;
-        }
         device.set_name(existing.name().to_owned());
         *existing = device;
         return;
     }
     device.set_name(unique_name(config, device.name()));
     config.devices.push(device);
-    assign_aids(&mut config.devices);
 }
 
 /// `name`, or `name 2`, `name 3`… if a device already has it, so a second TV
@@ -701,47 +627,8 @@ mod tests {
     use super::*;
     use crate::driver::test::{Lamp, LampSettings};
 
-    fn aid(device: &Device) -> u64 {
-        *device.clone().settings_mut().aids()[0]
-    }
-
     fn lamp(key: &str, name: &str) -> Device {
-        Device::new::<Lamp>(LampSettings {
-            aid: 2,
-            ..LampSettings::new(key, name)
-        })
-    }
-
-    fn two_tiles(key: &str, aid: u64) -> Device {
-        Device::new::<Lamp>(LampSettings {
-            aid,
-            tiles: 2,
-            ..LampSettings::new(key, "Lamp")
-        })
-    }
-
-    fn tile(device: &Device) -> u64 {
-        device.get::<LampSettings>().map_or(0, |lamp| lamp.tile_aid)
-    }
-
-    #[test]
-    fn a_new_device_does_not_reuse_held_ids() {
-        let mut devices = vec![lamp("A", "Lamp"), two_tiles("B", 0)];
-        assert!(assign_aids(&mut devices));
-        assert_eq!((aid(&devices[1]), tile(&devices[1])), (3, 4));
-        assert!(!assign_aids(&mut devices));
-    }
-
-    #[test]
-    fn a_tile_added_later_keeps_existing_ids() {
-        let mut devices = vec![two_tiles("A", 2), {
-            let mut other = lamp("B", "Other");
-            *other.settings_mut().aids()[0] = 3;
-            other
-        }];
-        assert!(assign_aids(&mut devices));
-        assert_eq!((aid(&devices[0]), aid(&devices[1])), (2, 3));
-        assert_eq!(tile(&devices[0]), 4);
+        Device::new::<Lamp>(LampSettings::new(key, name))
     }
 
     #[test]
@@ -758,7 +645,7 @@ mod tests {
         let Some(saved) = config.devices[0].get::<LampSettings>() else {
             unreachable!()
         };
-        assert_eq!((saved.name.as_str(), saved.aid), ("Study lamp", 2));
+        assert_eq!(saved.name, "Study lamp");
         assert_eq!(saved.secret, "new");
     }
 
@@ -793,7 +680,6 @@ mod tests {
         }
         let names: Vec<_> = config.devices.iter().map(Device::name).collect();
         assert_eq!(names, ["Lamp", "Lamp 2"]);
-        assert_ne!(aid(&config.devices[0]), aid(&config.devices[1]));
     }
 
     #[test]
@@ -832,9 +718,6 @@ mod tests {
             merged.config.removed.keys().collect::<Vec<_>>(),
             ["test-lamp:AAA"]
         );
-        // Both came with aid 2; the second gets another.
-        let aids: Vec<_> = merged.config.devices.iter().map(aid).collect();
-        assert_eq!(aids, [2, 3]);
         // Merging again changes nothing.
         assert_eq!(
             merge(&merged.config, &remote, true, false).config,
@@ -903,8 +786,6 @@ bulb = "warm"
             (lamp.kind(), lamp.id(), lamp.name()),
             ("lamp", "lamp:1".into(), "Desk lamp")
         );
-        // Its Home id is held, so a new device does not take it.
-        assert!(!assign_aids(&mut config.devices));
         config.devices[0].set_name("Reading lamp".into());
         let written = toml::to_string(&config).unwrap();
         let again = config_from_toml(&written).unwrap();

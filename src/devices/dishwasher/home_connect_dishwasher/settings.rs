@@ -8,15 +8,6 @@ use std::collections::BTreeMap;
 /// The account password is not stored. `key` is the machine's own key.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HomeConnectDishwasherDevice {
-    #[serde(default)]
-    pub aid: u64,
-    /// Door, AquaStop and the end of a cycle. Separate accessories, so Home can notify.
-    #[serde(default)]
-    pub door_aid: u64,
-    #[serde(default)]
-    pub leak_aid: u64,
-    #[serde(default)]
-    pub cycle_aid: u64,
     pub name: String,
     #[serde(default = "default_brand")]
     pub brand: String,
@@ -49,14 +40,6 @@ impl Settings for HomeConnectDishwasherDevice {
     fn name_mut(&mut self) -> &mut String {
         &mut self.name
     }
-    fn aids(&mut self) -> Vec<&mut u64> {
-        vec![
-            &mut self.aid,
-            &mut self.door_aid,
-            &mut self.leak_aid,
-            &mut self.cycle_aid,
-        ]
-    }
     /// The machine announces a bare name, which resolves with `.local`.
     fn address(&self) -> Option<(String, u16)> {
         let port = if self.iv.is_empty() { 443 } else { 80 };
@@ -87,10 +70,6 @@ mod tests {
 
     fn washer() -> HomeConnectDishwasherDevice {
         HomeConnectDishwasherDevice {
-            aid: 0,
-            door_aid: 0,
-            leak_aid: 0,
-            cycle_aid: 0,
             name: "Bosch Dishwasher".into(),
             brand: "Bosch".into(),
             model: "XY01".into(),

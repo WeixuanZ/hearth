@@ -1,6 +1,6 @@
 //! Helpers for the accessories hearth shows in Home.
 
-use crate::{capabilities, config};
+use crate::capabilities;
 use anyhow::{anyhow, Result};
 use hap::{
     accessory::HapAccessory,
@@ -19,15 +19,13 @@ pub async fn configured_name(
     default: &str,
 ) -> Result<()> {
     let key = format!("{aid}.{}", characteristic.get_id());
-    let saved = config::load()
-        .ok()
-        .and_then(|config| config.names.get(&key).cloned());
+    let saved = super::names::get(&key);
     characteristic
         .set_value(serde_json::json!(saved.as_deref().unwrap_or(default)))
         .await
         .map_err(|error| anyhow!("{error}"))?;
     characteristic.on_update(Some(move |_old: &String, new: &String| {
-        if let Err(error) = config::save_name(&key, new) {
+        if let Err(error) = super::names::set(&key, new) {
             log::warn!("could not keep the name {new}: {error:#}");
         }
         Ok(())

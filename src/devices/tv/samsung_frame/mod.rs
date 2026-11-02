@@ -50,26 +50,6 @@ impl crate::driver::Driver for SamsungFrame {
     async fn start(settings: SamsungFrameDevice, context: crate::driver::Context) -> Result<()> {
         spawn(settings, context).await
     }
-
-    /// The TV with its speaker and inputs, and art mode as a tile of its own.
-    fn homekit_ids(tv: &SamsungFrameDevice) -> crate::surfaces::homekit::ids::DeviceIds {
-        let ids = crate::surfaces::homekit::ids::DeviceIds::default()
-            .accessory("main", tv.aid)
-            .accessory("art", tv.art_aid)
-            .service("main", "television", 20)
-            .service("main", "speaker", 40)
-            .service("art", "switch", 20);
-        Input::ALL
-            .iter()
-            .zip((50..).step_by(10))
-            .fold(ids, |ids, (input, iid)| {
-                ids.service(
-                    "main",
-                    format!("input:{}", input.source().to_lowercase()),
-                    iid,
-                )
-            })
-    }
 }
 
 async fn spawn(device: SamsungFrameDevice, context: crate::driver::Context) -> Result<()> {
@@ -554,8 +534,6 @@ mod tests {
 
     fn paired() -> SamsungFrameDevice {
         SamsungFrameDevice {
-            aid: 2,
-            art_aid: 4,
             name: "Television".into(),
             token: "token".into(),
             ..Default::default()
@@ -563,26 +541,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn home_keeps_the_ids_it_knows_the_tv_by() {
-        use crate::{driver::Driver, surfaces::homekit::Home};
+    async fn home_shows_a_television_with_its_inputs_and_art_as_a_tile() {
+        use crate::surfaces::homekit::Home;
         use hap::HapType;
         let device = paired();
         let snapshot = Tv::new(Fake::default(), device.clone()).snapshot();
-        let home = Home::of(&snapshot, SamsungFrame::homekit_ids(&device)).await;
-        assert_eq!(home.services(2, HapType::Television), [20]);
-        assert_eq!(home.services(2, HapType::Speaker), [40]);
-        assert_eq!(home.services(2, HapType::InputSource), [50, 60, 70, 80, 90]);
-        assert_eq!(home.services(4, HapType::Switch), [20]);
+        let home = Home::of(&snapshot).await;
+        assert_eq!(home.services(2, HapType::Television).len(), 1);
+        assert_eq!(home.services(2, HapType::Speaker).len(), 1);
+        assert_eq!(home.services(2, HapType::InputSource).len(), 5);
+        // Art mode: a tile of its own, as Home shows nothing beside a TV.
+        assert_eq!(home.services(3, HapType::Switch).len(), 1);
     }
 
     #[tokio::test]
     async fn an_input_from_a_scene_leaves_the_tv_off() {
-        use crate::{driver::Driver, surfaces::homekit::Home};
+        use crate::surfaces::homekit::Home;
         use hap::HapType;
         use serde_json::json;
         let device = paired();
         let mut tv = Tv::new(Fake::default(), device.clone());
-        let mut home = Home::of(&tv.snapshot(), SamsungFrame::homekit_ids(&device)).await;
+        let mut home = Home::of(&tv.snapshot()).await;
         // A scene that turns the TV off may pick an input too: that asks nothing.
         let hdmi2 = json!(Input::Hdmi2 as u32);
         assert!(home

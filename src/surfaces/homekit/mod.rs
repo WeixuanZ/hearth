@@ -3,6 +3,7 @@
 mod accessory;
 pub mod characteristics;
 pub mod ids;
+mod names;
 mod profile;
 mod sync;
 
@@ -26,6 +27,7 @@ const LISTEN_ON: IpAddr = IpAddr::V6(Ipv6Addr::UNSPECIFIED);
 pub async fn open(config: &Config) -> Result<IpServer> {
     let dir = config::homekit_dir()?;
     std::fs::create_dir_all(&dir)?;
+    names::adopt()?;
     let mut storage = FileStorage::new(dir.to_str().context("homekit path")?)
         .await
         .map_err(|error| anyhow!("{error}"))?;
@@ -70,15 +72,6 @@ pub async fn open(config: &Config) -> Result<IpServer> {
 pub async fn add_devices(server: &IpServer, config: &Config) -> Result<()> {
     let dir = config::homekit_dir()?;
     let mut ids = ids::Ids::load(&dir)?;
-    // Every device's old ids first, so no new id lands on one.
-    for device in &config.devices {
-        let seed = || {
-            crate::driver::find(device.kind())
-                .map(|driver| driver.homekit_ids(device))
-                .unwrap_or_default()
-        };
-        ids.seed(&device.id(), seed);
-    }
     for device in &config.devices {
         let id = device.id();
         let Ok(snapshot) = crate::capabilities::snapshot(&id) else {
@@ -110,12 +103,11 @@ pub(crate) struct Home {
 
 #[cfg(test)]
 impl Home {
-    /// Accessories for `snapshot`, with ids seeded as hearth gave them
-    /// before. Fails if any accessory reuses an iid, which Home refuses.
-    pub async fn of(snapshot: &crate::capabilities::Snapshot, seed: ids::DeviceIds) -> Self {
+    /// Accessories for `snapshot`, with ids as a new bridge gives them.
+    /// Fails if any accessory reuses an iid, which Home refuses.
+    pub async fn of(snapshot: &crate::capabilities::Snapshot) -> Self {
         use hap::accessory::HapAccessory;
         let mut ids = ids::Ids::default();
-        ids.seed(&snapshot.id, || seed);
         let (writes, asked) = tokio::sync::mpsc::channel(16);
         let made = profile::make(snapshot, &mut ids, writes).await.unwrap();
         for accessory in &made.accessories {

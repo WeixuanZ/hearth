@@ -420,19 +420,10 @@ fn should_found(me: &str, started: u64, now: u64, heard: &BTreeMap<String, Heard
 
 /// What Home sees: a change here needs the bridge restarted.
 pub fn layout(config: &Config) -> String {
-    let devices: Vec<_> = config
+    let devices: Vec<String> = config
         .devices
-        .clone()
-        .iter_mut()
-        .map(|device| {
-            let aids: Vec<u64> = device
-                .settings_mut()
-                .aids()
-                .into_iter()
-                .map(|aid| *aid)
-                .collect();
-            (device.id(), aids)
-        })
+        .iter()
+        .map(crate::config::Device::id)
         .collect();
     format!(
         "{}|{}|{}|{devices:?}",

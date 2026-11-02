@@ -100,7 +100,6 @@ impl crate::driver::Setup for Setup {
                             mac: info.map(|info| info.mac).unwrap_or_default(),
                             token: token.clone(),
                             ip_token: ip.as_ref().cloned().unwrap_or_default(),
-                            ..Default::default()
                         },
                     ),
                 );
