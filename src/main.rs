@@ -9,6 +9,7 @@ mod run;
 mod series;
 mod setup;
 mod surfaces;
+mod watch;
 
 use anyhow::Result;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
@@ -41,6 +42,11 @@ const EXAMPLES: &[(&str, &str)] = &[
     ),
     ("hearth doctor", "What stands between Home and the devices"),
     ("hearth events", "Follow changes as they happen"),
+    ("hearth watch", "What is on the network, and what changed"),
+    (
+        "hearth watch --every 15",
+        "Look every 15 minutes, telling changes",
+    ),
 ];
 
 const NOTES: &str = "\
@@ -122,6 +128,13 @@ enum Command {
     Run,
     /// Check what Home and the devices need: the bridge, the network, the firewall, each device.
     Doctor,
+    /// What is on the local network, and what changed since the last look: new
+    /// devices, newly open ports, and a gateway that may be spoofed.
+    Watch {
+        /// Look again every this many minutes, telling only what changed.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=1440))]
+        every: Option<u64>,
+    },
     /// Serve the devices to AI agents over MCP, on stdin and stdout.
     Mcp,
     /// Print the Apple Home pairing code.
@@ -256,6 +269,7 @@ async fn main() -> Result<()> {
         Command::Events { topic } => cli::events(&topic, cli.json).await?,
         Command::Run => run::run().await?,
         Command::Doctor => surfaces::doctor::run(cli.json).await?,
+        Command::Watch { every } => watch::run(every, cli.json).await?,
         Command::Mcp => surfaces::mcp::serve(command()).await?,
         Command::Pin => println!("{}", config::load()?.homekit_pin),
         Command::Rename { device, name } => cli::rename(&device, &name, cli.json).await?,
