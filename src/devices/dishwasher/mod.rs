@@ -1,3 +1,3 @@
 //! Dishwashers, one module per maker.
 
-pub mod bosch;
+pub mod home_connect_dishwasher;

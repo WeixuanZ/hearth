@@ -4,11 +4,11 @@
 //! on port 443. An older one seals each frame itself and listens on port 80.
 //! The key material saved at pairing says which.
 
-use super::protocol::{decode_key, Command, Machine, Reading, Seal, Talk};
-use crate::devices::dishwasher::bosch::BoschDevice;
+use super::protocol::{decode_key, Command, Feature, Reading, Seal, State, Talk};
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use openssl::ssl::{Ssl, SslContext, SslMethod, SslVerifyMode, SslVersion};
+use std::collections::BTreeMap;
 use std::{net::IpAddr, pin::Pin, time::Duration};
 use tokio::{
     net::TcpStream,
@@ -16,11 +16,24 @@ use tokio::{
 };
 use tokio_tungstenite::{tungstenite::Message, WebSocketStream};
 
-pub async fn session(
-    device: &BoschDevice,
-    states: Option<&watch::Sender<Reading>>,
+/// Where an appliance is and how to talk to it, as pairing learned.
+pub struct Appliance<'a> {
+    pub name: &'a str,
+    pub host: &'a str,
+    /// The local key, and for an older appliance the IV of its own sealing.
+    pub key: &'a str,
+    pub iv: &'a str,
+    pub features: &'a BTreeMap<String, Feature>,
+}
+
+/// One session with `appliance`: its state, as its model reads it, kept in
+/// `states`; commands sent once the handshake is done. Returns when the
+/// appliance closes it after the handshake, or with `commands` gone.
+pub async fn session<S: State>(
+    device: &Appliance<'_>,
+    states: Option<&watch::Sender<Reading<S>>>,
     mut commands: Option<&mut mpsc::Receiver<Command>>,
-) -> Result<Machine> {
+) -> Result<S> {
     let mut link = connect(device).await?;
     let mut talk = Talk::new();
     let mut machine = states
@@ -39,7 +52,7 @@ pub async fn session(
         let event =
             tokio::time::timeout(quiet, next(&mut link, &mut talk, &mut commands, &mut poll))
                 .await
-                .context("the dishwasher went quiet")?;
+                .context("the appliance went quiet")?;
         match event {
             Event::Frame(frame) => {
                 heard = tokio::time::Instant::now();
@@ -47,13 +60,13 @@ pub async fn session(
                     if talk.synced() {
                         return Ok(machine);
                     }
-                    anyhow::bail!("the dishwasher closed the connection");
+                    anyhow::bail!("the appliance closed the connection");
                 };
                 if text.is_empty() {
                     continue;
                 }
                 log::debug!("{} {}", device.name, resource_of(&text));
-                for reply in talk.intake(&device.features, &mut machine, &text) {
+                for reply in talk.intake(device.features, &mut machine, &text) {
                     link.send(&reply).await?;
                 }
                 if talk.started() {
@@ -65,13 +78,7 @@ pub async fn session(
             }
             Event::Command(Some(command)) => {
                 log::info!("{}: sending {command:?}", device.name);
-                let starting = matches!(command, Command::Program(_));
-                if starting && talk.synced() && !machine.remote_start {
-                    log::warn!(
-                        "the dishwasher is not accepting remote start, so it may ignore this"
-                    );
-                }
-                if let Some(text) = talk.submit(&device.features, command) {
+                if let Some(text) = talk.submit(device.features, command) {
                     link.send(&text).await?;
                 }
             }
@@ -112,7 +119,7 @@ async fn next_command(commands: &mut Option<&mut mpsc::Receiver<Command>>) -> Op
     }
 }
 
-fn publish(states: Option<&watch::Sender<Reading>>, machine: &Machine) {
+fn publish<S: State>(states: Option<&watch::Sender<Reading<S>>>, machine: &S) {
     let Some(states) = states else {
         return;
     };
@@ -136,8 +143,8 @@ fn resource_of(text: &str) -> &str {
     &rest[..end]
 }
 
-async fn connect(device: &BoschDevice) -> Result<Link> {
-    let hosts = addresses(&device.host);
+async fn connect(device: &Appliance<'_>) -> Result<Link> {
+    let hosts = addresses(device.host);
     if hosts.is_empty() {
         anyhow::bail!("the dishwasher has no address. Pair it again with --host");
     }
@@ -157,7 +164,7 @@ async fn connect(device: &BoschDevice) -> Result<Link> {
     anyhow::bail!("could not reach the dishwasher ({})", errors.join("; "))
 }
 
-async fn connect_host(host: &str, device: &BoschDevice) -> Result<Link> {
+async fn connect_host(host: &str, device: &Appliance<'_>) -> Result<Link> {
     let tls = device.iv.trim().is_empty();
     let port = if tls { 443 } else { 80 };
     let tcp = tokio::time::timeout(Duration::from_secs(8), TcpStream::connect((host, port)))
@@ -165,7 +172,7 @@ async fn connect_host(host: &str, device: &BoschDevice) -> Result<Link> {
         .with_context(|| format!("timed out reaching {host}"))??;
     tcp.set_nodelay(true).ok();
     if tls {
-        let psk = decode_key(&device.key)?;
+        let psk = decode_key(device.key)?;
         let ssl = client_ssl(host, &psk)?;
         let mut stream = tokio_openssl::SslStream::new(ssl, tcp)?;
         Pin::new(&mut stream).connect().await?;
@@ -180,7 +187,7 @@ async fn connect_host(host: &str, device: &BoschDevice) -> Result<Link> {
             tokio_tungstenite::client_async(format!("ws://{host}/homeconnect"), tcp).await?;
         Ok(Link {
             socket: Sock::Plain(socket),
-            seal: Some(Seal::new(&device.key, &device.iv)?),
+            seal: Some(Seal::new(device.key, device.iv)?),
         })
     }
 }

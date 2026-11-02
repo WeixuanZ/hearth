@@ -168,162 +168,23 @@ pub fn decode_key(text: &str) -> Result<Vec<u8>> {
         .map_err(|_| anyhow!("the appliance key is not valid"))
 }
 
-/// What Home, and the menu, need from the live machine.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Machine {
-    pub power: bool,
-    pub operation: String,
-    pub program: String,
-    pub door_open: bool,
-    pub finished: bool,
-    pub leak: bool,
-    pub salt_low: Option<bool>,
-    pub rinse_low: Option<bool>,
-    pub remote_start: bool,
-    pub remaining_secs: u64,
-    pub progress: u64,
-    pub energy: String,
-    pub water: String,
-    pub options: BTreeMap<String, bool>,
-}
-
-impl Machine {
-    /// Running a programme, or about to: the only time its remaining time
-    /// and progress mean anything. Otherwise they are the last programme's.
-    /// Being stopped: the end that follows is not a finish.
-    pub fn stopping(&self) -> bool {
-        self.operation.ends_with("Aborting")
-    }
-
-    pub fn running(&self) -> bool {
-        self.operation.ends_with("Run") || self.operation.ends_with("DelayedStart")
-    }
-}
-
-impl Default for Machine {
-    fn default() -> Self {
-        Self {
-            power: false,
-            operation: "Inactive".into(),
-            program: String::new(),
-            door_open: false,
-            finished: false,
-            leak: false,
-            salt_low: None,
-            rinse_low: None,
-            remote_start: false,
-            remaining_secs: 0,
-            progress: 0,
-            energy: String::new(),
-            water: String::new(),
-            options: BTreeMap::new(),
-        }
-    }
-}
-
-/// A reading the bridge is currently showing. `online` is the socket, not the cycle.
+/// An appliance as the bridge last heard it: its model's state, and whether
+/// the connection is up (not what the appliance is doing).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Reading {
+pub struct Reading<S> {
     pub online: bool,
-    pub machine: Machine,
+    pub machine: S,
 }
 
-pub fn apply_value(machine: &mut Machine, name: &str, value: &str) {
-    if name.ends_with("PowerState") {
-        let value = value.to_ascii_lowercase();
-        machine.power = matches!(value.as_str(), "on" | "true" | "1");
-    } else if name.ends_with("DoorState") {
-        let value = value.to_ascii_lowercase();
-        machine.door_open = value.contains("open") || value == "ajar";
-    } else if name.ends_with("OperationState") {
-        machine.operation = value.to_owned();
-    } else if name.ends_with("ProgramFinished") {
-        machine.finished = flagged(value);
-    } else if name.contains("AquaStop") {
-        machine.leak = flagged(value);
-    } else if salt_name(name) {
-        machine.salt_low = Some(flagged(value));
-    } else if name.contains("RinseAid") {
-        machine.rinse_low = Some(flagged(value));
-    } else if name.ends_with("RemoteControlStartAllowed") {
-        machine.remote_start = flagged(value);
-    } else if name.ends_with("RemainingProgramTime") && !name.contains("Estimated") {
-        machine.remaining_secs = value.parse().unwrap_or(0);
-    } else if name.ends_with("ProgramProgress") {
-        machine.progress = value.parse().unwrap_or(0);
-    } else if name.ends_with("EnergyForecast") {
-        machine.energy = value.to_owned();
-    } else if name.ends_with("WaterForecast") {
-        machine.water = value.to_owned();
-    } else if name.ends_with("ActiveProgram") || name.ends_with("SelectedProgram") {
-        if value != "0" && !value.is_empty() && !value.eq_ignore_ascii_case("none") {
-            machine.program = value.to_owned();
-        }
-    } else if let Some(key) = option_key(name) {
-        machine.options.insert(key.to_owned(), flagged(value));
-    }
-}
-
-fn flagged(value: &str) -> bool {
-    matches!(
-        value.to_ascii_lowercase().as_str(),
-        "true" | "on" | "present" | "1" | "low" | "empty" | "locked"
-    )
-}
-
-pub(crate) fn salt_name(name: &str) -> bool {
-    name.contains("Salt") && !name.contains("Program") && !name.contains("Option")
-}
-
-/// Option switches, in the order their HomeKit iids are fixed.
-const OPTIONS: &[(&str, &str)] = &[
-    ("ExtraDry", "Extra Dry"),
-    ("VarioSpeedPlus", "SpeedPerfect"),
-    ("SilenceOnDemand", "Silence"),
-    ("HygienePlus", "Hygiene"),
-    ("IntensiveZone", "Intensive zone"),
-    ("ChildLock", "Child lock"),
-    ("PermanentRemoteStart", "Remote start"),
-];
-
-pub fn option_iid(key: &str) -> Option<u64> {
-    OPTIONS
-        .iter()
-        .position(|(name, _)| *name == key)
-        .map(|index| 300 + u64::try_from(index).expect("a handful of options") * 10)
-}
-
-fn option_key(name: &str) -> Option<&'static str> {
-    if name.ends_with("VarioSpeedPlus") || name.ends_with("VarioSpeed") {
-        return Some("VarioSpeedPlus");
-    }
-    if name.ends_with("SilenceOnDemand") || name.ends_with("Silence") {
-        return Some("SilenceOnDemand");
-    }
-    if name.ends_with("HygienePlus") || name.ends_with("Hygiene") {
-        return Some("HygienePlus");
-    }
-    OPTIONS
-        .iter()
-        .find(|(key, _)| name.ends_with(key))
-        .map(|(key, _)| *key)
-}
-
-/// Options this machine actually has, with the iid Home will keep.
-pub fn option_switches(
-    features: &BTreeMap<String, BoschFeature>,
-) -> Vec<(&'static str, u64, &'static str)> {
-    OPTIONS
-        .iter()
-        .filter_map(|(key, label)| {
-            let iid = option_iid(key)?;
-            feature_uid(features, key).map(|_| (*key, iid, *label))
-        })
-        .collect()
+/// What an appliance's model makes of the values it reports, by their Home
+/// Connect names, like `BSH.Common.Status.DoorState`. Each model keeps the
+/// ones it knows.
+pub trait State: Clone + Default + Send + Sync + 'static {
+    fn apply(&mut self, name: &str, value: &str);
 }
 
 /// Programmes the machine itself lists, in uid order so Home's tiles stay put.
-pub fn programs(features: &BTreeMap<String, BoschFeature>) -> Vec<(u32, String)> {
+pub fn programs(features: &BTreeMap<String, Feature>) -> Vec<(u32, String)> {
     let mut found: Vec<(u32, String)> = features
         .iter()
         .filter_map(|(uid, feature)| {
@@ -339,7 +200,7 @@ pub fn programs(features: &BTreeMap<String, BoschFeature>) -> Vec<(u32, String)>
     found
 }
 
-pub fn feature_uid(features: &BTreeMap<String, BoschFeature>, suffix: &str) -> Option<u32> {
+pub fn feature_uid(features: &BTreeMap<String, Feature>, suffix: &str) -> Option<u32> {
     let aliases: &[&str] = match suffix {
         "VarioSpeedPlus" => &["VarioSpeedPlus", "VarioSpeed"],
         "SilenceOnDemand" => &["SilenceOnDemand", "Silence"],
@@ -351,7 +212,7 @@ pub fn feature_uid(features: &BTreeMap<String, BoschFeature>, suffix: &str) -> O
         .find_map(|alias| feature_ending(features, alias))
 }
 
-fn feature_ending(features: &BTreeMap<String, BoschFeature>, suffix: &str) -> Option<u32> {
+fn feature_ending(features: &BTreeMap<String, Feature>, suffix: &str) -> Option<u32> {
     features.iter().find_map(|(uid, feature)| {
         feature
             .name
@@ -361,7 +222,7 @@ fn feature_ending(features: &BTreeMap<String, BoschFeature>, suffix: &str) -> Op
     })
 }
 
-pub fn enum_value(feature: &BoschFeature, name: &str) -> Option<Value> {
+pub fn enum_value(feature: &Feature, name: &str) -> Option<Value> {
     feature.values.iter().find_map(|(key, label)| {
         if label.eq_ignore_ascii_case(name) {
             key.parse::<u64>().ok().map(|number| json!(number))
@@ -372,7 +233,7 @@ pub fn enum_value(feature: &BoschFeature, name: &str) -> Option<Value> {
 }
 
 pub fn describe(
-    features: &BTreeMap<String, BoschFeature>,
+    features: &BTreeMap<String, Feature>,
     uid: &str,
     value: &Value,
 ) -> Option<(String, String)> {
@@ -484,7 +345,7 @@ impl Talk {
     /// Replies to send, in order. A command sent before the handshake waits.
     pub fn submit(
         &mut self,
-        features: &BTreeMap<String, BoschFeature>,
+        features: &BTreeMap<String, Feature>,
         command: Command,
     ) -> Option<String> {
         if !self.ready {
@@ -496,8 +357,8 @@ impl Talk {
 
     pub fn intake(
         &mut self,
-        features: &BTreeMap<String, BoschFeature>,
-        machine: &mut Machine,
+        features: &BTreeMap<String, Feature>,
+        machine: &mut impl State,
         text: &str,
     ) -> Vec<String> {
         let Ok(msg) = serde_json::from_str::<Value>(text) else {
@@ -506,7 +367,7 @@ impl Talk {
         let resource = text_at(&msg, "resource");
         let action = text_at(&msg, "action");
         if let Some(code) = msg.get("code").filter(|code| !code.is_null()) {
-            log::warn!("dishwasher {resource} returned {code}");
+            log::warn!("appliance: {resource} returned {code}");
         }
         if action == "POST" && resource == "/ei/initialValues" {
             return self.hello(&msg);
@@ -607,18 +468,14 @@ impl Talk {
         out
     }
 
-    fn flush(&mut self, features: &BTreeMap<String, BoschFeature>) -> Vec<String> {
+    fn flush(&mut self, features: &BTreeMap<String, Feature>) -> Vec<String> {
         std::mem::take(&mut self.queued)
             .into_iter()
             .filter_map(|command| self.encode(features, command))
             .collect()
     }
 
-    fn encode(
-        &mut self,
-        features: &BTreeMap<String, BoschFeature>,
-        command: Command,
-    ) -> Option<String> {
+    fn encode(&mut self, features: &BTreeMap<String, Feature>, command: Command) -> Option<String> {
         let (resource, data) = match command {
             Command::Option { key, on } => {
                 let uid = feature_uid(features, &key)?;
@@ -688,7 +545,7 @@ impl Talk {
     }
 }
 
-fn switched(feature: &BoschFeature, on: bool) -> Value {
+fn switched(feature: &Feature, on: bool) -> Value {
     let names: &[&str] = if on {
         &["On", "True", "true"]
     } else {
@@ -702,7 +559,8 @@ fn switched(feature: &BoschFeature, on: bool) -> Value {
     json!(i64::from(on))
 }
 
-fn absorb(features: &BTreeMap<String, BoschFeature>, machine: &mut Machine, data: &Value) {
+/// Applies a list of values, as the appliance sends them, to `machine`.
+pub fn absorb(features: &BTreeMap<String, Feature>, machine: &mut impl State, data: &Value) {
     let Some(items) = data.as_array() else {
         return;
     };
@@ -720,12 +578,12 @@ fn absorb(features: &BTreeMap<String, BoschFeature>, machine: &mut Machine, data
         if name.ends_with("ActiveProgram") || name.ends_with("SelectedProgram") {
             note_program(features, machine, value);
         } else {
-            apply_value(machine, &name, &text);
+            machine.apply(&name, &text);
         }
     }
 }
 
-fn note_program(features: &BTreeMap<String, BoschFeature>, machine: &mut Machine, value: &Value) {
+fn note_program(features: &BTreeMap<String, Feature>, machine: &mut impl State, value: &Value) {
     let Some(uid) = json_key(value) else {
         return;
     };
@@ -733,7 +591,7 @@ fn note_program(features: &BTreeMap<String, BoschFeature>, machine: &mut Machine
         .get(&uid)
         .map(|feature| feature.name.clone())
         .unwrap_or(uid);
-    apply_value(machine, "BSH.Common.Root.ActiveProgram", &text);
+    machine.apply("BSH.Common.Root.ActiveProgram", &text);
 }
 
 fn json_key(value: &Value) -> Option<String> {
@@ -754,7 +612,7 @@ fn number_at(value: &Value, key: &str) -> Option<i64> {
 
 /// One value a Bosch feature can take. The key is the number on the wire.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-pub struct BoschFeature {
+pub struct Feature {
     pub name: String,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub values: BTreeMap<String, String>,
@@ -806,56 +664,25 @@ mod tests {
     }
 
     #[test]
-    fn readings_become_the_fields_home_shows() {
-        let mut machine = Machine::default();
-        apply_value(&mut machine, "BSH.Common.Setting.PowerState", "On");
-        apply_value(&mut machine, "BSH.Common.Status.DoorState", "Open");
-        apply_value(&mut machine, "BSH.Common.Status.DoorState", "Locked");
-        apply_value(&mut machine, "BSH.Common.Event.ProgramFinished", "Present");
-        apply_value(&mut machine, "BSH.Common.Event.AquaStopOccured", "Off");
-        apply_value(
-            &mut machine,
-            "Dishcare.Dishwasher.Event.SaltNearlyEmpty",
-            "true",
-        );
-        apply_value(&mut machine, "Dishcare.Dishwasher.Option.ExtraDry", "On");
-        apply_value(
-            &mut machine,
-            "BSH.Common.Option.RemainingProgramTime",
-            "5400",
-        );
-        apply_value(&mut machine, "BSH.Common.Root.ActiveProgram", "Eco50");
-        assert!(machine.power);
-        assert!(!machine.door_open);
-        assert!(machine.finished);
-        assert!(!machine.leak);
-        assert!(machine.salt_low == Some(true));
-        assert_eq!(machine.options.get("ExtraDry"), Some(&true));
-        assert_eq!(machine.remaining_secs, 5400);
-        assert_eq!(machine.program, "Eco50");
-        assert_eq!(format_remaining(5400), "1 h 30 min");
-    }
-
-    #[test]
     fn programme_names_follow_the_uid_so_tiles_do_not_move() {
         let mut features = BTreeMap::new();
         features.insert(
             "30".into(),
-            BoschFeature {
+            Feature {
                 name: "Dishcare.Dishwasher.Program.Eco50".into(),
                 values: BTreeMap::new(),
             },
         );
         features.insert(
             "10".into(),
-            BoschFeature {
+            Feature {
                 name: "Dishcare.Dishwasher.Program.Intensiv70".into(),
                 values: BTreeMap::new(),
             },
         );
         features.insert(
             "11".into(),
-            BoschFeature {
+            Feature {
                 name: "BSH.Common.Setting.PowerState".into(),
                 values: BTreeMap::new(),
             },
@@ -872,92 +699,5 @@ mod tests {
             ]
         );
         assert_eq!(label_of(&names[0]), "Intensiv 70");
-    }
-
-    #[test]
-    fn the_handshake_replies_then_sends_a_queued_command() {
-        let mut features = BTreeMap::new();
-        let mut values = BTreeMap::new();
-        values.insert("0".into(), "Off".into());
-        values.insert("1".into(), "On".into());
-        features.insert(
-            "512".into(),
-            BoschFeature {
-                name: "BSH.Common.Setting.PowerState".into(),
-                values,
-            },
-        );
-        let mut talk = Talk::new();
-        let mut machine = Machine::default();
-        let hello = talk.intake(
-            &features,
-            &mut machine,
-            r#"{"sID":7,"msgID":3,"resource":"/ei/initialValues","version":2,"action":"POST","data":[{"edMsgID":40}]}"#,
-        );
-        assert!(hello[0].starts_with(r#"{"sID":7,"#));
-        assert!(hello[0].contains(r#""deviceType":"Application""#));
-        assert!(hello[1].contains(r#""resource":"/ci/services""#));
-        assert!(hello[1].contains(r#""msgID":40"#));
-        assert!(talk
-            .submit(
-                &features,
-                Command::Option {
-                    key: "PowerState".into(),
-                    on: true
-                }
-            )
-            .is_none());
-        let replies = talk.intake(
-            &features,
-            &mut machine,
-            r#"{"resource":"/ci/services","action":"RESPONSE","data":[{"service":"ci","version":2},{"service":"ei","version":2},{"service":"ro","version":1}]}"#,
-        );
-        assert!(replies.iter().any(|line| line.contains(r#""uid":512"#)));
-        talk.intake(
-            &features,
-            &mut machine,
-            r#"{"resource":"/ro/values","action":"NOTIFY","data":[{"uid":512,"value":1}]}"#,
-        );
-        assert!(machine.power);
-        let program = talk.submit(&features, Command::Program(30)).unwrap();
-        assert!(program.contains(r#""program":30"#));
-        assert!(program.find(r#""program""#).unwrap() < program.find(r#""options""#).unwrap());
-        // A machine that does not list the abort command is sent nothing.
-        assert!(talk.submit(&features, Command::Abort).is_none());
-        features.insert(
-            "600".into(),
-            BoschFeature {
-                name: "BSH.Common.Command.AbortProgram".into(),
-                values: BTreeMap::new(),
-            },
-        );
-        let abort = talk.submit(&features, Command::Abort).unwrap();
-        assert!(abort.contains(r#""resource":"/ro/values""#));
-        assert!(abort.contains(r#""uid":600,"value":true"#));
-    }
-
-    #[test]
-    fn a_programme_given_by_its_uid_is_named() {
-        let feature = |name: &str| BoschFeature {
-            name: name.into(),
-            values: BTreeMap::new(),
-        };
-        let features = BTreeMap::from([
-            ("256".to_owned(), feature("BSH.Common.Root.SelectedProgram")),
-            (
-                "8196".to_owned(),
-                feature("Dishcare.Dishwasher.Program.Eco50"),
-            ),
-        ]);
-        let mut machine = Machine::default();
-        absorb(
-            &features,
-            &mut machine,
-            &json!([{ "uid": 256, "value": 8196 }]),
-        );
-        assert_eq!(label_of(&machine.program), "Eco 50");
-        assert!(!machine.running());
-        machine.operation = "BSH.Common.EnumType.OperationState.Run".into();
-        assert!(machine.running());
     }
 }
