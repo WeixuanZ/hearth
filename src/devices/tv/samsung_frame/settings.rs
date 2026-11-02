@@ -14,7 +14,7 @@ pub struct FrameDevice {
     pub host: String,
     #[serde(default)]
     pub mac: String,
-    /// Returned when you press Allow on the TV. Empty until `hearth frame pair`.
+    /// Returned when you press Allow on the TV. Empty until it is added.
     #[serde(default)]
     pub token: String,
     /// IP Control's token, from a second Allow. Empty if IP Remote is off.
@@ -46,6 +46,6 @@ impl Settings for FrameDevice {
     fn incomplete(&self) -> Option<&'static str> {
         self.token
             .is_empty()
-            .then_some("not paired with the TV. Run `hearth frame pair` while it is on")
+            .then_some("not paired with the TV. Add it again while it is on")
     }
 }

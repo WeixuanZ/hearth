@@ -144,7 +144,7 @@ async fn access_token(client: &reqwest::Client, pending: &SignIn, code: &str) ->
         .send()
         .await?;
     if !response.status().is_success() {
-        anyhow::bail!("Home Connect refused that code. Run `hearth bosch login` again");
+        anyhow::bail!("Home Connect refused that code. Add the dishwasher again");
     }
     let value: Value = response.json().await?;
     value

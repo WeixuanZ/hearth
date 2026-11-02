@@ -170,7 +170,7 @@ pub fn products() -> Vec<Product> {
 fn start(product: &str) -> Result<(Box<dyn crate::driver::AnySetup>, Step)> {
     crate::driver::find(product)
         .map(|driver| driver.setup())
-        .ok_or_else(|| anyhow!("no device called {product} can be added"))
+        .ok_or_else(|| anyhow!("no device called {product} can be added. These can: {}", kinds()))
 }
 
 /// Setups under way for the control socket, one per product.
@@ -205,7 +205,20 @@ pub async fn step(product: &str, answers: Option<Answers>) -> Result<Value> {
 
 /// Runs a setup in the terminal. `given` answers questions first, as from
 /// the command's flags; the rest are asked.
+/// The kinds that can be added, as `hearth add` takes them.
+fn kinds() -> String {
+    let all: Vec<String> = products()
+        .into_iter()
+        .map(|product| format!("{} ({})", product.id, product.name))
+        .collect();
+    all.join(", ")
+}
+
 pub async fn in_terminal(product: &str, given: Answers) -> Result<()> {
+    if product == "list" {
+        println!("{}", kinds().replace(", ", "\n"));
+        return Ok(());
+    }
     let (mut flow, mut step) = start(product)?;
     loop {
         println!("{}", step.title);

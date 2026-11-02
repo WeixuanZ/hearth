@@ -406,7 +406,7 @@ pub fn load() -> Result<Config> {
         return Ok(config);
     }
     Err(anyhow!(
-        "no config yet. Run `hearth dyson login`, `hearth frame pair`, or `hearth bosch login` first ({})",
+        "no config yet. Add a device first, with `hearth add` ({})",
         path.display()
     ))
 }

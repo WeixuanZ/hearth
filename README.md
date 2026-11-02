@@ -40,9 +40,9 @@ downloads the latest release for this machine (Linux x86_64 or aarch64, macOS Ap
 
 ## Set up
 
-**Add a device from the menu bar**: the `+` beside Start, then choose it and follow its steps. Or in the terminal, `hearth add dyson`, `hearth add frame` or `hearth add bosch`, which asks the same steps. A device added on any computer in the group reaches all of them.
+**Add a device from the menu bar**: the `+` beside Start, then choose it and follow its steps. Or in the terminal, `hearth add` with its kind (`hearth add list` shows them), which asks the same steps. A device added on any computer in the group reaches all of them.
 
-**A Dyson purifier.** You sign in to MyDyson once, with your password and the code Dyson emails; hearth keeps only the fan's local password. It is the one time hearth talks to Dyson. In the terminal the flags answer the questions: `hearth dyson login --email you@example.com --country GB`.
+**A Dyson purifier.** You sign in to MyDyson once, with your password and the code Dyson emails; hearth keeps only the fan's local password. It is the one time hearth talks to Dyson. In the terminal, answers can be given up front: `hearth add dyson email=you@example.com country=GB`.
 
 **A Samsung Frame.** Turn the TV on, out of art mode. On the TV, turn on device connection and Power On with Mobile (Settings → General → External Device Manager, and Connection), and IP Remote (Settings → General → Network → Expert Settings). Then press Allow twice: once for the remote, once for IP Control, which picks inputs and powers the TV fully off. Nothing leaves your network.
 

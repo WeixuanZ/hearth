@@ -320,7 +320,7 @@ impl<L: Link> Tv<L> {
 
     async fn signal(&mut self, signal: Signal<'_>) -> Result<()> {
         if self.device.token.is_empty() {
-            anyhow::bail!("not paired. Run `hearth frame pair` while the TV is on");
+            anyhow::bail!("not paired. Add the TV again while it is on");
         }
         let token = self.link.remote(&self.device, signal).await?;
         if let Some(token) = token.filter(|token| *token != self.device.token) {
