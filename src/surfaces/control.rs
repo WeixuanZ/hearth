@@ -14,7 +14,7 @@
 //!   → {"ok":true}, and Home shows the new name
 //! {"op":"products"}
 //!   → the devices that can be added
-//! {"op":"setup","product":"frame"}  then  {"op":"setup","product":"frame","answers":{…}}
+//! {"op":"setup","product":"samsung-frame"}  then  {"op":"setup","product":"samsung-frame","answers":{…}}
 //!   → {"step":{title, note, fields, link, wait}}, until {"done":"Added …"}
 //! {"op":"history","device":"purifier","capability":"temperature","hours":24}
 //!   → readings for that long, one point a minute at most
