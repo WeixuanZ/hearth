@@ -93,6 +93,8 @@ struct Capability: Decodable, Identifiable {
 struct Option: Decodable, Identifiable, Hashable {
     var id: String
     var name: String
+    /// What to know when choosing it, like what a programme uses.
+    var note: String?
 }
 
 /// A capability's value: a bool, a number, text, or nothing yet.

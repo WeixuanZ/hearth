@@ -44,7 +44,14 @@ pub fn snapshot(device: &BoschDevice, reading: &Reading, kept: Kept) -> Snapshot
                 "Programme",
                 programmes
                     .iter()
-                    .map(|(uid, name)| Item::new(uid.to_string(), label_of(name)))
+                    .map(|(uid, name)| {
+                        // The machine forecasts only the programme it has
+                        // selected, so only that one has a note.
+                        let forecast = selected(&machine.program, name)
+                            .then(|| forecast(machine))
+                            .flatten();
+                        Item::new(uid.to_string(), label_of(name)).note(forecast)
+                    })
                     .collect(),
                 chosen.map(|uid| uid.to_string()),
             )
@@ -76,7 +83,6 @@ pub fn snapshot(device: &BoschDevice, reading: &Reading, kept: Kept) -> Snapshot
     for option in during {
         capabilities.push(switch(option, running));
     }
-    capabilities.extend(readings(machine));
     // Known once the machine has said, which a connection that just opened
     // has not.
     let known = |value: bool| (reading.online && !machine.operation.is_empty()).then_some(value);
@@ -212,27 +218,20 @@ fn headline(reading: &Reading, kept: Kept) -> String {
         "Off".into()
     }
 }
-fn readings(machine: &crate::connectors::bosch::protocol::Machine) -> Vec<Capability> {
-    let mut out = Vec::new();
-    // The machine's forecast for the programme chosen, as a share of the most
-    // any of its programmes uses: 51% is half its hungriest. Not an amount.
-    if let Some(value) = number_in(&machine.energy) {
-        out.push(Capability::reading(
-            "energy",
-            "Energy (of max)",
-            "%",
-            Some(value),
-        ));
-    }
-    if let Some(value) = number_in(&machine.water) {
-        out.push(Capability::reading(
-            "water",
-            "Water (of max)",
-            "%",
-            Some(value),
-        ));
-    }
-    out
+/// What the machine forecasts its selected programme, with its options,
+/// will use, as Home Connect shows it while choosing: each a share of what
+/// its hungriest programme uses, not an amount. Not a measurement, so not a
+/// reading, and not kept in history.
+fn forecast(machine: &Machine) -> Option<String> {
+    let share = |text: &str, what: &str| number_in(text).map(|value| format!("{what} {value}%"));
+    let parts: Vec<String> = [
+        share(&machine.energy, "energy"),
+        share(&machine.water, "water"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    (!parts.is_empty()).then(|| format!("Uses {} of the most it can", parts.join(", ")))
 }
 
 fn number_in(text: &str) -> Option<f32> {
@@ -524,5 +523,44 @@ mod tests {
         );
         let option = Set::test("extra_dry", serde_json::json!(true));
         assert!(refused(command(&device, &reading, kept, &option)).contains("fixed"));
+    }
+
+    #[test]
+    fn the_forecast_is_a_note_on_the_programme_it_is_for() {
+        let mut device = device();
+        device.features.insert(
+            "31".into(),
+            crate::connectors::bosch::protocol::BoschFeature {
+                name: "Dishcare.Dishwasher.Program.Quick45".into(),
+                values: Default::default(),
+            },
+        );
+        let reading = Reading {
+            online: true,
+            machine: Machine {
+                program: "Dishcare.Dishwasher.Program.Eco50".into(),
+                energy: "51".into(),
+                water: "40".into(),
+                ..Machine::default()
+            },
+        };
+        let shown = snapshot(&device, &reading, Kept::default());
+        let crate::capabilities::Kind::Choice { options } = &shown.capabilities[0].kind else {
+            panic!("the programme comes first");
+        };
+        let notes: Vec<(&str, Option<&str>)> = options
+            .iter()
+            .map(|option| (option.name.as_str(), option.note.as_deref()))
+            .collect();
+        assert!(notes.contains(&(
+            "Eco 50",
+            Some("Uses energy 51%, water 40% of the most it can")
+        )));
+        assert!(notes.contains(&("Quick 45", None)));
+        // Not a reading: nothing to keep in history.
+        assert!(shown
+            .capabilities
+            .iter()
+            .all(|capability| capability.id != "energy"));
     }
 }

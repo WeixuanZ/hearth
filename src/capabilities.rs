@@ -195,6 +195,9 @@ pub struct Item {
     /// names options by number: Home stores a TV's input that way.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<u32>,
+    /// What to know when choosing it, like what a programme uses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl Item {
@@ -203,11 +206,17 @@ impl Item {
             id: id.into(),
             name: name.into(),
             number: None,
+            note: None,
         }
     }
 
     pub fn numbered(mut self, number: u32) -> Self {
         self.number = Some(number);
+        self
+    }
+
+    pub fn note(mut self, note: Option<String>) -> Self {
+        self.note = note;
         self
     }
 }
