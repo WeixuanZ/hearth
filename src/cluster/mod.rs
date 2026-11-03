@@ -143,7 +143,7 @@ pub async fn run() -> Result<()> {
     });
     tokio::spawn(accept(tcp));
 
-    let started = now();
+    let started = crate::clock::now_ms();
     let mut heard = BTreeMap::new();
     let mut serving = None;
     let mut tick = tokio::time::interval(TICK);
@@ -173,7 +173,7 @@ async fn step(
     heard: &mut BTreeMap<String, Heard>,
     serving: &mut Option<Serving>,
 ) -> Result<()> {
-    let now = now();
+    let now = crate::clock::now_ms();
     heard.retain(|_, peer| now.saturating_sub(peer.seen) < 2 * FRESH_MS);
     *config = config::load()?;
     series::forget_removed(config.removed.keys());
@@ -435,7 +435,7 @@ fn hear(bytes: &[u8], addr: IpAddr, heard: &mut BTreeMap<String, Heard>) {
     let Ok(hello) = serde_json::from_slice::<Hello>(bytes) else {
         return;
     };
-    let now = now();
+    let now = crate::clock::now_ms();
     let Ok((me, key)) = with(|group| (group.id.clone(), group.key.clone())) else {
         return;
     };
@@ -913,12 +913,6 @@ fn computer_name() -> String {
     named("scutil", &["--get", "ComputerName"])
         .or_else(|| named("hostname", &[]))
         .unwrap_or_else(|| "hearth".into())
-}
-
-fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_millis() as u64)
 }
 
 #[cfg(test)]

@@ -95,11 +95,7 @@ impl Endpoints {
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
-        std::fs::create_dir_all(dir)?;
-        let next = dir.join(format!("{FILE}.next"));
-        std::fs::write(&next, serde_json::to_vec_pretty(self)?)?;
-        std::fs::rename(next, dir.join(FILE))?;
-        Ok(())
+        crate::files::write_json(&dir.join(FILE), self)
     }
 
     pub fn id(&mut self, device: &str, key: &str) -> u16 {

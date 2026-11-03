@@ -29,7 +29,6 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{Mutex, Once},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 /// The layout of the files, as `format.json` records it. 1 is the layout
@@ -117,7 +116,7 @@ pub fn observe(device: &str, readings: &[(&str, f64)]) {
     if device.is_empty() || readings.is_empty() {
         return;
     }
-    let now = unix_now();
+    let now = crate::clock::now();
     let mut guard = lock();
     let Some(log) = guard.as_mut() else {
         return;
@@ -180,7 +179,7 @@ pub fn merge(device: &str, rows: Rows) {
         log.devices
             .entry(device.to_owned())
             .or_default()
-            .merge(rows, unix_now());
+            .merge(rows, crate::clock::now());
     }
 }
 
@@ -222,7 +221,7 @@ pub fn shutdown() {
 pub fn offline_document(query: &str, capability: Option<&str>, hours: u64) -> Result<Value> {
     let log = Log::open(default_dir()?)?;
     let id = log.match_id(query)?;
-    let (hours, since) = window(hours, unix_now());
+    let (hours, since) = window(hours, crate::clock::now());
     let columns = match capability {
         Some(capability) => {
             let known = log
@@ -266,13 +265,6 @@ pub fn window(hours: u64, now: u64) -> (u64, u64) {
     let since = now.saturating_sub(hours.saturating_mul(3600));
     let earliest = now.saturating_sub(RETAIN_SECS);
     (hours, since.max(earliest))
-}
-
-pub fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0)
 }
 
 /// The value as written in the CSV and the JSON: up to three decimal places.
@@ -416,7 +408,7 @@ fn json_number(milli: i32) -> Value {
 }
 
 fn service(force: bool) {
-    let now = unix_now();
+    let now = crate::clock::now();
     let mut guard = lock();
     let Some(log) = guard.as_mut() else {
         return;
@@ -759,7 +751,7 @@ impl DeviceSeries {
             if ended == 0 {
                 let _ = fs::remove_file(path);
             } else {
-                atomic_write(path, &self.csv(&self.rows[..ended]))?;
+                crate::files::write(path, self.csv(&self.rows[..ended]).as_bytes())?;
             }
             self.rewrite = false;
         } else if ended > self.written {
@@ -961,24 +953,6 @@ fn escape(field: &str) -> String {
     } else {
         field.to_owned()
     }
-}
-
-fn atomic_write(path: &Path, body: &str) -> Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let temporary = path.with_extension("csv.tmp");
-    {
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temporary)
-            .with_context(|| format!("could not write {}", temporary.display()))?;
-        file.write_all(body.as_bytes())?;
-        file.sync_all()?;
-    }
-    fs::rename(&temporary, path).with_context(|| format!("could not save {}", path.display()))?;
-    Ok(())
 }
 
 #[cfg(test)]

@@ -304,7 +304,7 @@ fn history(device: &str, capability: Option<&str>, hours: u64) -> Result<Value> 
         }
         anyhow::bail!("{} has no capability {wanted}", snapshot.name);
     }
-    let (hours, since) = series::window(hours, series::unix_now());
+    let (hours, since) = series::window(hours, crate::clock::now());
     let samples: Vec<_> = readings
         .iter()
         .map(|(reading, _)| series::samples(&snapshot.id, reading.id, since))
@@ -342,7 +342,7 @@ fn normals(device: &str, capability: &str) -> Result<Value> {
             _ => None,
         })
         .ok_or_else(|| anyhow!("{} has no reading {capability}", snapshot.name))?;
-    let now = series::unix_now();
+    let now = crate::clock::now();
     let today = Local::now()
         .date_naive()
         .and_hms_opt(0, 0, 0)

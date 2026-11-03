@@ -47,11 +47,7 @@ impl Ids {
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
-        fs::create_dir_all(dir)?;
-        let next = dir.join(format!("{FILE}.next"));
-        fs::write(&next, serde_json::to_string_pretty(self)? + "\n")?;
-        fs::rename(next, dir.join(FILE))?;
-        Ok(())
+        crate::files::write_json(&dir.join(FILE), self)
     }
 
     /// Takes the ids a device had before this store, once: a device the

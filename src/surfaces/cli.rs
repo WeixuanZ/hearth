@@ -662,7 +662,7 @@ pub fn matter(state: Option<&str>, as_json: bool) -> Result<()> {
         _ => {}
     }
     if state.is_some() {
-        config.updated = crate::config::now();
+        config.updated = crate::clock::now();
         crate::config::save(&config)?;
     }
     let code = config.matter.map(|settings| settings.code());

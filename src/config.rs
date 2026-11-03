@@ -9,7 +9,7 @@
 use crate::driver::{self, Driver, Typed};
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, io::Write, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Config {
@@ -379,7 +379,7 @@ pub fn save(config: &Config) -> Result<PathBuf> {
         .ok()
         .and_then(|text| config_from_toml(&text).ok());
     let mut config = config.clone();
-    stamp(&mut config, old.as_ref(), now());
+    stamp(&mut config, old.as_ref(), crate::clock::now());
     write(&config)
 }
 
@@ -388,14 +388,7 @@ pub fn write(config: &Config) -> Result<PathBuf> {
     let dir = config_dir()?;
     fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
-    let text = toml::to_string_pretty(config)?;
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)?;
-    file.write_all(text.as_bytes())?;
+    crate::files::write(&path, toml::to_string_pretty(config)?.as_bytes())?;
     Ok(path)
 }
 
@@ -425,12 +418,6 @@ fn stamp(config: &mut Config, old: Option<&Config>, now: u64) {
     if old.map(identity) != Some(identity(config)) {
         config.updated = now;
     }
-}
-
-pub fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
 }
 
 /// The newest date in the config. A computer with a newer one has news.
@@ -609,16 +596,6 @@ pub fn random_pin() -> [u8; 8] {
             continue;
         }
         return pin;
-    }
-}
-
-trait OpenOptionsExt {
-    fn mode(&mut self, mode: u32) -> &mut Self;
-}
-
-impl OpenOptionsExt for fs::OpenOptions {
-    fn mode(&mut self, mode: u32) -> &mut Self {
-        std::os::unix::fs::OpenOptionsExt::mode(self, mode)
     }
 }
 
