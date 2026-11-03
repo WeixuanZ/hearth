@@ -1,9 +1,9 @@
 //! `hearth run`: the control socket and the group always, and on the
-//! computer that serves Home, every device and the HomeKit bridge.
+//! computer that serves, every device, the HomeKit bridge and Matter.
 
 use crate::{
     capabilities, cluster,
-    config::Config,
+    config::{Config, Device},
     devices, series,
     surfaces::{control, homekit},
 };
@@ -29,17 +29,51 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
-/// Home and the devices, served until dropped. They run on a runtime of
-/// their own, so stopping ends every connection they opened.
+/// What serving is made from: a change to any of it serves again, as a
+/// device's new key or Matter turned on. A device's name is not part of it:
+/// a rename reaches every surface while serving.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Layout {
+    name: String,
+    pin: String,
+    bridge: String,
+    matter: Option<crate::surfaces::matter::Settings>,
+    devices: Vec<Device>,
+}
+
+impl Layout {
+    pub fn of(config: &Config) -> Self {
+        let devices = config
+            .devices
+            .iter()
+            .map(|device| {
+                let mut device = device.clone();
+                device.set_name(String::new());
+                device
+            })
+            .collect();
+        Self {
+            name: config.name.clone(),
+            pin: config.homekit_pin.clone(),
+            bridge: config.bridge_id.clone(),
+            matter: config.matter,
+            devices,
+        }
+    }
+}
+
+/// The devices, Home and Matter, served until dropped. They run on a
+/// runtime of their own, so stopping ends every connection they opened.
 pub struct Serving {
     runtime: Option<Runtime>,
     task: JoinHandle<()>,
-    /// What needs a restart to show in Home. See `cluster::layout`.
-    pub layout: String,
+    /// What it serves, to tell when that changes.
+    pub layout: Layout,
 }
 
 impl Serving {
-    pub fn start(config: Config, layout: String) -> Result<Self> {
+    pub fn start(config: Config) -> Result<Self> {
+        let layout = Layout::of(&config);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("hearth-serve")
@@ -91,4 +125,33 @@ async fn serve(config: Config) -> Result<()> {
         .run_handle()
         .await
         .map_err(|error| anyhow!("HomeKit stopped: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::driver::test::{Lamp, LampSettings};
+
+    fn config(secret: &str, name: &str) -> Config {
+        Config {
+            name: "Hearth".into(),
+            homekit_pin: "111-22-333".into(),
+            bridge_id: "a".into(),
+            devices: vec![Device::new::<Lamp>(LampSettings {
+                secret: secret.into(),
+                ..LampSettings::new("A", name)
+            })],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn serving_starts_again_for_new_settings_or_matter_but_not_a_rename() {
+        let now = Layout::of(&config("old", "Lamp"));
+        assert_eq!(Layout::of(&config("old", "Reading lamp")), now);
+        assert_ne!(Layout::of(&config("new", "Lamp")), now);
+        let mut matter = config("old", "Lamp");
+        matter.matter = Some(crate::surfaces::matter::Settings::new());
+        assert_ne!(Layout::of(&matter), now);
+    }
 }

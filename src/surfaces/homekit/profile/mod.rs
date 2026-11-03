@@ -118,6 +118,34 @@ impl Maker<'_> {
             .cloned()
     }
 
+    /// The level with `role`, and its range: min, max and step. A
+    /// capability given that role but of another kind, as a configured
+    /// device may be, is not one.
+    fn level(&self, role: Role) -> Option<(Capability, f32, f32, f32)> {
+        self.device
+            .capabilities
+            .iter()
+            .find_map(|capability| match capability.kind {
+                Kind::Level { min, max, step, .. } if capability.role == role => {
+                    Some((capability.clone(), min, max, step))
+                }
+                _ => None,
+            })
+    }
+
+    /// The choice with `role`, and its options; none of another kind.
+    fn choice(&self, role: Role) -> Option<(Capability, Vec<crate::capabilities::Item>)> {
+        self.device
+            .capabilities
+            .iter()
+            .find_map(|capability| match &capability.kind {
+                Kind::Choice { options } if capability.role == role => {
+                    Some((capability.clone(), options.clone()))
+                }
+                _ => None,
+            })
+    }
+
     fn aid(&mut self, accessory: &str) -> u64 {
         let id = self.id();
         self.ids.aid(&id, accessory)

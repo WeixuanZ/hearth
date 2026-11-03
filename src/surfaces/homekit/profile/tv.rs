@@ -23,10 +23,7 @@ impl Maker<'_> {
 
         let mut services: Vec<Box<dyn HapService>> = Vec::new();
         let mut linked = Vec::new();
-        if let Some(input) = self.role(Role::Input) {
-            let Kind::Choice { options } = input.kind.clone() else {
-                unreachable!("an input is a choice")
-            };
+        if let Some((input, options)) = self.choice(Role::Input) {
             let numbered: Vec<(String, u32)> = options
                 .iter()
                 .enumerate()

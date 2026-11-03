@@ -17,7 +17,7 @@ use hmac::{Hmac, Mac};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use std::{fs, io::Write, os::unix::fs::OpenOptionsExt, path::PathBuf};
+use std::{fs, path::PathBuf};
 use subtle::ConstantTimeEq;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
@@ -170,17 +170,7 @@ impl GroupKey {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = path()?;
-        let next = path.with_extension("next");
-        fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&next)?
-            .write_all(&serde_json::to_vec(self)?)?;
-        fs::rename(next, path)?;
-        Ok(())
+        crate::files::write(&path()?, &serde_json::to_vec(self)?)
     }
 
     pub fn delete() -> Result<()> {

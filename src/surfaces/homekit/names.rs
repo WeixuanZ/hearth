@@ -49,12 +49,5 @@ pub fn adopt() -> Result<()> {
 }
 
 fn write(names: &BTreeMap<String, String>) -> Result<()> {
-    let path = path()?;
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let next = path.with_extension("json.next");
-    fs::write(&next, serde_json::to_vec_pretty(names)?)?;
-    fs::rename(next, path)?;
-    Ok(())
+    crate::files::write_json(&path()?, names)
 }

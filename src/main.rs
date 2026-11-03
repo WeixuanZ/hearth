@@ -3,11 +3,13 @@
 
 mod bus;
 mod capabilities;
+mod clock;
 mod cluster;
 mod config;
 mod connectors;
 mod devices;
 mod driver;
+mod files;
 mod run;
 mod series;
 mod setup;

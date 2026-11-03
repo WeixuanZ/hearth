@@ -78,7 +78,7 @@ A choice lists `[[devices.control.options]]`, each an `id`, a `name` and the `va
 
 **Apple Home.** Start the bridge (the menu bar's Start, or `hearth run`), then in the Home app choose Add Accessory → More options → Hearth, and enter the code the menu bar or `hearth pin` shows.
 
-**Google Home, Alexa and other Matter controllers.** `hearth matter on` turns on a Matter bridge beside HomeKit and prints its pairing code; restart the bridge, then add a Matter device in the controller's app and enter the code. Each device's power and switches are plugs, and its temperature, humidity, door and leak are sensors; a dishwasher shows only its sensors, so nothing can start it by accident. The bridge uses the Matter test certificate, as anything made at home does, so the app warns that it is not certified; Google Home asks for its test vendor id in the Google Home Developer Console first. Pairing is open for 15 minutes after the bridge starts, until a controller has it; a second controller is added from the first, as Matter shares. Apple Home has these devices through HomeKit already, so do not add the Matter bridge there too. `hearth matter off` turns it off and forgets every controller.
+**Google Home, Alexa and other Matter controllers.** `hearth matter on` turns on a Matter bridge beside HomeKit and prints its pairing code; the bridge starts serving it, then add a Matter device in the controller's app and enter the code. Each device's power and switches are plugs, and its temperature, humidity, door and leak are sensors; a dishwasher shows only its sensors, so nothing can start it by accident. The bridge uses the Matter test certificate, as anything made at home does, so the app warns that it is not certified; Google Home asks for its test vendor id in the Google Home Developer Console first. Pairing is open for 15 minutes after the bridge starts, until a controller has it; a second controller is added from the first, as Matter shares. Apple Home has these devices through HomeKit already, so do not add the Matter bridge there too. `hearth matter off` turns it off and forgets every controller.
 
 ## Use it
 
@@ -196,62 +196,78 @@ sudo loginctl enable-linger "$USER"   # keep it up while logged out
 flowchart TB
   subgraph surfaces [Surfaces: never know a brand]
     homekit[Apple Home<br/>surfaces/homekit]
+    matter[Matter<br/>surfaces/matter]
     socket[Control socket<br/>surfaces/control]
-    cli[CLI]
+    cli[CLI and MCP]
     bar[Menu bar app]
   end
-  registry[Capabilities registry<br/>snapshots and requests]
-  subgraph devices [Devices: one task each]
-    purifier[purifier/dyson]
+  bus[(bus<br/>every device's latest state)]
+  registry[Registry<br/>names, and the way to each task]
+  history[(History<br/>series)]
+  subgraph devices [Devices: a model each, registered by itself]
+    purifier[purifier/dyson_hot_cool]
     tv[tv/samsung_frame]
-    dishwasher[dishwasher/bosch]
+    dishwasher[dishwasher/home_connect_dishwasher]
+    mqttdev[generic/mqtt]
   end
-  subgraph connectors [Connectors: each maker's protocol]
-    dyson[dyson: MQTT, MyDyson login]
-    samsung[samsung: websockets, IP Control]
-    bosch[bosch: Home Connect websocket]
+  subgraph connectors [Connectors: what a maker or protocol shares]
+    dyson[dyson]
+    samsung[samsung]
+    hc[home_connect]
+    mqtt[mqtt]
   end
   group[Group<br/>which computer serves]
 
   cli --> socket
   bar --> socket
-  socket --> registry
-  homekit --> registry
+  socket -- requests --> registry
+  homekit -- requests --> registry
+  matter -- requests --> registry
   registry --> devices
-  devices --> registry
+  devices -- publish --> bus
+  bus -. watched .-> homekit
+  bus -. watched .-> matter
+  bus -. watched .-> socket
+  bus -. watched .-> history
   purifier --> dyson
+  purifier --> mqtt
   tv --> samsung
-  dishwasher --> bosch
-  group -. starts and stops .-> homekit
-  group -. starts and stops .-> devices
+  dishwasher --> hc
+  mqttdev --> mqtt
+  group -. starts and stops serving .-> devices
   socket -. on standby, forwards to the serving computer .-> group
 ```
 
 - **Connectors** are what every product of a maker or a protocol shares: an account sign-in, pairing, discovery, the transport and how its messages are framed. `dyson` (the MyDyson account, its MQTT topics), `samsung` (the remote and apps' channels, IP Control), `home_connect` (any Home Connect appliance, whatever the brand, generic over the model's state), and `mqtt`. A connector knows no model, and nothing about Home or the menu bar.
 - **Devices** are models, at `devices/<category>/<brand>_<line>/`: `purifier/dyson_hot_cool`, `tv/samsung_frame`, `dishwasher/home_connect_dishwasher`, `generic/mqtt`. A model owns its protocol (what its messages mean), its settings, how it is added, and its task, which holds its state and connection, turns requests into commands and its state into a capability snapshot. Two models of a brand share its connector; two brands of a category share nothing but the capabilities. Rules between controls, like heat needing the fan on, live here, so every surface gets them. Each model registers itself (`register_driver!`): nothing outside its module names it.
-- **Capabilities** are the shared vocabulary. A capability has an id, a name, a kind (`power`, `switch`, `choice`, `level`, `reading`, `state`, `keys` or `run`) with its options or range, a role that says what it means (a TV's input, a fan's speed, PM2.5), a value, and whether it is active. The registry holds every device's latest snapshot and the channel to its task.
+- **Capabilities** are the shared vocabulary. A capability has an id, a name, a kind (`power`, `switch`, `choice`, `level`, `reading`, `state`, `keys`, `text` or `run`) with its options or range, a role that says what it means (a TV's input, a fan's speed, PM2.5), a value, and whether it is active. The registry holds each device's name and the way to its task; its state is on the bus alone.
 - **State is watched, not called.** Every device's latest snapshot is one value in `bus`, which anything can watch: it sees the state at once, then each new one, and a slow watcher skips ahead rather than missing anything. History records from it, and `{"op":"subscribe"}` on the socket (and `hearth events`) streams what changed, named by topic, `hearth/<device>/<capability>`. Nothing a device publishes is wired to who listens.
-- **Surfaces** never know a brand. HomeKit, the socket and the CLI send requests to the same device task, so they always agree. The menu bar draws controls from capability kinds alone, and HomeKit makes each device's accessories from its category and its capabilities' roles: a TV with inputs, a purifier with its sensors, a machine that runs programmes with a tile per programme. It watches the bus to show each new state, and Home's writes become the same requests the menu bar makes.
-- **The group** decides which computer serves. Serving runs on a Tokio runtime of its own, so a computer that steps down ends every device connection at once.
+- **Surfaces** never know a brand. HomeKit, Matter, the socket, the CLI and MCP send requests to the same device task, so they always agree. The menu bar draws controls from capability kinds alone. HomeKit makes each device's accessories from its category and its capabilities' roles (a TV with inputs, a purifier with its sensors, a machine that runs programmes with a tile per programme) and keeps their ids itself; Matter makes plugs and sensors the same way. Each watches the bus to show each new state, and their writes become the same requests the menu bar makes.
+- **The group** decides which computer serves. Serving (the devices, HomeKit and Matter) runs on a Tokio runtime of its own, so a computer that steps down ends every device connection at once. A change to what serving is made from, like a device's settings or Matter turned on, starts it again; a rename does not need to.
 
 ```text
 src/
-  capabilities.rs         the vocabulary, device snapshots, and the registry
+  capabilities.rs         the vocabulary, device snapshots, and the registry of requests
   bus.rs                  every device's state as one watched value, and what changed
-  series.rs               readings over time, as CSV
-  config.rs               config.toml: Settings for each kind, dates, merging two copies
   driver.rs               what a driver is, and the registry drivers add themselves to
+  config.rs               config.toml: each device's settings, dates, merging two copies
+  setup.rs                adding a device, as steps any surface can show
+  files.rs                writing hearth's files: whole or not at all, private
+  series/                 readings over time, as CSV: kept, asked for, shared with the group
   connectors/dyson/       the MyDyson account, finding a fan, its MQTT topics and messages
   connectors/samsung/     the remote and apps' channels, pairing, IP Control, waking
   connectors/home_connect/ the sign-in, feature descriptions, the local session
   connectors/mqtt.rs      an MQTT client, for Dyson fans and any broker
   devices/<category>/<brand>_<line>/ a model: protocol, settings, setup, task, capabilities
   devices/runtime.rs      what every connected device's task shares
-  cluster/                the group: hellos, joining, sharing state, who serves
-  surfaces/homekit/       the HomeKit bridge, accessories made from capabilities, and their ids
+  cluster/                the group: who serves, joining, sharing config and Home's files
+  surfaces/homekit/       the HomeKit bridge, accessories made from capabilities, their ids and names
+  surfaces/matter/        the Matter bridge, plugs and sensors made from capabilities
   surfaces/control.rs     the control socket
   surfaces/cli.rs         what the CLI prints
-  run.rs                  hearth run: the socket and the group always; devices and Home when serving
+  surfaces/mcp.rs         the CLI as tools for agents
+  surfaces/doctor.rs      what stands between Home and the devices
+  run.rs                  hearth run: the socket and the group always; devices, Home and Matter when serving
 macos/                    the menu bar app (SwiftUI)
 vendor/hap/               the HomeKit protocol, patched
 ```
@@ -267,7 +283,8 @@ sequenceDiagram
   participant R as Registry
   participant T as Device task
   participant D as The device
-  participant H as Apple Home
+  participant U as Bus
+  participant H as Apple Home and Matter
   B->>S: {"op":"set","device":"tv","capability":"art","value":true}
   S->>R: set(tv, art, true)
   R->>T: request, with a reply channel
@@ -277,8 +294,9 @@ sequenceDiagram
   T-->>R: Ok
   R-->>S: Ok
   S-->>B: {"ok":true}
-  T->>R: publish new snapshot
-  T->>H: update characteristics (events to subscribed controllers)
+  T->>U: publish its new state
+  U-->>H: watched: characteristics and attributes updated, subscribers told
+  U-->>S: watched: the change streamed to subscribers
 ```
 
 ### The group
@@ -286,7 +304,7 @@ sequenceDiagram
 ```mermaid
 flowchart LR
   subgraph group [Computers in the group]
-    serving[Serving Home<br/>runs devices and HomeKit]
+    serving[Serving<br/>runs devices, HomeKit and Matter]
     standby1[Standby]
     standby2[Standby]
   end
@@ -296,7 +314,7 @@ flowchart LR
 
   serving <-->|signed hellos, UDP 47620| standby1
   serving <-->|signed hellos| standby2
-  standby1 -->|sealed: config, pairing, requests| serving
+  standby1 -->|sealed: config, Home's files, history, requests| serving
   newcomer -.->|asks to join: code typed by a person| serving
   serving --> home
   serving --> devices
@@ -352,8 +370,10 @@ A computer that serves keeps serving, so a laptop that wakes up does not take Ho
 {"op":"set","device":"tv","capability":"input","value":"hdmi2"}  → {"ok":true} or {"error":"…"}
 {"op":"rename","device":"tv","name":"Living room TV"}              → {"ok":true}, and Home follows
 {"op":"history","device":"purifier","capability":"temperature","hours":24}
+{"op":"normals","device":"purifier","capability":"temperature"}   → its usual day: each hour's range and mean, with today
+{"op":"subscribe","topic":"hearth/"}                              → every change as it happens, one line each, named by topic
 {"op":"products"}                                                 → what can be added
-{"op":"setup","product":"frame"}, then with "answers":{…}         → {"step":{title, note, fields, link, wait}} until {"done":"…"}
+{"op":"setup","product":"samsung-frame"}, then with "answers":{…}  → {"step":{title, note, fields, link, wait}} until {"done":"…"}
 {"op":"approve","code":"482 193"}   {"op":"decline"}   {"op":"confirm"}   {"op":"separate"}   {"op":"join"}
 ```
 
