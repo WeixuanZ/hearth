@@ -244,4 +244,21 @@ mod tests {
         assert_eq!(lamp.controls.len(), 2);
         assert_eq!(lamp.category, Category::Light);
     }
+
+    #[tokio::test]
+    async fn a_role_that_does_not_fit_its_kind_is_left_out_not_a_crash() {
+        // A light whose brightness is a reading, and a TV-like input that is
+        // a switch: Home shows what fits, and the bridge stays up.
+        let odd = device(
+            Category::Light,
+            vec![
+                control("power", ControlKind::Power, Role::Generic),
+                control("brightness", ControlKind::Reading, Role::Brightness),
+                control("input", ControlKind::Switch, Role::Input),
+            ],
+        );
+        let snapshot = capabilities::snapshot(&odd, &State::default());
+        let home = Home::of(&snapshot).await;
+        assert_eq!(home.services(2, HapType::Lightbulb).len(), 1);
+    }
 }

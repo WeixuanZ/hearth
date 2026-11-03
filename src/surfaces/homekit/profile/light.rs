@@ -21,12 +21,9 @@ impl Maker<'_> {
         self.wiring.write(&mut light.power_state, |on: bool| {
             vec![("power", json!(on))]
         });
-        let level = self.role(Role::Brightness);
+        let level = self.level(Role::Brightness);
         match (level, light.brightness.as_mut()) {
-            (Some(level), Some(brightness)) => {
-                let Kind::Level { min, max, .. } = level.kind else {
-                    unreachable!("a brightness is a level")
-                };
+            (Some((level, min, max, _)), Some(brightness)) => {
                 let (id, span) = (level.id, (max - min).max(f32::EPSILON));
                 self.wiring.read(aid, brightness, move |snapshot| {
                     number(snapshot, id)

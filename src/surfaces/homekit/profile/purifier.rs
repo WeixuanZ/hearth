@@ -28,11 +28,8 @@ impl Maker<'_> {
                     vec![(auto.id, json!(value == 1))]
                 });
         }
-        match (self.role(Role::FanSpeed), purifier.rotation_speed.as_mut()) {
-            (Some(speed), Some(rotation)) => {
-                let Kind::Level { max, step, .. } = speed.kind else {
-                    unreachable!("a speed is a level")
-                };
+        match (self.level(Role::FanSpeed), purifier.rotation_speed.as_mut()) {
+            (Some((speed, _, max, step)), Some(rotation)) => {
                 // As a share of the fastest, in the speed's own steps.
                 limit(rotation, None, None, Some(100.0 * step / max))?;
                 self.wiring.read(aid, rotation, move |snapshot| {

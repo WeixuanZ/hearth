@@ -131,14 +131,11 @@ impl Maker<'_> {
                 .write(&mut heater.target_heater_cooler_state, move |value: u8| {
                     vec![(id, json!(value == 1))]
                 });
-            let target = self.role(Role::HeatTarget);
-            if let (Some(target), Some(threshold)) = (
+            let target = self.level(Role::HeatTarget);
+            if let (Some((target, min, max, step)), Some(threshold)) = (
                 target.clone(),
                 heater.heating_threshold_temperature.as_mut(),
             ) {
-                let Kind::Level { min, max, step, .. } = target.kind else {
-                    unreachable!("a target is a level")
-                };
                 limit(threshold, Some(min), Some(max), Some(step))?;
                 self.wiring.read(aid, threshold, move |snapshot| {
                     number(snapshot, target.id)
@@ -154,7 +151,7 @@ impl Maker<'_> {
                     });
             }
             // Heating while on and short of the target; idle once there.
-            let target = target.map(|target| target.id);
+            let target = target.map(|(target, ..)| target.id);
             self.wiring
                 .read(aid, &heater.current_heater_cooler_state, move |snapshot| {
                     if !on(snapshot, id) {
