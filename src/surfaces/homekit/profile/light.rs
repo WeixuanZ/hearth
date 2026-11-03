@@ -36,7 +36,7 @@ impl Maker<'_> {
             _ => light.brightness = None,
         }
         fixed(light.name.as_mut(), json!(self.device.name)).await?;
-        let switches = self.linked_switches(aid, &[Role::Brightness]).await?;
+        let switches = self.linked_switches(aid, &[Role::Brightness], true).await?;
         light.set_linked_services(switches.iter().map(|switch| switch.get_id()).collect());
         let info = self.information_named(aid, &self.device.name.clone(), "", true, true)?;
         let mut all: Vec<Box<dyn HapService>> = vec![Box::new(info), Box::new(light)];

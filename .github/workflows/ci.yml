@@ -1,9 +1,16 @@
 name: CI
 
+# One Linux job per pull request, to keep Actions minutes small: macOS
+# runners bill ten times Linux. The Mac side (the Rust build there and the
+# menu bar app) is checked by scripts/ci.sh before a push, the app again
+# here only when it changes (app.yml), and every target builds at release.
 on:
+  pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE", "contrib/**"]
+  # After a merge, only to save the build cache pull requests start from.
   push:
     branches: [main]
-  pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE", "contrib/**"]
 
 permissions:
   contents: read
@@ -17,12 +24,9 @@ env:
 
 jobs:
   rust:
-    name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-15]
+    name: Rust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,7 +38,7 @@ jobs:
           components: clippy, rustfmt
 
       # Builds from main are saved; pull requests start from them, so only
-      # what changed compiles. Vendored OpenSSL alone takes minutes cold.
+      # what changed compiles.
       - name: Cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -48,48 +52,3 @@ jobs:
 
       - name: Test
         run: cargo test --locked --workspace
-
-  cross:
-    name: Cross (aarch64 Linux)
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
-        with:
-          toolchain: stable
-          targets: aarch64-unknown-linux-gnu
-
-      # Builds from main are saved; pull requests start from them, so only
-      # what changed compiles. Vendored OpenSSL alone takes minutes cold.
-      - name: Cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Cross linker
-        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-
-      # The release builds this target too; vendored OpenSSL must cross-compile.
-      - name: Build
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --locked --target aarch64-unknown-linux-gnu
-
-  menu-bar:
-    name: Menu bar (${{ matrix.arch }})
-    runs-on: macos-15
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [arm64, x86_64]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Build the app
-        env:
-          ARCH: ${{ matrix.arch }}
-        run: macos/build.sh

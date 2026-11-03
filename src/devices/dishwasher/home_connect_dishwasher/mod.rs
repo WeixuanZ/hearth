@@ -268,15 +268,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn home_shows_start_and_stop_a_tile_per_programme_and_its_sensors() {
+    async fn home_shows_a_valve_that_counts_down_its_programmes_and_its_sensors() {
         use crate::surfaces::homekit::Home;
         use hap::HapType;
         let device = device();
         let snapshot = capabilities::snapshot(&device, &Reading::default(), Kept::default());
         let mut home = Home::of(&snapshot).await;
-        // Start and stop, then the one programme.
+        // A valve: on starts the programme chosen, off stops it.
+        let valve = home.services(2, HapType::Valve);
+        assert_eq!(valve.len(), 1);
+        assert_eq!(
+            home.write(2, valve[0], HapType::Active, json!(1)).await,
+            [("run", json!(true))]
+        );
+        // A switch for its one programme; its options are left to the menu bar.
         let switches = home.services(2, HapType::Switch);
-        assert_eq!(switches.len(), 2);
+        assert_eq!(switches.len(), 1);
         // The door, a leak and a finished run notify, so each is a tile.
         for kind in [
             HapType::ContactSensor,
@@ -287,7 +294,7 @@ mod tests {
             assert_eq!(tiles, 1, "{kind:?}");
         }
         // A programme's tile picks it and starts it, and stops it when off.
-        let programme = switches[1];
+        let programme = switches[0];
         assert_eq!(
             home.write(2, programme, HapType::PowerState, json!(true))
                 .await,

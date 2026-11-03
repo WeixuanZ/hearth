@@ -55,11 +55,14 @@ impl Maker<'_> {
                 let mut source = InputSourceService::new(iid, aid);
                 configured_name(&mut source.configured_name, aid, &option.name).await?;
                 fixed(Some(&mut source.name), json!(option.name)).await?;
-                // A tuner for the TV's own channels; HDMI by its name; else other.
+                // A tuner for the TV's own channels, HDMI by its name, the
+                // home screen as Home has one; else other.
                 let kind = if option.id == "tv" {
                     2
                 } else if option.id.starts_with("hdmi") {
                     3
+                } else if option.id == "home" {
+                    1
                 } else {
                     0
                 };

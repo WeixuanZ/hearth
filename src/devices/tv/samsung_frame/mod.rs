@@ -549,7 +549,8 @@ mod tests {
         let home = Home::of(&snapshot).await;
         assert_eq!(home.services(2, HapType::Television).len(), 1);
         assert_eq!(home.services(2, HapType::Speaker).len(), 1);
-        assert_eq!(home.services(2, HapType::InputSource).len(), 5);
+        // TV, HDMI 1 to 4, and the home screen, as Home's remote has no Home key.
+        assert_eq!(home.services(2, HapType::InputSource).len(), 6);
         // Art mode: a tile of its own, as Home shows nothing beside a TV.
         assert_eq!(home.services(3, HapType::Switch).len(), 1);
     }
@@ -581,5 +582,12 @@ mod tests {
         let fake = Fake::showing(false, true);
         run(&fake, &[("text", serde_json::json!("weather"))]).await;
         assert_eq!(fake.sent(), ["typed weather"]);
+    }
+
+    #[tokio::test]
+    async fn the_home_screen_input_presses_home() {
+        let fake = Fake::showing(false, true);
+        run(&fake, &[("input", serde_json::json!("home"))]).await;
+        assert_eq!(fake.sent(), ["KEY_HOME"]);
     }
 }

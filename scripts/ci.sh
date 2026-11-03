@@ -1,5 +1,7 @@
 #!/bin/sh
-# Runs what .github/workflows/ci.yml runs, on this Mac.
+# Checks what CI and a release build, on this Mac, before a push. GitHub's CI
+# runs only the Linux job (macOS runners cost ten times as much), so the Mac
+# side is checked here: run at least `scripts/ci.sh rust app` first.
 #   scripts/ci.sh            every job
 #   scripts/ci.sh rust app   just these: rust, app, linux, cross
 # The Linux jobs run in Docker. Their builds are kept in Docker volumes, so

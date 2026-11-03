@@ -23,7 +23,8 @@ use hap::{
         humidity_sensor::HumiditySensorService, input_source::InputSourceService,
         leak_sensor::LeakSensorService, lightbulb::LightbulbService,
         motion_sensor::MotionSensorService, speaker::SpeakerService, switch::SwitchService,
-        television::TelevisionService, temperature_sensor::TemperatureSensorService, HapService,
+        television::TelevisionService, temperature_sensor::TemperatureSensorService,
+        valve::ValveService, HapService,
     },
     HapType,
 };
@@ -298,10 +299,13 @@ impl Maker<'_> {
 
     /// The switches Home shows inside the device's tile: plain switches, and
     /// pickers as one switch per option.
+    /// A switch for each switch capability not in `skip`, and with
+    /// `choices`, one for each option of a choice that has no role.
     async fn linked_switches(
         &mut self,
         aid: u64,
         skip: &[Role],
+        choices: bool,
     ) -> Result<Vec<Box<dyn HapService>>> {
         let mut services: Vec<Box<dyn HapService>> = Vec::new();
         for capability in self.device.capabilities.clone() {
@@ -321,7 +325,7 @@ impl Maker<'_> {
                         .await?;
                     services.push(Box::new(switch));
                 }
-                Kind::Choice { .. } if capability.role == Role::Generic => {
+                Kind::Choice { .. } if choices && capability.role == Role::Generic => {
                     for switch in self
                         .option_switches(
                             aid,

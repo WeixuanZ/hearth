@@ -66,7 +66,7 @@ impl Maker<'_> {
         services.extend(self.climate().await?);
         services.extend(self.filter().await?);
         let switches = self
-            .linked_switches(aid, &[Role::Auto, Role::Oscillation, Role::Heat])
+            .linked_switches(aid, &[Role::Auto, Role::Oscillation, Role::Heat], false)
             .await?;
         purifier.set_linked_services(switches.iter().map(|switch| switch.get_id()).collect());
         let info = self.information(aid, &self.device.name.clone(), "", true)?;
