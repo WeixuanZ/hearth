@@ -242,13 +242,13 @@ async fn step(
     let role = role(&id, serving.is_some(), &same, now, started);
     let leader = match &role {
         Role::Serving => {
-            let layout = layout(config);
+            let layout = crate::run::Layout::of(config);
             if serving
                 .as_ref()
                 .is_none_or(|serving| serving.layout != layout || serving.stopped())
             {
                 *serving = None;
-                *serving = Some(Serving::start(config.clone(), layout)?);
+                *serving = Some(Serving::start(config.clone())?);
             }
             None
         }
@@ -416,19 +416,6 @@ fn should_found(me: &str, started: u64, now: u64, heard: &BTreeMap<String, Heard
     let lower = heard.values().any(|peer| peer.hello.id.as_str() < me);
     let grouped = heard.values().any(|peer| !peer.hello.group.is_empty());
     !grouped && waited >= FOUND_MS && (!lower || waited >= LOWER_MS)
-}
-
-/// What Home sees: a change here needs the bridge restarted.
-pub fn layout(config: &Config) -> String {
-    let devices: Vec<String> = config
-        .devices
-        .iter()
-        .map(crate::config::Device::id)
-        .collect();
-    format!(
-        "{}|{}|{}|{devices:?}",
-        config.name, config.homekit_pin, config.bridge_id
-    )
 }
 
 fn hear(bytes: &[u8], addr: IpAddr, heard: &mut BTreeMap<String, Heard>) {

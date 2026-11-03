@@ -677,10 +677,12 @@ pub fn matter(state: Option<&str>, as_json: bool) -> Result<()> {
         (Some(code), _) => {
             println!("Matter is on. Pairing code: {code}");
             if state.is_some() {
-                println!("Restart the bridge, then add it in a Matter controller with that code.");
+                println!(
+                    "Add it in a Matter controller with that code, once the bridge has started it."
+                );
             }
         }
-        (None, Some(_)) => println!("Matter is off. Restart the bridge for it to stop."),
+        (None, Some(_)) => println!("Matter is off."),
         (None, None) => println!("Matter is off. `hearth matter on` turns it on."),
     }
     Ok(())
