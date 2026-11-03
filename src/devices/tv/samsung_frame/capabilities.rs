@@ -7,6 +7,11 @@ use crate::capabilities::{About, Capability, Item, Role, Set, Snapshot};
 use crate::config::Settings as _;
 use anyhow::{anyhow, Result};
 
+/// The input that is the TV's home screen: picking it presses Home.
+pub(super) const HOME_SCREEN: &str = "home";
+/// Its number for Home, past any real input's.
+const HOME_NUMBER: u32 = 100;
+
 /// The remote pad: an id for the UI and CLI, a label, and the Samsung key.
 const REMOTE: [(&str, &str, &str); 13] = [
     ("up", "Up", "KEY_UP"),
@@ -59,6 +64,9 @@ impl<L> Tv<L> {
                             Item::new(input.source().to_lowercase(), input.label())
                                 .numbered(*input as u32)
                         })
+                        // Not an input: its Home key, which Home's remote
+                        // and the Control Center's have no button for.
+                        .chain([Item::new(HOME_SCREEN, "Home screen").numbered(HOME_NUMBER)])
                         .collect(),
                     input,
                 )
@@ -110,6 +118,7 @@ pub fn command(set: &Set) -> Result<Command> {
     Ok(match set.capability.as_str() {
         "power" => Command::Active(set.bool()?),
         "art" => Command::Art(set.bool()?),
+        "input" if set.option()? == HOME_SCREEN => Command::Remote("KEY_HOME"),
         "input" => {
             let name = set.option()?;
             let input = Input::from_source(&name.to_uppercase())

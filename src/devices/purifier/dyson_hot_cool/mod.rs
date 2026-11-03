@@ -401,11 +401,9 @@ mod tests {
         ] {
             assert_eq!(home.services(2, kind).len(), 1, "{kind:?}");
         }
-        // Night mode, jet focus and monitoring, then one switch per sweep.
-        assert_eq!(
-            home.services(2, HapType::Switch).len(),
-            3 + protocol::SWEEPS.len()
-        );
+        // Night mode, jet focus and monitoring. Its sweeps are left to the
+        // menu bar: swing is Home's own.
+        assert_eq!(home.services(2, HapType::Switch).len(), 3);
         let purifier = home.services(2, HapType::AirPurifier)[0];
         assert_eq!(
             home.write(2, purifier, HapType::Active, json!(1)).await,
