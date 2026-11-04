@@ -1,6 +1,6 @@
 //! Anything else. A machine that runs programmes, like a dishwasher, is a
 //! valve: on starts it, off stops it, and Home counts down the time left;
-//! a switch for each programme inside it starts that one. Anything else is
+//! a switch for each programme, on a tile of its own, starts that one. Anything else is
 //! its power as a switch, with its other switches inside it.
 
 use super::*;
@@ -86,14 +86,6 @@ impl Maker<'_> {
         }
 
         let mut services: Vec<Box<dyn HapService>> = Vec::new();
-        if let Some(programme) = self.role(Role::Programme) {
-            for switch in self
-                .option_switches(aid, &programme, "programme", vec![("run", json!(true))])
-                .await?
-            {
-                services.push(Box::new(switch));
-            }
-        }
         services.extend(self.supplies(aid).await?);
         valve.set_linked_services(services.iter().map(|service| service.get_id()).collect());
         let info = self.information_named(aid, &self.device.name.clone(), "", true, true)?;
@@ -102,7 +94,45 @@ impl Maker<'_> {
         // A valve has no Configured Name of its own: renames go on the
         // accessory's information.
         self.accessory(aid, all, HapType::AccessoryInformation, None);
+        self.programmes().await?;
         self.notifying_tiles().await
+    }
+
+    /// A switch for each programme, which starts that one, on an accessory
+    /// of its own: Home puts every service of an accessory in one tile, so
+    /// beside the valve they would bury it.
+    async fn programmes(&mut self) -> Result<()> {
+        let Some(programme) = self.role(Role::Programme) else {
+            return Ok(());
+        };
+        let aid = self.aid("programmes");
+        let switches = self
+            .option_switches(
+                "programmes",
+                aid,
+                &programme,
+                "programme",
+                vec![("run", json!(true))],
+            )
+            .await?;
+        if switches.is_empty() {
+            return Ok(());
+        }
+        let label = format!("{} programmes", self.device.name);
+        let info = self.information_named(aid, &label, "programmes", true, true)?;
+        let mut all: Vec<Box<dyn HapService>> = vec![Box::new(info)];
+        all.extend(
+            switches
+                .into_iter()
+                .map(|switch| Box::new(switch) as Box<dyn HapService>),
+        );
+        self.accessory(
+            aid,
+            all,
+            HapType::AccessoryInformation,
+            Some("programmes".into()),
+        );
+        Ok(())
     }
 
     /// What it uses up, like salt, as maintenance Home warns about.

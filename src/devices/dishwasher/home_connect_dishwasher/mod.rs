@@ -281,8 +281,10 @@ mod tests {
             home.write(2, valve[0], HapType::Active, json!(1)).await,
             [("run", json!(true))]
         );
-        // A switch for its one programme; its options are left to the menu bar.
-        let switches = home.services(2, HapType::Switch);
+        // The valve alone on its tile: Home shows every service of an
+        // accessory in one, so its programme is on a tile of its own.
+        assert!(home.services(2, HapType::Switch).is_empty());
+        let switches = home.services(3, HapType::Switch);
         assert_eq!(switches.len(), 1);
         // The door, a leak and a finished run notify, so each is a tile.
         for kind in [
@@ -290,18 +292,18 @@ mod tests {
             HapType::LeakSensor,
             HapType::MotionSensor,
         ] {
-            let tiles: usize = (3..=5).map(|aid| home.services(aid, kind).len()).sum();
+            let tiles: usize = (4..=6).map(|aid| home.services(aid, kind).len()).sum();
             assert_eq!(tiles, 1, "{kind:?}");
         }
         // A programme's tile picks it and starts it, and stops it when off.
         let programme = switches[0];
         assert_eq!(
-            home.write(2, programme, HapType::PowerState, json!(true))
+            home.write(3, programme, HapType::PowerState, json!(true))
                 .await,
             [("programme", json!("30")), ("run", json!(true))]
         );
         assert_eq!(
-            home.write(2, programme, HapType::PowerState, json!(false))
+            home.write(3, programme, HapType::PowerState, json!(false))
                 .await,
             [("run", json!(false))]
         );
