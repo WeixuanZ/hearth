@@ -245,8 +245,10 @@ impl Maker<'_> {
     }
 
     /// One switch per option of a choice Home has no picker for: on picks it.
+    /// A switch for each of `choice`'s options, on accessory `accessory`.
     async fn option_switches(
         &mut self,
+        accessory: &str,
         aid: u64,
         choice: &Capability,
         prefix: &str,
@@ -263,7 +265,7 @@ impl Maker<'_> {
             } else {
                 format!("{} {}", choice.name, option.name)
             };
-            let iid = self.iid("main", &key);
+            let iid = self.iid(accessory, &key);
             let mut switch = SwitchService::new(iid, aid);
             fixed(switch.name.as_mut(), json!(label)).await?;
             if let Some(name) = switch.configured_name.as_mut() {
@@ -328,6 +330,7 @@ impl Maker<'_> {
                 Kind::Choice { .. } if choices && capability.role == Role::Generic => {
                     for switch in self
                         .option_switches(
+                            "main",
                             aid,
                             &capability,
                             &format!("option:{}", capability.id),
