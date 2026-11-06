@@ -5,13 +5,10 @@ import SwiftUI
 struct HearthBar: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var app
 
+    // The menu bar's panel is AppKit's (see StatusPanel); SwiftUI needs a
+    // scene all the same.
     var body: some Scene {
-        MenuBarExtra {
-            Panel(model: app.model, updater: app.updater, setup: app.setup, launch: app.launch)
-        } label: {
-            Image(systemName: "flame")
-        }
-        .menuBarExtraStyle(.window)
+        Settings { EmptyView() }
     }
 }
 
@@ -23,8 +20,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let updater = Updater()
     let setup = SetupSession()
     let launch = Launch()
+    private var panel: StatusPanel?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        panel = StatusPanel { [model, updater, setup, launch] in
+            Panel(model: model, updater: updater, setup: setup, launch: launch)
+        }
+    }
 
     func application(_ application: NSApplication, open urls: [URL]) {
         urls.forEach(setup.receive)
+        panel?.open()
     }
 }

@@ -88,6 +88,14 @@ struct Panel: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if let failure = model.startFailure, !model.running {
+                Label(failure, systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .padding(.top, 6)
+            }
             if model.running {
                 Button("Add a device") { setup.open() }
                     .controlSize(.small)
