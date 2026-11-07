@@ -73,7 +73,7 @@ async fn spawn(device: DysonHotCoolDevice, context: crate::driver::Context) -> R
         }
     });
     tokio::spawn(async move {
-        if let Err(error) = drive(device, states, intent_rx).await {
+        if let Err(error) = drive(device, states, intent_rx, context).await {
             log::error!("fan stopped: {error:#}");
         }
     });
@@ -92,19 +92,43 @@ fn product_types(device: &DysonHotCoolDevice) -> Vec<String> {
     }
 }
 
-async fn resolve_host(device: &DysonHotCoolDevice) -> Result<String> {
-    if !device.host.trim().is_empty() {
-        return Ok(device.host.trim().to_owned());
+/// Where the fan is: its saved address while it answers there, else where
+/// it says it is on the network. A router hands a fan that was away a new
+/// address, and may give its old one to something else.
+async fn resolve_host(saved: &str, device: &DysonHotCoolDevice) -> Result<String> {
+    let saved = saved.trim();
+    if !saved.is_empty() && answers(saved, device.port).await {
+        return Ok(saved.to_owned());
     }
-    log::info!("looking for {} on the network", device.serial);
-    discover::find_host(&device.serial, Duration::from_secs(12)).await
+    log::info!("looking for {} on the network", device.name);
+    match discover::find_host(&device.serial, Duration::from_secs(12)).await {
+        Ok(found) => Ok(found),
+        // Not heard: the saved address, for the error it gives.
+        Err(_) if !saved.is_empty() => Ok(saved.to_owned()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether something takes a connection at `host`:`port` within 3 s.
+async fn answers(host: &str, port: u16) -> bool {
+    matches!(
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            tokio::net::TcpStream::connect((host, port))
+        )
+        .await,
+        Ok(Ok(_))
+    )
 }
 
 async fn drive(
     device: DysonHotCoolDevice,
     states: watch::Sender<MachineState>,
     mut intents: mpsc::Receiver<Intent>,
+    context: crate::driver::Context,
 ) -> Result<()> {
+    // Where it was last found, kept when it moves.
+    let saved = std::sync::Arc::new(std::sync::Mutex::new(device.host.clone()));
     let (command_tx, mut command_rx) = mpsc::channel::<mqtt::Publish>(32);
     let (event_tx, mut event_rx) = mpsc::channel::<mqtt::Incoming>(32);
     let topics: Vec<String> = product_types(&device)
@@ -120,16 +144,28 @@ async fn drive(
             offline,
             &mut command_rx,
             |commands| {
-                let (device, topics, hello, events, states) = (
+                let (device, topics, hello, events, states, saved, context) = (
                     device.clone(),
                     topics.clone(),
                     hello.clone(),
                     event_tx.clone(),
                     states.clone(),
+                    saved.clone(),
+                    context.clone(),
                 );
                 Box::pin(async move {
                     // Looked for again each time, as its address may have changed.
-                    let host = resolve_host(&device).await?;
+                    let was = saved
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .clone();
+                    let host = resolve_host(&was, &device).await?;
+                    if !was.is_empty() && host != was {
+                        log::info!("{} moved to a new address; remembering it", device.name);
+                        *saved.lock().unwrap_or_else(|poison| poison.into_inner()) = host.clone();
+                        let new = host.clone();
+                        context.remember(move |kept: &mut DysonHotCoolDevice| kept.host = new);
+                    }
                     log::info!("{} is at {host}:{}", device.name, device.port);
                     let broker = mqtt::Broker {
                         host: &host,
