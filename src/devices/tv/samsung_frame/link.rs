@@ -118,14 +118,11 @@ impl Link for Network {
     }
 
     fn save(&self, device: &SamsungFrameDevice) {
-        let me = crate::config::computer_id().ok();
+        let me = crate::config::computer_id();
         self.context.remember(|saved: &mut SamsungFrameDevice| {
-            // This computer's token, beside the others'. See `tokens`.
+            // The first token is the TV's; later ones are each computer's own.
             match me {
-                Some(me) if !device.token.is_empty() => {
-                    if saved.token.is_empty() {
-                        saved.token = device.token.clone();
-                    }
+                Ok(me) if !saved.token.is_empty() => {
                     if saved.token_for(&me) != device.token {
                         saved.tokens.insert(me, device.token.clone());
                     }

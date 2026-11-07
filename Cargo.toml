@@ -4,7 +4,7 @@ members = [".", "vendor/hap"]
 
 [package]
 name = "hearth"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 description = "Local HomeKit bridge. One process, one connector per device that is not HomeKit."
 license = "AGPL-3.0-only"

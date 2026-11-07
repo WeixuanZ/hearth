@@ -206,13 +206,8 @@ async fn step(udp: &UdpSocket, port: u16, config: &mut Config, state: &mut Local
             log::info!("group: stopped serving while away");
         }
     }
-    let Local {
-        started,
-        heard,
-        serving,
-        ..
-    } = state;
-    let started = *started;
+    let started = state.started;
+    let Local { heard, serving, .. } = state;
     heard.retain(|_, peer| now.saturating_sub(peer.seen) < 2 * GONE_MS);
     *config = config::load()?;
     series::forget_removed(config.removed.keys());
