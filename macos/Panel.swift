@@ -10,6 +10,14 @@ struct Panel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            if model.running, model.status?.group?.blocked == true {
+                NetworkCard()
+                    .padding(.top, 14)
+            }
+            if UpdateCard.shows(updater.state) {
+                UpdateCard(updater: updater, model: model)
+                    .padding(.top, 14)
+            }
             if !launch.decided {
                 LaunchCard(launch: launch)
                     .padding(.top, 14)
@@ -44,7 +52,7 @@ struct Panel: View {
                     .padding(.top, 16)
             }
             footer
-                .padding(.top, 16)
+                .padding(.top, 14)
         }
         .padding(16)
         .frame(width: 312, alignment: .leading)
@@ -105,66 +113,49 @@ struct Panel: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// Quiet controls under a hairline: the bridge and adding on the left,
+    /// everything else in the gear.
     private var footer: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Button(model.starting ? "Starting" : (model.running ? "Stop" : "Start")) {
-                    if model.running {
-                        model.stop()
-                    } else {
-                        model.start()
+        VStack(spacing: 8) {
+            Divider()
+            HStack(spacing: 2) {
+                if model.starting {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("Starting")
                     }
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                } else {
+                    Button {
+                        model.running ? model.stop() : model.start()
+                    } label: {
+                        Label(model.running ? "Stop" : "Start",
+                              systemImage: model.running ? "stop.circle" : "play.circle")
+                    }
+                    .buttonStyle(FooterButtonStyle())
+                    .help(model.running ? "Stop the bridge: Home loses the devices" : "Start the bridge")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.regular)
-                .disabled(model.starting)
                 if model.running, !setup.active {
                     Button {
                         setup.open()
                     } label: {
-                        Image(systemName: "plus")
+                        Label("Add Device", systemImage: "plus.circle")
                     }
-                    .buttonStyle(.bordered)
-                    .help("Add a device")
+                    .buttonStyle(FooterButtonStyle())
                 }
-                update
-                Spacer()
-                SettingsMenu(launch: launch)
-                Text("v\(updater.version)")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.tertiary)
-                Button("Quit") {
-                    NSApplication.shared.terminate(nil)
-                }
-                .buttonStyle(.borderless)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .keyboardShortcut("q")
+                Spacer(minLength: 8)
+                SettingsMenu(launch: launch, updater: updater)
             }
         }
-    }
-}
-
-extension Panel {
-    @ViewBuilder
-    fileprivate var update: some View {
-        switch updater.state {
-        case .available(let tag):
-            Button("Update to \(tag)") { updater.install(tag, model: model) }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-        case .installing:
-            ProgressView().controlSize(.small)
-            Text("Updating")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-        case .failed(let message):
-            Image(systemName: "exclamationmark.triangle")
-                .foregroundStyle(.secondary)
-                .help(message)
-        case .current:
-            EmptyView()
-        }
+        // Quits from anywhere in the panel, as a menu bar app does.
+        .background(
+            Button("Quit Hearth") { NSApplication.shared.terminate(nil) }
+                .keyboardShortcut("q")
+                .hidden()
+        )
     }
 }
 

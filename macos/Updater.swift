@@ -11,6 +11,8 @@ final class Updater: ObservableObject {
         case available(String)
         case installing(String)
         case failed(String)
+        /// Asked, and there is nothing newer: said for a moment.
+        case latest
     }
 
     /// Tells the new app to start the bridge the old one stopped.
@@ -29,17 +31,57 @@ final class Updater: ObservableObject {
         }
     }
 
-    func check() {
+    /// A version put off with Later, not offered again until a newer one.
+    private static let skippedKey = "updateSkipped"
+
+    /// Looks for a newer release. `asked`, from the menu: offers even one
+    /// put off with Later, and says when there is nothing newer.
+    func check(asked: Bool = false) {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
         Task {
             guard let tag = try? await Self.latestTag(),
-                  Self.version(tag, isNewerThan: version)
-            else { return }
+                  Self.version(tag, isNewerThan: version),
+                  asked || UserDefaults.standard.string(forKey: Self.skippedKey) != tag
+            else {
+                if asked { await self.say(.latest) }
+                return
+            }
             await MainActor.run {
                 if case .installing = state { return }
                 state = .available(tag)
             }
         }
+    }
+
+    @MainActor
+    private func say(_ news: State) {
+        state = news
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if state == news { state = .current }
+        }
+    }
+
+    func skip(_ tag: String) {
+        UserDefaults.standard.set(tag, forKey: Self.skippedKey)
+        state = .current
+    }
+
+    /// The last version offered, again, after a failed install.
+    private var offered: String?
+
+    func retry(model: BridgeModel) {
+        if let offered { install(offered, model: model) } else { state = .current }
+    }
+
+    /// `v1.2.0` as people say it, `1.2.0`.
+    static func plain(_ tag: String) -> String {
+        tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+    }
+
+    /// The release's notes on GitHub.
+    static func notes(_ tag: String) -> URL {
+        URL(string: "https://github.com/\(repository)/releases/tag/\(tag)")!
     }
 
     /// Downloads and checks the release, then quits so it can take this
@@ -50,6 +92,7 @@ final class Updater: ObservableObject {
             state = .failed("Hearth cannot replace itself where it is. Move it to Applications.")
             return
         }
+        offered = tag
         state = .installing(tag)
         let restart = model.running
         Task {

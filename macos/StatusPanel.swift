@@ -30,7 +30,9 @@ final class StatusPanel: NSObject {
 
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.hasShadow = true
+        // Glass draws its own edge and shadow; the window's would be its
+        // square outline, a dark box around the rounded panel.
+        window.hasShadow = !Self.glass
         window.level = .statusBar
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         window.hidesOnDeactivate = false
@@ -99,7 +101,15 @@ final class StatusPanel: NSObject {
         let frame = NSRect(x: x, y: top - size.height, width: size.width, height: size.height)
         guard frame != window.frame else { return }
         window.setFrame(frame, display: true)
-        window.invalidateShadow()
+        if window.hasShadow { window.invalidateShadow() }
+    }
+
+    /// Whether the panel is Liquid Glass, from macOS 26.
+    private static var glass: Bool {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) { return true }
+        #endif
+        return false
     }
 
     /// What macOS puts behind its own menu bar windows: Liquid Glass from

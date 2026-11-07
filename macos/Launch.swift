@@ -104,29 +104,71 @@ struct LaunchCard: View {
     }
 }
 
-/// The footer's gear: what can be changed about how Hearth runs.
+/// The footer's gear: how Hearth runs, updates, and quitting.
 struct SettingsMenu: View {
     @ObservedObject var launch: Launch
+    @ObservedObject var updater: Updater
 
     var body: some View {
         Menu {
             Toggle("Open at Login", isOn: Binding(get: { launch.atLogin }, set: launch.setAtLogin))
             Toggle("Start the Bridge When Hearth Opens", isOn: $launch.startsBridge)
             if launch.needsApproval {
-                Divider()
                 Button("Allow in Login Items…", action: launch.openLoginItems)
             }
             if let problem = launch.problem {
-                Divider()
                 Text(problem)
             }
+            Divider()
+            Button("Check for Updates…") { updater.check(asked: true) }
+            Text("Hearth \(updater.version)")
+            Divider()
+            Button("Quit Hearth") { NSApplication.shared.terminate(nil) }
+                .keyboardShortcut("q")
         } label: {
             Image(systemName: "gearshape")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 22)
+                .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Settings")
         .onAppear(perform: launch.refresh)
+    }
+}
+
+/// A footer button: an icon and a word, in the secondary colour, with a
+/// soft highlight under the pointer, like the system's own panels.
+struct FooterButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Highlighted(pressed: configuration.isPressed) {
+            configuration.label
+                .labelStyle(.titleAndIcon)
+                .font(.system(size: 12, weight: .medium))
+        }
+    }
+
+    private struct Highlighted<Content: View>: View {
+        let pressed: Bool
+        @ViewBuilder var content: Content
+        @State private var hovering = false
+        @Environment(\.isEnabled) private var enabled
+
+        var body: some View {
+            content
+                .foregroundStyle(hovering && enabled ? .primary : .secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.primary.opacity(pressed ? 0.14 : (hovering && enabled ? 0.08 : 0)))
+                )
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 }
+                .animation(.easeOut(duration: 0.12), value: hovering)
+        }
     }
 }
