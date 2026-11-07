@@ -49,7 +49,7 @@ use crate::{
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf};
+use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::PathBuf};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
@@ -214,13 +214,15 @@ async fn answer(line: &str) -> Value {
     };
     match request {
         Request::Status => {
-            let mut status = match cluster::forward(&value).await {
+            let status = match cluster::forward(&value).await {
                 Some(Ok(status)) => status,
-                _ => here(value).await,
+                Some(Err(error)) => {
+                    log::debug!("status: {error:#}");
+                    Value::Null
+                }
+                None => here(value).await,
             };
-            if status.get("devices").is_none() {
-                status = idle();
-            }
+            let mut status = recall(status, crate::clock::now_ms());
             status["pid"] = json!(std::process::id());
             status["group"] = cluster::status();
             status
@@ -266,6 +268,70 @@ pub async fn here(value: Value) -> Value {
         Ok(_) => json!({ "error": "not a device request" }),
         Err(error) => json!({ "error": format!("bad request: {error}") }),
     }
+}
+
+/// How long the devices last seen stand in for ones not heard from.
+const RECALL_MS: u64 = 30_000;
+
+/// What the menu bar was last shown, and when.
+struct Seen {
+    /// The last status from the computer serving Home.
+    base: Option<(u64, Value)>,
+    /// Each device as last reported, by id.
+    devices: BTreeMap<String, (u64, Value)>,
+}
+
+static SEEN: std::sync::Mutex<Seen> = std::sync::Mutex::new(Seen {
+    base: None,
+    devices: BTreeMap::new(),
+});
+
+/// A status with every device in it. While Home moves to another computer,
+/// or the one serving it is slow to answer, or a device has not reported
+/// since serving began, the device stays as it was last seen, for a while,
+/// rather than vanishing from the menu bar.
+fn recall(status: Value, now: u64) -> Value {
+    let wanted: Vec<String> = config::load()
+        .map(|config| config.devices.iter().map(|device| device.id()).collect())
+        .unwrap_or_default();
+    let mut seen = SEEN.lock().unwrap_or_else(|poison| poison.into_inner());
+    fill(status, &mut seen, &wanted, now).unwrap_or_else(idle)
+}
+
+/// `status`, with what `seen` remembers of the `wanted` devices it lacks.
+/// Nothing if there is no status, nor a recent one to stand in.
+fn fill(status: Value, seen: &mut Seen, wanted: &[String], now: u64) -> Option<Value> {
+    let recent = |when: u64| now.saturating_sub(when) < RECALL_MS;
+    let id = |device: &Value| device["id"].as_str().map(str::to_owned);
+    let answered = status["devices"].is_array();
+    let mut status = if answered {
+        seen.base = Some((now, status.clone()));
+        status
+    } else {
+        seen.base
+            .as_ref()
+            .filter(|(when, _)| recent(*when))?
+            .1
+            .clone()
+    };
+    let devices = status["devices"].as_array_mut()?;
+    if answered {
+        for device in devices.iter() {
+            if let Some(id) = id(device) {
+                seen.devices.insert(id, (now, device.clone()));
+            }
+        }
+    } else {
+        devices.clear();
+    }
+    seen.devices.retain(|id, _| wanted.contains(id));
+    let have: Vec<String> = devices.iter().filter_map(id).collect();
+    for id in wanted.iter().filter(|id| !have.contains(id)) {
+        if let Some((_, device)) = seen.devices.get(id).filter(|(when, _)| recent(*when)) {
+            devices.push(device.clone());
+        }
+    }
+    Some(status)
 }
 
 /// The status while no computer serves Home yet.
@@ -404,6 +470,48 @@ pub async fn request(body: Value) -> Result<Value> {
 mod tests {
     use super::*;
     use crate::capabilities::{Capability, Snapshot};
+
+    #[test]
+    fn a_device_not_heard_from_stays_as_last_seen_for_a_while() {
+        let mut seen = Seen {
+            base: None,
+            devices: BTreeMap::new(),
+        };
+        let wanted = ["tv".to_owned(), "lamp".to_owned()];
+        let ids = |status: &Value| -> Vec<String> {
+            status["devices"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|device| device["id"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let both = json!({ "devices": [{ "id": "tv" }, { "id": "lamp" }] });
+        assert_eq!(
+            ids(&fill(both, &mut seen, &wanted, 0).unwrap()),
+            ["tv", "lamp"]
+        );
+        // Serving just began elsewhere: the lamp has not reported yet.
+        let tv = json!({ "devices": [{ "id": "tv" }] });
+        let status = fill(tv.clone(), &mut seen, &wanted, 5_000).unwrap();
+        assert_eq!(ids(&status), ["tv", "lamp"]);
+        // The computer serving Home did not answer.
+        let status = fill(Value::Null, &mut seen, &wanted, 10_000).unwrap();
+        assert_eq!(ids(&status), ["tv", "lamp"]);
+        // Long enough, and only what is heard from shows.
+        let status = fill(tv, &mut seen, &wanted, 5_000 + RECALL_MS).unwrap();
+        assert_eq!(ids(&status), ["tv"]);
+        assert!(fill(Value::Null, &mut seen, &wanted, 10 * RECALL_MS).is_none());
+        // A removed device is not brought back.
+        let status = fill(
+            json!({ "devices": [] }),
+            &mut seen,
+            &["lamp".into()],
+            5_000 + RECALL_MS,
+        )
+        .unwrap();
+        assert_eq!(ids(&status), Vec::<String>::new());
+    }
 
     fn device(on: bool) -> Snapshot {
         Snapshot {

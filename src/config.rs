@@ -300,6 +300,20 @@ pub fn config_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".config").join("hearth"))
 }
 
+/// This computer's id among the others in a group, kept across restarts.
+pub fn computer_id() -> Result<String> {
+    let path = config_dir()?.join("node");
+    if let Some(id) = fs::read_to_string(&path)
+        .ok()
+        .filter(|id| !id.trim().is_empty())
+    {
+        return Ok(id.trim().to_owned());
+    }
+    let id = format!("{:016x}", rand::random::<u64>());
+    crate::files::write(&path, id.as_bytes())?;
+    Ok(id)
+}
+
 pub fn config_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("config.toml"))
 }

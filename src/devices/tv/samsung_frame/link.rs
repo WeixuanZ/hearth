@@ -118,8 +118,20 @@ impl Link for Network {
     }
 
     fn save(&self, device: &SamsungFrameDevice) {
+        let me = crate::config::computer_id().ok();
         self.context.remember(|saved: &mut SamsungFrameDevice| {
-            saved.token = device.token.clone();
+            // This computer's token, beside the others'. See `tokens`.
+            match me {
+                Some(me) if !device.token.is_empty() => {
+                    if saved.token.is_empty() {
+                        saved.token = device.token.clone();
+                    }
+                    if saved.token_for(&me) != device.token {
+                        saved.tokens.insert(me, device.token.clone());
+                    }
+                }
+                _ => saved.token = device.token.clone(),
+            }
             saved.mac = device.mac.clone();
             saved.model = device.model.clone();
         });
