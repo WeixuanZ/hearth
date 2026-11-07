@@ -1,0 +1,61 @@
+name: Preview
+# Temporary: screenshots of the menu bar panel and a fresh-Mac Start check.
+on:
+  pull_request:
+    paths: ["macos/**", ".github/workflows/preview.yml", ".github/preview/**"]
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: macos-26
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: macOS
+        run: sw_vers; xcodebuild -version; system_profiler SPDisplaysDataType | grep -i resolution || true
+      - name: v1.0.0 app
+        run: |
+          set -eu
+          mkdir old && cd old
+          curl -sSLo a.zip "https://github.com/WeixuanZ/hearth/releases/download/v1.0.0/Hearth-v1.0.0-macos-arm64.zip"
+          ditto -x -k a.zip .
+      - name: This branch's app
+        run: HEARTH_BIN="$PWD/old/Hearth.app/Contents/MacOS/hearth-cli" macos/build.sh
+      - name: Reference app
+        run: swiftc -parse-as-library -o reference .github/preview/Reference.swift
+      - name: Start on a fresh Mac, v1.0.0
+        run: |
+          ls -la ~/.config/hearth 2>&1 || echo "no ~/.config/hearth: a fresh Mac"
+          defaults write com.weixuan.hearth.bar launch.startsBridge -bool true
+          old/Hearth.app/Contents/MacOS/Hearth & sleep 10
+          echo "bridge processes:"; pgrep -fl hearth-cli || echo "NONE: the bridge did not start"
+          ls -la ~/.config/hearth 2>&1 || true
+          pkill -f old/Hearth.app || true; pkill -f hearth-cli || true; sleep 2
+          rm -rf ~/.config/hearth
+      - name: Start on a fresh Mac, this branch, and screenshots
+        run: |
+          set -u
+          shot() {
+            screencapture -x "$1.png"
+            w=$(sips -g pixelWidth "$1.png" | awk '/pixelWidth/{print $2}')
+            h=$(sips -g pixelHeight "$1.png" | awk '/pixelHeight/{print $2}')
+            cw=$(( w < 1400 ? w : 1400 )); ch=$(( h < 1100 ? h : 1100 ))
+            sips -c "$ch" "$cw" --cropOffset 0 $(( w - cw )) "$1.png" --out "$1-crop.png" >/dev/null
+            sips -Z 900 -s format jpeg -s formatOptions 70 "$1-crop.png" --out "$1.jpg" >/dev/null
+            echo "=====BEGIN $1 ($w x $h)====="; base64 -i "$1.jpg" -b 0; echo; echo "=====END $1====="
+          }
+          HEARTH_SHOW_PANEL=1 macos/Hearth.app/Contents/MacOS/Hearth & sleep 10
+          echo "bridge processes:"; pgrep -fl hearth-cli || echo "NONE: the bridge did not start"
+          ls -la ~/.config/hearth 2>&1 || true
+          tail -5 ~/.config/hearth/hearth.log 2>/dev/null || true
+          shot hearth-new
+          sleep 8; shot hearth-new-later
+          pkill -f macos/Hearth.app || true; pkill -f hearth-cli || true; sleep 2
+          ./reference & sleep 6
+          shot reference
+          pkill -f ./reference || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: screenshots
+          path: "*.png"

@@ -15,7 +15,6 @@ final class StatusPanel: NSObject {
     private var outsideClicks: Any?
     private var resigned: NSObjectProtocol?
 
-    private static let cornerRadius: CGFloat = 12
     /// Between the menu bar and the panel.
     private static let gap: CGFloat = 5
 
@@ -38,18 +37,9 @@ final class StatusPanel: NSObject {
         window.isReleasedWhenClosed = false
         window.animationBehavior = .utilityWindow
 
-        let background = NSVisualEffectView()
-        background.material = .popover
-        background.blendingMode = .behindWindow
-        background.state = .active
-        background.maskImage = Self.roundedMask(radius: Self.cornerRadius)
-        window.contentView = background
-
         // Only its natural size: the window, not constraints, follows it.
         hosting.sizingOptions = [.intrinsicContentSize]
-        hosting.frame = background.bounds
-        hosting.autoresizingMask = [.width, .height]
-        background.addSubview(hosting)
+        window.contentView = Self.background(around: hosting)
         hosting.onResize = { [weak self] size in self?.resize(to: size) }
 
         if let button = item.button {
@@ -69,7 +59,8 @@ final class StatusPanel: NSObject {
         resize(to: hosting.fittingSize)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
-        item.button?.highlight(true)
+        // After the click that opened it has been handled, which unhighlights.
+        Task { @MainActor [weak self] in self?.item.button?.highlight(true) }
         // A click anywhere else closes the panel, as it would a menu.
         guard outsideClicks == nil else { return }
         outsideClicks = NSEvent.addGlobalMonitorForEvents(
@@ -109,6 +100,28 @@ final class StatusPanel: NSObject {
         guard frame != window.frame else { return }
         window.setFrame(frame, display: true)
         window.invalidateShadow()
+    }
+
+    /// What macOS puts behind its own menu bar windows: Liquid Glass from
+    /// macOS 26, the menu's material before.
+    private static func background(around content: NSView) -> NSView {
+        #if compiler(>=6.2)
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.cornerRadius = 16
+            glass.contentView = content
+            return glass
+        }
+        #endif
+        let effect = NSVisualEffectView()
+        effect.material = .menu
+        effect.blendingMode = .behindWindow
+        effect.state = .active
+        effect.maskImage = roundedMask(radius: 10)
+        content.frame = effect.bounds
+        content.autoresizingMask = [.width, .height]
+        effect.addSubview(content)
+        return effect
     }
 
     /// A stretchable rounded rectangle, so the corners stay round at any size.

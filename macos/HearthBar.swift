@@ -26,6 +26,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel = StatusPanel { [model, updater, setup, launch] in
             Panel(model: model, updater: updater, setup: setup, launch: launch)
         }
+        // PREVIEW-ONLY: opens the panel for CI screenshots. Removed before merge.
+        if ProcessInfo.processInfo.environment["HEARTH_SHOW_PANEL"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.panel?.open() }
+        }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
