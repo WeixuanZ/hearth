@@ -51,9 +51,16 @@ const PORT: u16 = 47_620;
 const TICK: Duration = Duration::from_secs(1);
 /// A computer not heard from for this long has gone.
 const FRESH_MS: u64 = 4_000;
-/// How long a new process listens before it serves, so two computers that
-/// start together do not both serve.
-const GRACE_MS: u64 = 1_500;
+/// The computer serving Home has gone only after this long. Hellos are
+/// broadcast, and Wi-Fi drops several in a row, as a Mac saving power
+/// does; a takeover on a few lost hellos serves twice, and asks the TV to
+/// Allow the new computer.
+const GONE_MS: u64 = 12_000;
+/// How long a process listens before it serves, so two computers that
+/// start together do not both serve. Again after sleep.
+const GRACE_MS: u64 = 3_000;
+/// A tick this late means the computer slept, or its loop stalled.
+const ASLEEP_MS: u64 = 3_000;
 /// How long a computer listens for a group before it starts its own, and how
 /// long when a lower id is looking too, which should start it instead.
 const FOUND_MS: u64 = 3_000;
@@ -108,6 +115,7 @@ fn with<T>(f: impl FnOnce(&mut Group) -> T) -> Result<T> {
         .ok_or_else(|| anyhow!("the bridge is starting"))
 }
 
+#[derive(Clone)]
 struct Heard {
     hello: Hello,
     addr: IpAddr,
@@ -125,7 +133,7 @@ pub async fn run() -> Result<()> {
     let tcp = TcpListener::bind(("0.0.0.0", 0)).await?;
     let port = tcp.local_addr()?.port();
     *GROUP.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(Group {
-        id: node_id()?,
+        id: config::computer_id()?,
         name: computer_name(),
         key: GroupKey::load(),
         role: Role::Looking,
@@ -141,38 +149,66 @@ pub async fn run() -> Result<()> {
     });
     tokio::spawn(accept(tcp));
 
-    let started = crate::clock::now_ms();
-    let mut heard = BTreeMap::new();
-    let mut serving = None;
+    let mut state = Local {
+        started: crate::clock::now_ms(),
+        last: crate::clock::now_ms(),
+        heard: BTreeMap::new(),
+        serving: None,
+        syncing: None,
+        shared: 0,
+    };
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut buffer = [0u8; 4096];
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                if let Err(error) = step(&udp, port, started, &mut config, &mut heard, &mut serving).await {
+                if let Err(error) = step(&udp, port, &mut config, &mut state).await {
                     log::warn!("group: {error:#}");
                 }
             }
             received = udp.recv_from(&mut buffer) => {
                 let (length, from) = received?;
-                hear(&buffer[..length], from.ip(), &mut heard);
+                hear(&buffer[..length], from.ip(), &mut state.heard);
             }
         }
     }
 }
 
-/// Once a second: say hello, catch up with the members, and serve Home or not.
-async fn step(
-    udp: &UdpSocket,
-    port: u16,
+/// What the group's loop keeps between ticks.
+struct Local {
+    /// When this computer last began to listen: at start, and after sleep.
     started: u64,
-    config: &mut Config,
-    heard: &mut BTreeMap<String, Heard>,
-    serving: &mut Option<Serving>,
-) -> Result<()> {
+    /// The last tick.
+    last: u64,
+    heard: BTreeMap<String, Heard>,
+    serving: Option<Serving>,
+    /// Catching up with the members, off the loop, so a slow member cannot
+    /// hold up the hellos that keep this computer serving.
+    syncing: Option<tokio::task::JoinHandle<()>>,
+    /// When the history was last shared.
+    shared: u64,
+}
+
+/// Once a second: say hello, catch up with the members, and serve Home or not.
+async fn step(udp: &UdpSocket, port: u16, config: &mut Config, state: &mut Local) -> Result<()> {
     let now = crate::clock::now_ms();
-    heard.retain(|_, peer| now.saturating_sub(peer.seen) < 2 * FRESH_MS);
+    let slept = now.saturating_sub(state.last);
+    state.last = now;
+    if slept > ASLEEP_MS {
+        log::info!("group: back after {}s away; listening again", slept / 1000);
+        // What was heard before is old, and the others may have moved on:
+        // listen before serving, so waking does not take Home back.
+        state.started = now;
+        // Away long enough that another computer has taken over: stop, and
+        // stand by for it or serve again once heard.
+        if slept > GONE_MS && state.serving.take().is_some() {
+            log::info!("group: stopped serving while away");
+        }
+    }
+    let started = state.started;
+    let Local { heard, serving, .. } = state;
+    heard.retain(|_, peer| now.saturating_sub(peer.seen) < 2 * GONE_MS);
     *config = config::load()?;
     series::forget_removed(config.removed.keys());
     let files = Files::read()?;
@@ -223,20 +259,16 @@ async fn step(
     };
     let fresh: Vec<&Heard> = heard
         .values()
-        .filter(|peer| peer.member && now.saturating_sub(peer.seen) < FRESH_MS)
+        .filter(|peer| peer.member && present(&peer.hello, peer.seen, now))
         .collect();
-    for peer in &fresh {
-        catch_up(peer, &key, config, &files, serving.is_some()).await;
-    }
-    if now % 60_000 < TICK.as_millis() as u64 {
-        for peer in &fresh {
-            if let Err(error) = share_history(peer, &key, config).await {
-                log::debug!(
-                    "could not share history with {}: {error:#}",
-                    peer.hello.name
-                );
-            }
+    if state.syncing.as_ref().is_none_or(|task| task.is_finished()) {
+        let history = now.saturating_sub(state.shared) >= 60_000;
+        if history {
+            state.shared = now;
         }
+        let peers = fresh.iter().map(|&peer| peer.clone()).collect();
+        let is_serving = serving.is_some();
+        state.syncing = Some(tokio::spawn(sync(peers, key.clone(), is_serving, history)));
     }
 
     let paired = config::paired();
@@ -281,6 +313,34 @@ async fn step(
         group.members = members;
         group.conflict = conflict;
     })
+}
+
+/// Whether a member is still there: heard lately, or a little longer for
+/// the one serving Home.
+fn present(hello: &Hello, seen: u64, now: u64) -> bool {
+    let quiet = now.saturating_sub(seen);
+    quiet < FRESH_MS || hello.serving && quiet < GONE_MS
+}
+
+/// Catches up with every member, and shares the history if it is time.
+async fn sync(peers: Vec<Heard>, key: GroupKey, serving: bool, history: bool) {
+    let (Ok(mut config), Ok(files)) = (config::load(), Files::read()) else {
+        return;
+    };
+    for peer in &peers {
+        catch_up(peer, &key, &mut config, &files, serving).await;
+    }
+    if !history {
+        return;
+    }
+    for peer in &peers {
+        if let Err(error) = share_history(peer, &key, &config).await {
+            log::debug!(
+                "could not share history with {}: {error:#}",
+                peer.hello.name
+            );
+        }
+    }
 }
 
 /// Takes a member's config, and its HomeKit files if it serves Home, when
@@ -510,20 +570,6 @@ fn udp() -> Result<UdpSocket> {
     Ok(UdpSocket::from_std(socket.into())?)
 }
 
-/// This computer's id among the others, kept across restarts.
-fn node_id() -> Result<String> {
-    let path = config::config_dir()?.join("node");
-    if let Some(id) = fs::read_to_string(&path)
-        .ok()
-        .filter(|id| !id.trim().is_empty())
-    {
-        return Ok(id.trim().to_owned());
-    }
-    let id = format!("{:016x}", rand::random::<u64>());
-    fs::write(&path, &id)?;
-    Ok(id)
-}
-
 /// The name people know this computer by.
 fn computer_name() -> String {
     let named = |program: &str, args: &[&str]| {
@@ -564,6 +610,14 @@ mod tests {
         assert_eq!(role("aaa", false, &[&leader], 9_000, 0), standby("bbb"));
         assert_eq!(role("ccc", true, &[&leader], 9_000, 0), standby("bbb"));
         assert_eq!(role("aaa", true, &[&leader], 9_000, 0), Role::Serving);
+    }
+
+    #[test]
+    fn the_computer_serving_is_given_longer_before_it_has_gone() {
+        let (leader, other) = (hello("aaa", true), hello("bbb", false));
+        assert!(present(&leader, 0, FRESH_MS + 1_000));
+        assert!(!present(&other, 0, FRESH_MS + 1_000));
+        assert!(!present(&leader, 0, GONE_MS));
     }
 
     #[test]

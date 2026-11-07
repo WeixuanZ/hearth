@@ -418,7 +418,7 @@ cargo clippy --all-targets
 macos/build.sh
 ```
 
-Every pull request is checked on Linux: formatting, Clippy, and the tests of hearth and its vendored HomeKit library; the menu bar app builds on macOS when it changes. `scripts/ci.sh` checks the Mac side, and Linux and aarch64 in Docker, before a push. A tag that matches the version in `Cargo.toml`, like `v1.0.2`, builds and publishes Linux (x86_64, aarch64), macOS Apple silicon and macOS Intel binaries, the menu bar app, and `SHA256SUMS`. The app takes its version from `Cargo.toml`, which is what its updater compares.
+Every pull request is checked on Linux: formatting, Clippy, and the tests of hearth and its vendored HomeKit library; the menu bar app builds on macOS when it changes. `scripts/ci.sh` checks the Mac side, and Linux and aarch64 in Docker, before a push. A tag that matches the version in `Cargo.toml`, like `v1.0.3`, builds and publishes Linux (x86_64, aarch64), macOS Apple silicon and macOS Intel binaries, the menu bar app, and `SHA256SUMS`. The app takes its version from `Cargo.toml`, which is what its updater compares.
 
 ### Libraries
 

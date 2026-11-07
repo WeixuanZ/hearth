@@ -52,7 +52,10 @@ impl crate::driver::Driver for SamsungFrame {
     }
 }
 
-async fn spawn(device: SamsungFrameDevice, context: crate::driver::Context) -> Result<()> {
+async fn spawn(mut device: SamsungFrameDevice, context: crate::driver::Context) -> Result<()> {
+    if let Ok(me) = crate::config::computer_id() {
+        device.token = device.token_for(&me).to_owned();
+    }
     let tv = Tv::new(Network::new(&device, context.clone()), device);
     context.publish(tv.snapshot());
     let requests = context.requests();

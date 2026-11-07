@@ -99,6 +99,8 @@ impl crate::driver::Setup for Setup {
                             host: host.clone(),
                             mac: info.map(|info| info.mac).unwrap_or_default(),
                             token: token.clone(),
+                            // Its own token is `token`, above.
+                            tokens: Default::default(),
                             ip_token: ip.as_ref().cloned().unwrap_or_default(),
                         },
                     ),
