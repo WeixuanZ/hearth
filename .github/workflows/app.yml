@@ -16,7 +16,7 @@ concurrency:
 jobs:
   menu-bar:
     name: Menu bar
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 10
     steps:
       - name: Checkout

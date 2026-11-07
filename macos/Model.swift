@@ -13,6 +13,8 @@ final class BridgeModel: ObservableObject {
     @Published var forgetting = false
     /// The last refusal from a device, shown under the devices for a moment.
     @Published var problem: String?
+    /// Why the bridge stopped right after Start, from the end of its log.
+    @Published var startFailure: String?
 
     private let queue = DispatchQueue(label: "hearth.control")
     /// Devices arrive as they change, from the bridge's stream. While it is
@@ -165,20 +167,29 @@ final class BridgeModel: ObservableObject {
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0.path) }
     }
 
+    /// Where `start` sends the bridge's output. It starts over with each run,
+    /// so it cannot grow without end.
+    static let logURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/hearth/hearth.log")
+
     func start() {
         guard !starting, let url = hearthURL() else {
             if hearthURL() == nil { missingBinary = true }
             return
         }
         missingBinary = false
+        startFailure = nil
         starting = true
+        // On a new Mac there is no ~/.config/hearth yet, and the shell will
+        // not run a command whose log it cannot create.
+        try? FileManager.default.createDirectory(
+            at: Self.logURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         let shell = Process()
         shell.executableURL = URL(fileURLWithPath: "/bin/sh")
         let path = url.path.replacingOccurrences(of: "'", with: "'\\''")
-        // The log starts over with each run, so it cannot grow without end.
-        let log = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/hearth/hearth.log").path
-            .replacingOccurrences(of: "'", with: "'\\''")
+        let log = Self.logURL.path.replacingOccurrences(of: "'", with: "'\\''")
         shell.arguments = ["-c", "nohup '\(path)' run >'\(log)' 2>&1 &"]
         shell.standardOutput = FileHandle.nullDevice
         shell.standardError = FileHandle.nullDevice
@@ -186,13 +197,29 @@ final class BridgeModel: ObservableObject {
             try shell.run()
             shell.waitUntilExit()
         } catch {
-            missingBinary = true
+            startFailure = "Could not start the bridge: \(error.localizedDescription)"
             starting = false
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             self?.starting = false
         }
+        // A bridge that stopped at once says why at the end of its log.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
+            guard let self, !self.running else { return }
+            self.startFailure = Self.lastLogLine()
+                ?? "The bridge stopped as it started. See ~/.config/hearth/hearth.log."
+        }
+    }
+
+    /// The bridge's error, the line after "Error:" when it printed one.
+    private static func lastLogLine() -> String? {
+        guard let text = try? String(contentsOf: logURL, encoding: .utf8) else { return nil }
+        let lines = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        if let error = lines.first(where: { $0.hasPrefix("Error:") }) {
+            return String(error.dropFirst("Error:".count)).trimmingCharacters(in: .whitespaces)
+        }
+        return lines.last { !$0.isEmpty }
     }
 
     func stop() {
