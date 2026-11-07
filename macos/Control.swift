@@ -47,6 +47,9 @@ struct GroupStatus: Decodable {
     var code: String?
     /// A computer in another group on the network.
     var other: String?
+    /// The network refused this computer, as macOS does to an app it has
+    /// not allowed on the local network.
+    var blocked: Bool?
 
     var serving: Bool { role == "serving" || role == "conflict" }
 }

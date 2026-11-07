@@ -85,6 +85,10 @@ struct Group {
     target: Option<String>,
     /// Do not ask to join: a person chose to, or a member said no.
     separate: bool,
+    /// The network refused this computer's hello, as macOS does to an app
+    /// it has not allowed on the local network. Devices cannot be reached
+    /// either, so the menu bar says so.
+    blocked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,6 +137,7 @@ pub async fn run() -> Result<()> {
         joining: None,
         target: None,
         separate: false,
+        blocked: false,
     });
     tokio::spawn(accept(tcp));
 
@@ -189,8 +194,20 @@ async fn step(
     if let Some(key) = &key {
         hello.sign(&key.hello());
     }
-    udp.send_to(&serde_json::to_vec(&hello)?, ("255.255.255.255", PORT))
-        .await?;
+    // A refused hello does not stop this computer serving: alone, it is
+    // still the one to serve, and its devices show offline, not gone.
+    let sent = udp
+        .send_to(&serde_json::to_vec(&hello)?, ("255.255.255.255", PORT))
+        .await;
+    let blocked = sent.is_err();
+    let was = with(|group| std::mem::replace(&mut group.blocked, blocked))?;
+    match (&sent, was) {
+        (Err(error), false) => log::warn!(
+            "group: the network refused this computer ({error}). On a Mac, allow Hearth in System Settings › Privacy & Security › Local Network"
+        ),
+        (Ok(_), true) => log::info!("group: the network is reachable again"),
+        _ => {}
+    }
 
     // Another group to move to. Without a group, this one is already asking.
     let other = heard
@@ -461,6 +478,7 @@ pub fn status() -> Value {
             "asking": group.asking.as_ref().map(|asking| &asking.name),
             "code": joining.and_then(|joining| joining.code.as_deref()).map(spaced),
             "other": group.other.as_ref().map(|(_, name)| name),
+            "blocked": group.blocked,
         })
     })
     .unwrap_or(Value::Null)
