@@ -11,7 +11,10 @@ import SwiftUI
 final class StatusPanel: NSObject {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let window: PanelWindow
-    private let hosting: FittingHostingView<AnyView>
+    private let hosting: NSHostingView<AnyView>
+    /// The content's size, as SwiftUI lays it out: on every frame of an
+    /// animation, so the window grows and shrinks with the content.
+    private let sizer = Sizer()
     private var outsideClicks: Any?
     private var resigned: NSObjectProtocol?
 
@@ -19,7 +22,19 @@ final class StatusPanel: NSObject {
     private static let gap: CGFloat = 5
 
     init<Content: View>(@ViewBuilder content: () -> Content) {
-        hosting = FittingHostingView(rootView: AnyView(content().fixedSize()))
+        let sizer = self.sizer
+        hosting = NSHostingView(rootView: AnyView(
+            content()
+                .fixedSize()
+                .background(GeometryReader { proxy in
+                    Color.clear.preference(key: PanelSize.self, value: proxy.size)
+                })
+                .onPreferenceChange(PanelSize.self) { size in
+                    MainActor.assumeIsolated { sizer.changed?(size) }
+                }
+                // Kept at the top while the window catches up, never centred.
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        ))
         window = PanelWindow(
             contentRect: NSRect(origin: .zero, size: hosting.fittingSize),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -39,10 +54,13 @@ final class StatusPanel: NSObject {
         window.isReleasedWhenClosed = false
         window.animationBehavior = .utilityWindow
 
-        // Only its natural size: the window, not constraints, follows it.
-        hosting.sizingOptions = [.intrinsicContentSize]
+        // The window follows the measured content, not constraints.
+        hosting.sizingOptions = []
         window.contentView = Self.background(around: hosting)
-        hosting.onResize = { [weak self] size in self?.resize(to: size) }
+        sizer.changed = { [weak self] size in
+            self?.size = NSSize(width: size.width, height: size.height)
+            self?.resize(to: NSSize(width: size.width, height: size.height))
+        }
 
         if let button = item.button {
             button.image = NSImage(systemSymbolName: "flame", accessibilityDescription: "Hearth")
@@ -51,6 +69,9 @@ final class StatusPanel: NSObject {
         }
     }
 
+    /// The content's last measured size.
+    private var size = NSSize.zero
+
     var shown: Bool { window.isVisible }
 
     @objc private func toggle() {
@@ -58,7 +79,7 @@ final class StatusPanel: NSObject {
     }
 
     func open() {
-        resize(to: hosting.fittingSize)
+        resize(to: size == .zero ? hosting.fittingSize : size)
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
         // After the click that opened it has been handled, which unhighlights.
@@ -87,12 +108,18 @@ final class StatusPanel: NSObject {
     /// The panel's size, its top under the flame, kept on the screen.
     private func resize(to size: NSSize) {
         guard size.width > 0, size.height > 0 else { return }
-        guard let button = item.button, let buttonWindow = button.window else {
+        // Under the flame; when the menu bar is too full to show it, at the
+        // top right, as macOS puts its own.
+        let screen = item.button?.window?.screen ?? NSScreen.main
+        let anchor: NSRect
+        if let button = item.button, let buttonWindow = button.window, buttonWindow.screen != nil {
+            anchor = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
+        } else if let visible = screen?.visibleFrame {
+            anchor = NSRect(x: visible.maxX - size.width / 2 - 8, y: visible.maxY, width: 0, height: 0)
+        } else {
             window.setContentSize(size)
             return
         }
-        let anchor = buttonWindow.convertToScreen(button.convert(button.bounds, to: nil))
-        let screen = buttonWindow.screen ?? NSScreen.main
         var x = (anchor.midX - size.width / 2).rounded()
         if let visible = screen?.visibleFrame {
             x = min(max(x, visible.minX + 8), visible.maxX - size.width - 8)
@@ -154,16 +181,15 @@ private final class PanelWindow: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Says when the SwiftUI content's own size changes, as cards open, close,
-/// or devices arrive.
-private final class FittingHostingView<Content: View>: NSHostingView<Content> {
-    var onResize: ((NSSize) -> Void)?
+/// Where the content's measured size goes.
+@MainActor
+private final class Sizer {
+    var changed: ((CGSize) -> Void)?
+}
 
-    override func invalidateIntrinsicContentSize() {
-        super.invalidateIntrinsicContentSize()
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.onResize?(self.fittingSize)
-        }
+private struct PanelSize: PreferenceKey {
+    static let defaultValue = CGSize.zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
     }
 }
