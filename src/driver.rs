@@ -76,7 +76,7 @@ impl Context {
     /// Keeps what it learned, like a new token, in its saved settings, and
     /// leaves the rest of them as they are.
     pub fn remember<S: 'static>(&self, change: impl FnOnce(&mut S)) {
-        let result = config::load().and_then(|mut config| {
+        let result = config::update(|config| {
             let device = config
                 .devices
                 .iter_mut()
@@ -87,7 +87,7 @@ impl Context {
                     .get_mut::<S>()
                     .ok_or_else(|| anyhow!("{} is not that kind", self.id))?,
             );
-            config::save(&config)
+            Ok(())
         });
         if let Err(error) = result {
             log::warn!("could not remember what {} said: {error:#}", self.id);

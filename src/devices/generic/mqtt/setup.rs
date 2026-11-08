@@ -67,12 +67,7 @@ impl crate::driver::Setup for Setup {
             Self::Topics(device) => {
                 let mut device = device.clone();
                 device.controls = controls(device.category, answers)?;
-                let mut saved = config::load_or_new()?;
-                config::upsert(
-                    &mut saved,
-                    config::Device::new::<super::Mqtt>(device.clone()),
-                );
-                config::save(&saved)?;
+                config::add(config::Device::new::<super::Mqtt>(device.clone()))?;
                 Ok(Next::Done(format!(
                     "Added {}. Its controls are in config.toml, under key = \"{}\", for more.",
                     device.name, device.key

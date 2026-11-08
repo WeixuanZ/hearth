@@ -359,10 +359,18 @@ async fn catch_up(peer: &Heard, key: &GroupKey, config: &mut Config, files: &Fil
     let addr = SocketAddr::new(peer.addr, hello.port);
     let result = async {
         let state: State = serde_json::from_value(ask(addr, key, &Request::State).await?)?;
-        let merged = config::merge(config, &state.config, paired, state.paired);
-        if merged.config != *config {
-            config::write(&merged.config)?;
-            *config = merged.config;
+        // Merged with the config on disk now, not the one read before
+        // asking: a change made meanwhile, like a TV's new token, is kept.
+        let merged = config::locked(|| {
+            let local = config::load()?;
+            let merged = config::merge(&local, &state.config, paired, state.paired).config;
+            if merged != local {
+                config::write(&merged)?;
+            }
+            Ok(merged)
+        })?;
+        if merged != *config {
+            *config = merged;
             for device in &config.devices {
                 // A rename made elsewhere, shown now. Nothing if not serving.
                 let _ = capabilities::rename(&device.id(), device.name());

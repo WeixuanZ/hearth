@@ -560,9 +560,7 @@ pub fn rename(device: &str, to: &str) -> Result<()> {
         if snapshot.name == to {
             return Ok(());
         }
-        let mut config = config::load()?;
-        config::rename(&mut config, &snapshot.id, to)?;
-        config::save(&config)?;
+        config::update(|config| config::rename(config, &snapshot.id, to))?;
         if let Some(entry) = registry.entry(&snapshot.id) {
             entry.name.send_replace(to.to_owned());
         }

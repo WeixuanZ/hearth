@@ -155,7 +155,7 @@ async fn connection(stream: UnixStream) -> Result<()> {
 /// Devices are on the computer serving Home; elsewhere the stream is quiet.
 async fn stream_events(write: &mut tokio::net::unix::OwnedWriteHalf, topic: String) -> Result<()> {
     let mut state = bus::watch();
-    let mut before = bus::Devices::new();
+    let mut before = std::sync::Arc::default();
     loop {
         let now = state.borrow_and_update().clone();
         for change in bus::changes(&before, &now) {
@@ -165,7 +165,7 @@ async fn stream_events(write: &mut tokio::net::unix::OwnedWriteHalf, topic: Stri
                 write.write_all(line.as_bytes()).await?;
             }
         }
-        before = (*now).clone();
+        before = now;
         if state.changed().await.is_err() {
             return Ok(());
         }
