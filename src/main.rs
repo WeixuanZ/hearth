@@ -223,9 +223,7 @@ async fn main() -> Result<()> {
         Command::Matter { state } => cli::matter(state.as_deref(), cli.json)?,
         Command::Rename { device, name } => cli::rename(&device, &name, cli.json).await?,
         Command::Remove { device } => {
-            let mut config = config::load()?;
-            let name = config::remove(&mut config, &device)?;
-            config::save(&config)?;
+            let name = config::update(|config| config::remove(config, &device))?;
             println!("Removed {name}.");
         }
         Command::Group { command } => {
@@ -245,13 +243,14 @@ async fn main() -> Result<()> {
             // A new identity too. Home may still hold the old one, if it was
             // removed while the bridge was off, and would refuse it as
             // already in a home.
-            let mut config = config::load()?;
-            config.bridge_id = config::new_bridge_id();
-            config::save(&config)?;
+            let pin = config::update(|config| {
+                config.bridge_id = config::new_bridge_id();
+                Ok(config.homekit_pin.clone())
+            })?;
             println!("Forgot {removed} pairing(s), and took a new HomeKit identity.");
             println!("Restart the bridge, then in Home: Add Accessory → More options… → Hearth.");
             println!("If Home still shows an old Hearth, remove it there.");
-            println!("Code: {}", config.homekit_pin);
+            println!("Code: {pin}");
         }
         Command::Add { product, answers } => {
             let given = answers

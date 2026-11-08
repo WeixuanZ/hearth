@@ -87,22 +87,17 @@ impl crate::driver::Setup for Setup {
 
 fn add(fan: &CloudDevice) -> Result<Next> {
     let name = product_name(&fan.model);
-    let mut saved = config::load_or_new()?;
-    config::upsert(
-        &mut saved,
-        config::Device::new::<crate::devices::purifier::dyson_hot_cool::DysonHotCool>(
-            DysonHotCoolDevice {
-                name: name.clone(),
-                serial: fan.serial.clone(),
-                model: fan.model.clone(),
-                product_type: fan.product_type.clone(),
-                mqtt_password: fan.mqtt_password.clone(),
-                host: String::new(),
-                port: 1883,
-                heating: true,
-            },
-        ),
-    );
-    config::save(&saved)?;
+    config::add(config::Device::new::<super::DysonHotCool>(
+        DysonHotCoolDevice {
+            name: name.clone(),
+            serial: fan.serial.clone(),
+            model: fan.model.clone(),
+            product_type: fan.product_type.clone(),
+            mqtt_password: fan.mqtt_password.clone(),
+            host: String::new(),
+            port: 1883,
+            heating: true,
+        },
+    ))?;
     Ok(Next::Done(format!("Added {name}.")))
 }

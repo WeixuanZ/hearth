@@ -86,26 +86,21 @@ impl crate::driver::Setup for Setup {
             } => {
                 let ip = IpControl::pair(host).await;
                 let info = info.take();
-                let mut saved = config::load_or_new()?;
-                config::upsert(
-                    &mut saved,
-                    config::Device::new::<crate::devices::tv::samsung_frame::SamsungFrame>(
-                        SamsungFrameDevice {
-                            name: name.clone(),
-                            model: info
-                                .as_ref()
-                                .map(|info| info.model.clone())
-                                .unwrap_or_default(),
-                            host: host.clone(),
-                            mac: info.map(|info| info.mac).unwrap_or_default(),
-                            token: token.clone(),
-                            // Its own token is `token`, above.
-                            tokens: Default::default(),
-                            ip_token: ip.as_ref().cloned().unwrap_or_default(),
-                        },
-                    ),
-                );
-                config::save(&saved)?;
+                config::add(config::Device::new::<super::SamsungFrame>(
+                    SamsungFrameDevice {
+                        name: name.clone(),
+                        model: info
+                            .as_ref()
+                            .map(|info| info.model.clone())
+                            .unwrap_or_default(),
+                        host: host.clone(),
+                        mac: info.map(|info| info.mac).unwrap_or_default(),
+                        token: token.clone(),
+                        // Its own token is `token`, above.
+                        tokens: Default::default(),
+                        ip_token: ip.as_ref().cloned().unwrap_or_default(),
+                    },
+                ))?;
                 Ok(Next::Done(match ip {
                     Ok(_) => format!("Added {name}."),
                     Err(error) => format!(

@@ -231,9 +231,7 @@ pub async fn rename(device: &str, name: &str, as_json: bool) -> Result<()> {
     if control::running().await {
         control::request(json!({ "op": "rename", "device": device, "name": name })).await?;
     } else {
-        let mut config = config::load()?;
-        config::rename(&mut config, device, name)?;
-        config::save(&config)?;
+        config::update(|config| config::rename(config, device, name))?;
     }
     if as_json {
         print_json(&json!({ "ok": true }))
@@ -650,22 +648,27 @@ impl Style {
 
 /// `hearth matter`: turns Matter on or off, and shows its pairing code.
 pub fn matter(state: Option<&str>, as_json: bool) -> Result<()> {
-    let mut config = crate::config::load()?;
-    match state {
-        Some("on") if config.matter.is_none() => {
-            config.matter = Some(crate::surfaces::matter::Settings::new());
+    use crate::surfaces::matter;
+    let settings = match state {
+        Some(state) => {
+            let on = state == "on";
+            let settings = config::update(|config| {
+                if !on {
+                    config.matter = None;
+                } else if config.matter.is_none() {
+                    config.matter = Some(matter::Settings::new());
+                }
+                Ok(config.matter)
+            })?;
+            // Off forgets every controller, once the config no longer has it.
+            if !on {
+                matter::forget()?;
+            }
+            settings
         }
-        Some("off") if config.matter.is_some() => {
-            config.matter = None;
-            crate::surfaces::matter::forget()?;
-        }
-        _ => {}
-    }
-    if state.is_some() {
-        config.updated = crate::clock::now();
-        crate::config::save(&config)?;
-    }
-    let code = config.matter.map(|settings| settings.code());
+        None => config::load()?.matter,
+    };
+    let code = settings.map(|settings| settings.code());
     if as_json {
         println!(
             "{}",

@@ -92,12 +92,7 @@ async fn add(
         features: paired.features,
     };
     let name = device.name.clone();
-    let mut saved = config::load_or_new()?;
-    config::upsert(
-        &mut saved,
-        config::Device::new::<super::HomeConnectDishwasher>(device),
-    );
-    config::save(&saved)?;
+    config::add(config::Device::new::<super::HomeConnectDishwasher>(device))?;
     Ok(Next::Done(format!(
         "Added {name}. Starting a programme needs Remote Start on the dishwasher; reading it does not."
     )))

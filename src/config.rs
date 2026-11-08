@@ -380,11 +380,47 @@ pub fn new_bridge_id() -> String {
 }
 
 pub fn config_from_toml(text: &str) -> Result<Config> {
-    let value: toml::Value = toml::from_str(text).context("config.toml could not be read")?;
-    if value.get("devices").is_some() {
-        return toml::from_str(text).context("config.toml could not be read");
+    let table: toml::Table = toml::from_str(text).context("config.toml could not be read")?;
+    if !table.contains_key("devices") {
+        return Err(anyhow!("config.toml lists no devices"));
     }
-    Err(anyhow!("config.toml lists no devices"))
+    table.try_into().context("config.toml could not be read")
+}
+
+/// Changes the config on disk, or a new one, and saves it. It is read,
+/// changed and written under a lock, so two changes at once, from this
+/// process or another, like `hearth add` beside the bridge, both land.
+pub fn update<T>(change: impl FnOnce(&mut Config) -> Result<T>) -> Result<T> {
+    locked(|| {
+        let mut config = load_or_new()?;
+        let result = change(&mut config)?;
+        save(&config)?;
+        Ok(result)
+    })
+}
+
+/// Adds `device`, or puts it in place of the one with its id (see [`upsert`]).
+pub fn add(device: Device) -> Result<()> {
+    update(|config| {
+        upsert(config, device);
+        Ok(())
+    })
+}
+
+/// Runs `f` while holding the config's lock, for a change made from the
+/// config as it is on disk. Not to be nested.
+pub fn locked<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = config_dir()?;
+    fs::create_dir_all(&dir)?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(dir.join("config.lock"))?;
+    lock.lock().context("could not lock the config")?;
+    f()
 }
 
 /// Writes the config, dating what changed since the file on disk.
@@ -427,6 +463,7 @@ fn stamp(config: &mut Config, old: Option<&Config>, now: u64) {
             config.name.clone(),
             config.homekit_pin.clone(),
             config.bridge_id.clone(),
+            config.matter,
         )
     };
     if old.map(identity) != Some(identity(config)) {
@@ -689,6 +726,12 @@ mod tests {
         same.name = "Home".into();
         stamp(&mut same, Some(&new), 70);
         assert_eq!(same.updated, 70);
+
+        // Matter turned on is the bridge's news too, for the group to take.
+        let mut matter = same.clone();
+        matter.matter = Some(crate::surfaces::matter::Settings::new());
+        stamp(&mut matter, Some(&same), 80);
+        assert_eq!(matter.updated, 80);
     }
 
     #[test]
